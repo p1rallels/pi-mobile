@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>pi</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+  <div class="app-header">
+    <div class="app-header-left">
+      <span class="app-logo">π</span>
+      <span class="app-logo-ver">pi-web</span>
+    </div>
+	    <div class="app-header-right">
+	      <span class="top-pill viewer" id="role-pill">viewer</span>
+	      <button class="top-btn top-select" id="btn-model" title="Model">
+	        <span class="txt">Model</span>
+	        <span class="sel" id="lbl-model">—</span>
+	        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+	      </button>
+	      <button class="top-btn top-select" id="btn-thinking" title="Thinking level">
+	        <span class="txt">Thinking</span>
+	        <span class="sel" id="lbl-thinking">—</span>
+	        <span class="ico" aria-hidden="true" title="Thinking level">
+	          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+	            <path d="M9 18h6"/>
+	            <path d="M10 22h4"/>
+	            <path d="M8 14c-1.7-1.3-3-3.4-3-6a7 7 0 1 1 14 0c0 2.6-1.3 4.7-3 6-.8.6-1.5 1.6-1.7 2.6L14 18h-4l-.3-1.4c-.2-1-.9-2-1.7-2.6z"/>
+	          </svg>
+	        </span>
+	        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+	      </button>
+	      <button class="top-btn" id="btn-takeover" title="Take over control">
+	        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M13 5l7 7-7 7"/></svg>
+	        <span class="txt">Take over</span>
+	      </button>
+      <button class="top-btn warn" id="btn-abort" title="Abort current run (Esc)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"/></svg>
+        <span class="txt">Abort</span>
+      </button>
+      <button class="top-btn" id="btn-release" title="Release web runtime for native CLI">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.72 0"/></svg>
+        <span class="txt">Release</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+	    <nav class="sidebar">
+	      <div class="sidebar-hdr">
+	        <div class="sidebar-label" id="sidebar-label">Active</div>
+	        <div class="sidebar-actions">
+	          <button class="new-btn" id="btn-sidebar-left"></button>
+	          <button class="new-btn" id="btn-sidebar-right"></button>
+	        </div>
+	      </div>
+	      <div class="sessions" id="sessions-list"></div>
+	    </nav>
+
+    <div class="chat">
+      <div class="msgs" id="msgs">
+        <div class="assistant-block"><div class="thinking-text">No session selected.</div></div>
+      </div>
+
+      <div class="working" id="working">
+        <span class="work-spin" id="work-spin" aria-hidden="true">⠋</span>
+        <span class="work-text">Working...</span>
+      </div>
+
+      <div class="keybar" id="keybar">
+        <button class="keybtn" id="kb-menu" title="Menu">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="4" y1="6" x2="20" y2="6"/>
+            <line x1="4" y1="12" x2="20" y2="12"/>
+          <line x1="4" y1="18" x2="20" y2="18"/>
+        </svg>
+      </button>
+      <button class="keybtn warn" id="kb-esc" title="Esc (Abort)">
+        Esc
+      </button>
+      <button class="keybtn" id="kb-release" title="Release">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.72 0"/></svg>
+        Release
+      </button>
+      <button class="keybtn" id="kb-takeover" title="Take over">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M13 5l7 7-7 7"/></svg>
+        Take over
+      </button>
+      <button class="keybtn ok" id="kb-enter" title="Send (Enter)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        Enter
+      </button>
+    </div>
+
+      <div class="editor-wrap">
+        <div class="editor-border" id="eborder-top">────────────────────────────────────────────────────────────────────────────────────────────</div>
+        <div class="editor-inner">
+          <textarea class="editor-input" id="inp" rows="1" placeholder=""></textarea>
+        </div>
+        <div class="editor-border" id="eborder-bot">────────────────────────────────────────────────────────────────────────────────────────────</div>
+      </div>
+
+      <div class="footer">
+        <div class="footer-line" id="footer-line-1">—</div>
+        <div class="footer-line" id="footer-line-2">
+          <span id="footer-left-2">—</span>
+          <span class="footer-right" id="footer-right-2">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+	  <div class="menu-overlay" id="menu-overlay">
+	    <div class="menu-scrim" id="menu-scrim"></div>
+	    <div class="menu-panel" id="menu-panel"></div>
+	  </div>
+	  <script type="module" src="/app.js"></script>
+	</body>
+	</html>

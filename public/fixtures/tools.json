@@ -1,0 +1,152 @@
+[
+  {
+    "type": "init",
+    "yourClientId": "fixture",
+    "controllerClientId": "fixture",
+    "role": "controller",
+    "state": {
+      "sessionId": "sess_tools_0001",
+      "cwd": "/REPO_ROOT",
+      "sessionFile": null,
+      "sessionName": "tools",
+      "isStreaming": false,
+      "model": { "provider": "openrouter", "id": "z-ai/glm-4.7", "name": "GLM-4.7" },
+      "thinkingLevel": "high",
+      "steeringMode": "all",
+      "followUpMode": "all",
+      "stats": null,
+      "contextUsage": null,
+      "messages": []
+    }
+  },
+  { "type": "agent_event", "event": { "type": "turn_start" } },
+  { "type": "agent_event", "event": { "type": "agent_start" } },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "can you scan the repo?" }],
+        "timestamp": 10
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "can you scan the repo?" }],
+        "timestamp": 10
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": { "type": "message_start", "message": { "role": "assistant", "content": [], "timestamp": 11 } }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_update",
+      "message": { "role": "assistant", "content": [], "timestamp": 11 },
+      "assistantMessageEvent": { "type": "thinking_delta", "delta": "i'll list files, then read a key file." }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_start",
+      "toolCallId": "call_bash_1",
+      "toolName": "bash",
+      "args": { "command": "find . -type f | sort | head -50" }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_update",
+      "toolCallId": "call_bash_1",
+      "toolName": "bash",
+      "args": { "command": "find . -type f | sort | head -50" },
+      "partialResult": {
+        "content": [
+          {
+            "type": "text",
+            "text": "a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\nl\\nm\\n"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_end",
+      "toolCallId": "call_bash_1",
+      "toolName": "bash",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\nl\\nm\\n"
+          }
+        ]
+      },
+      "isError": false
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_start",
+      "toolCallId": "call_read_1",
+      "toolName": "read",
+      "args": { "path": "/REPO_ROOT/README.md" }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_end",
+      "toolCallId": "call_read_1",
+      "toolName": "read",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "line 1\\nline 2\\nline 3\\nline 4\\nline 5\\nline 6\\nline 7\\nline 8\\nline 9\\nline 10\\nline 11\\nline 12\\n"
+          }
+        ]
+      },
+      "isError": false
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_update",
+      "message": { "role": "assistant", "content": [], "timestamp": 11 },
+      "assistantMessageEvent": { "type": "text_delta", "delta": "Done." }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          { "type": "thinking", "thinking": "i'll list files, then read a key file." },
+          { "type": "text", "text": "Done." }
+        ],
+        "stopReason": "stop",
+        "timestamp": 11
+      }
+    }
+  },
+  { "type": "agent_event", "event": { "type": "agent_end", "messages": [] } }
+]
+

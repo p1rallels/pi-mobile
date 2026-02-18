@@ -1,0 +1,94 @@
+[
+  {
+    "type": "init",
+    "yourClientId": "fixture",
+    "controllerClientId": "fixture",
+    "role": "controller",
+    "state": {
+      "sessionId": "sess_order_0001",
+      "cwd": "/REPO_ROOT",
+      "sessionFile": null,
+      "sessionName": "tool_before_message",
+      "isStreaming": false,
+      "model": { "provider": "openrouter", "id": "z-ai/glm-4.7" },
+      "thinkingLevel": "high",
+      "steeringMode": "all",
+      "followUpMode": "all",
+      "stats": null,
+      "contextUsage": null,
+      "messages": []
+    }
+  },
+  { "type": "agent_event", "event": { "type": "turn_start" } },
+  { "type": "agent_event", "event": { "type": "agent_start" } },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "show ordering" }],
+        "timestamp": 20
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "show ordering" }],
+        "timestamp": 20
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_start",
+      "toolCallId": "call_bash_before",
+      "toolName": "bash",
+      "args": { "command": "ls -la" }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_end",
+      "toolCallId": "call_bash_before",
+      "toolName": "bash",
+      "result": { "content": [{ "type": "text", "text": "file1\\nfile2\\nfile3\\nfile4\\nfile5\\nfile6\\n" }] },
+      "isError": false
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": { "type": "message_start", "message": { "role": "assistant", "content": [], "timestamp": 21 } }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_update",
+      "message": { "role": "assistant", "content": [], "timestamp": 21 },
+      "assistantMessageEvent": { "type": "thinking_delta", "delta": "tool came before message_start" }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          { "type": "thinking", "thinking": "tool came before message_start" },
+          { "type": "text", "text": "ok" }
+        ],
+        "stopReason": "stop",
+        "timestamp": 21
+      }
+    }
+  },
+  { "type": "agent_event", "event": { "type": "agent_end", "messages": [] } }
+]
+

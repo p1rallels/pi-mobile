@@ -1,0 +1,101 @@
+// Bun Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`golden: render model basic 1`] = `
+[
+  {
+    "text": "thoughts on code?",
+    "type": "user",
+  },
+  {
+    "notices": [],
+    "text": "Sure — **hello** from \`pi-web\`.",
+    "thinking": "i should read the readme now",
+    "type": "assistant",
+  },
+]
+`;
+
+exports[`golden: render model tools 1`] = `
+[
+  {
+    "text": "can you scan the repo?",
+    "type": "user",
+  },
+  {
+    "notices": [],
+    "text": "Done.",
+    "thinking": "i'll list files, then read a key file.",
+    "type": "assistant",
+  },
+  {
+    "call": "$ find . -type f | sort | head -50",
+    "fullText": "a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\nl\\nm\\n",
+    "status": "success",
+    "toolCallId": "call_bash_1",
+    "toolName": "bash",
+    "type": "tool",
+    "view": {
+      "expanded": false,
+      "previewLines": 5,
+      "truncated": false,
+      "viewText": "a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\nj\\nk\\nl\\nm\\n",
+    },
+  },
+  {
+    "call": "read /REPO_ROOT/README.md",
+    "fullText": "line 1\\nline 2\\nline 3\\nline 4\\nline 5\\nline 6\\nline 7\\nline 8\\nline 9\\nline 10\\nline 11\\nline 12\\n",
+    "status": "success",
+    "toolCallId": "call_read_1",
+    "toolName": "read",
+    "type": "tool",
+    "view": {
+      "expanded": false,
+      "previewLines": 10,
+      "truncated": false,
+      "viewText": "line 1\\nline 2\\nline 3\\nline 4\\nline 5\\nline 6\\nline 7\\nline 8\\nline 9\\nline 10\\nline 11\\nline 12\\n",
+    },
+  },
+]
+`;
+
+exports[`golden: render model tool_before_message 1`] = `
+[
+  {
+    "text": "show ordering",
+    "type": "user",
+  },
+  {
+    "notices": [],
+    "text": "",
+    "thinking": "tool came before message_start",
+    "type": "assistant",
+  },
+  {
+    "call": "$ ls -la",
+    "fullText": "file1\\nfile2\\nfile3\\nfile4\\nfile5\\nfile6\\n",
+    "status": "success",
+    "toolCallId": "call_bash_before",
+    "toolName": "bash",
+    "type": "tool",
+    "view": {
+      "expanded": false,
+      "previewLines": 5,
+      "truncated": false,
+      "viewText": "file1\\nfile2\\nfile3\\nfile4\\nfile5\\nfile6\\n",
+    },
+  },
+]
+`;
+
+exports[`golden: render model abort 1`] = `
+[
+  {
+    "notices": [
+      "Operation aborted",
+    ],
+    "text": "",
+    "thinking": "",
+    "type": "assistant",
+  },
+]
+`;

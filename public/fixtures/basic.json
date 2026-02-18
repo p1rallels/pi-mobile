@@ -1,0 +1,83 @@
+[
+  {
+    "type": "init",
+    "yourClientId": "fixture",
+    "controllerClientId": "fixture",
+    "role": "controller",
+    "state": {
+      "sessionId": "sess_basic_0001",
+      "cwd": "/REPO_ROOT",
+      "sessionFile": null,
+      "sessionName": "basic",
+      "isStreaming": false,
+      "model": { "provider": "openrouter", "id": "z-ai/glm-4.7", "name": "GLM-4.7" },
+      "thinkingLevel": "high",
+      "steeringMode": "all",
+      "followUpMode": "all",
+      "stats": null,
+      "contextUsage": null,
+      "messages": []
+    }
+  },
+  { "type": "agent_event", "event": { "type": "turn_start" } },
+  { "type": "agent_event", "event": { "type": "agent_start" } },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "thoughts on code?" }],
+        "timestamp": 1
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "thoughts on code?" }],
+        "timestamp": 1
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": { "type": "message_start", "message": { "role": "assistant", "content": [], "timestamp": 2 } }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_update",
+      "message": { "role": "assistant", "content": [], "timestamp": 2 },
+      "assistantMessageEvent": { "type": "thinking_delta", "delta": "i should read the readme now" }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_update",
+      "message": { "role": "assistant", "content": [], "timestamp": 2 },
+      "assistantMessageEvent": { "type": "text_delta", "delta": "Sure — **hello** from `pi-web`." }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          { "type": "thinking", "thinking": "i should read the readme now" },
+          { "type": "text", "text": "Sure — **hello** from `pi-web`." }
+        ],
+        "stopReason": "stop",
+        "timestamp": 2
+      }
+    }
+  },
+  { "type": "agent_event", "event": { "type": "agent_end", "messages": [] } }
+]
+

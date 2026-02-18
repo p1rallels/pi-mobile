@@ -1,0 +1,66 @@
+[
+  {
+    "type": "init",
+    "yourClientId": "fixture",
+    "controllerClientId": "fixture",
+    "role": "controller",
+    "state": {
+      "sessionId": "sess_mobile_0001",
+      "cwd": "/REPO_ROOT",
+      "sessionFile": null,
+      "sessionName": "mobile_working",
+      "isStreaming": false,
+      "model": { "provider": "openrouter", "id": "z-ai/glm-4.7" },
+      "thinkingLevel": "high",
+      "steeringMode": "all",
+      "followUpMode": "all",
+      "stats": null,
+      "contextUsage": null,
+      "messages": []
+    }
+  },
+  { "type": "agent_event", "event": { "type": "turn_start" } },
+  { "type": "agent_event", "event": { "type": "agent_start" } },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "run a long tool" }],
+        "timestamp": 40
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "user",
+        "content": [{ "type": "text", "text": "run a long tool" }],
+        "timestamp": 40
+      }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_start",
+      "toolCallId": "call_bash_mobile",
+      "toolName": "bash",
+      "args": { "command": "sleep 2 && echo done" }
+    }
+  },
+  {
+    "type": "agent_event",
+    "event": {
+      "type": "tool_execution_update",
+      "toolCallId": "call_bash_mobile",
+      "toolName": "bash",
+      "args": { "command": "sleep 2 && echo done" },
+      "partialResult": { "content": [{ "type": "text", "text": "working...\\n" }] }
+    }
+  }
+]
+

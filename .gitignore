@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.DS_Store
+
+# bun
+bun.lockb
+
+# logs
+*.log
+
+# tls certs
+.tls/
+
+# marbles task tracker
+.marbles/
+
+# dev-only docs (contain local paths)
+AGENTS.md
+plan.md
+
+# playwright
+playwright-report/
+test-results/
