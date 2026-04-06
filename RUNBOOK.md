@@ -19,7 +19,9 @@ Bind to your Tailscale IP (the `100.x.x.x` address from `tailscale ip -4`):
 bun run dev -- --host 100.X.X.X --port 4317
 ```
 
-Token auth is automatically disabled on tailnet addresses — you rely on tailnet ACLs instead.
+Token auth is optional on tailnet addresses. If you set `PI_WEB_TOKEN`, the app still enforces it in addition to tailnet ACLs.
+
+For the very first remote Face ID enrollment on a tailnet host, either enroll from a trusted local browser or temporarily set `PI_WEB_TOKEN` and bootstrap once with `?token=...`. Anonymous first enrollment is blocked.
 
 ### TLS with Tailscale certs
 
@@ -33,6 +35,14 @@ Place your Tailscale-issued cert and key in `.tls/` at the project root:
 
 The server picks them up automatically when the host is a tailnet IP. You can then open `https://your-machine.ts.net:4317`.
 
+When you open a hostname that differs from the bind host, set the trusted public origin too:
+
+```bash
+PI_WEB_PUBLIC_ORIGIN=https://your-machine.ts.net:4317 bun run dev -- --host 100.X.X.X --port 4317
+```
+
+If TLS is terminated by another trusted hop in front of `pi-web`, also set `PI_WEB_TRUST_PROXY=1`.
+
 ---
 
 ## Remote access via Cloudflare Tunnel
@@ -44,7 +54,14 @@ bun run dev -- --port 4317
 cloudflared tunnel --url http://127.0.0.1:4317
 ```
 
-Cloudflare handles TLS termination. The server stays on loopback, so no token is required on the Bun side. Use Cloudflare Access policies to lock down who can reach the tunnel.
+Cloudflare handles TLS termination. You can rely on Cloudflare Access alone, or also set `PI_WEB_TOKEN` for app-layer defense in depth.
+
+Set the public origin so the server only trusts your Cloudflare hostname:
+
+```bash
+PI_WEB_PUBLIC_ORIGIN=https://pi.example.com PI_WEB_TRUST_PROXY=1 bun run dev -- --port 4317
+cloudflared tunnel --url http://127.0.0.1:4317
+```
 
 ---
 
@@ -69,7 +86,7 @@ When binding to a non-loopback, non-tailnet address, a token is required:
 bun run dev -- --host 192.168.1.50 --port 4317 --token MY_SECRET
 ```
 
-Pass it via query string (`?token=MY_SECRET`) or `Authorization: Bearer MY_SECRET` header.
+For browser access, open the app once with `?token=MY_SECRET` so the server can exchange it for an HttpOnly session cookie. `Authorization: Bearer MY_SECRET` is still accepted for token-gated routes, but remote control actions also require Face ID.
 
 You can also set it via environment variable:
 
@@ -81,9 +98,33 @@ PI_WEB_TOKEN=MY_SECRET bun run dev -- --host 192.168.1.50 --port 4317
 
 ## Face ID (WebAuthn)
 
-When accessing from a device that supports biometrics, the server can require Face ID / Touch ID enrollment. This is automatic — on first visit from a non-loopback host, the UI prompts enrollment. Credentials are stored in `~/.pi/agent/pi-web/faceid-credentials.json`.
+When accessing from a non-loopback host, the server requires a successful Face ID / Touch ID authentication before most API routes unlock. First remote enrollment now requires a trusted bootstrap: either enroll from a trusted local browser, or temporarily enable `PI_WEB_TOKEN` and open the app once with `?token=...`. Credentials are stored in `~/.pi/agent/pi-web/faceid-credentials.json`.
+
+Remote unlock is now split into two windows:
+
+- a broader unlock session for read access
+- a short freshness window for control actions like starting sessions, sending prompts, takeovers, releases, and repo edits
+
+If a control action says fresh Face ID is required, the browser should immediately prompt again.
 
 Note: WebAuthn generally requires a hostname like `localhost` or a real domain; raw IPs (including Tailscale `100.x` addresses) may fail. Prefer MagicDNS hostnames like `https://your-machine.ts.net:4317`.
+
+## Runtime caps
+
+Tune live-session limits with environment variables:
+
+```bash
+PI_WEB_MAX_RUNNING_SESSIONS=24
+PI_WEB_MAX_CLIENTS_PER_SESSION=8
+```
+
+These cap concurrent runtime sessions and simultaneous live viewers per session. The server also applies request-size and route-level rate limits to auth and control endpoints.
+
+---
+
+## SDK extensions
+
+Project/global SDK extensions (`.pi/extensions`, `~/.pi/agent/extensions`) are disabled in `pi-web` because they are arbitrary local code. The web wrapper does not load them.
 
 ---
 

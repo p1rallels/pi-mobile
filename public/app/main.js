@@ -1,7 +1,7 @@
-import { createApi } from "./core/api.js";
+import { bootstrapAuthSession, createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
-import { getOrCreateClientId, getToken } from "./core/storage.js";
+import { clearBootstrapToken, readBootstrapToken } from "./core/storage.js";
 import { createSessionController } from "./session/controller.js";
 import { createMenu } from "./ui/menu.js";
 import { createSidebar } from "./ui/sidebar.js";
@@ -43,11 +43,51 @@ const kbTakeover = document.getElementById("kb-takeover");
 const kbRelease = document.getElementById("kb-release");
 const kbEnter = document.getElementById("kb-enter");
 
-const clientId = getOrCreateClientId();
-const token = getToken();
 const replayName = new URL(window.location.href).searchParams.get("replay")?.trim() || null;
-const api = createApi(token);
-const faceIdGuard = installFaceIdGuard({ api });
+const api = createApi();
+
+function isLoopbackBrowserHost(hostname) {
+	const normalized = String(hostname || "").trim().toLowerCase();
+	return (
+		normalized === "localhost" ||
+		normalized === "127.0.0.1" ||
+		normalized === "::1" ||
+		normalized === "[::1]" ||
+		normalized.startsWith("127.")
+	);
+}
+
+function showFatalError(error) {
+	msgs.innerHTML = "";
+	const block = document.createElement("div");
+	block.className = "assistant-block";
+	const notice = document.createElement("div");
+	notice.className = "notice-text error";
+	notice.textContent = error instanceof Error ? error.message : String(error);
+	block.appendChild(notice);
+	msgs.appendChild(block);
+}
+
+let clientId;
+try {
+	const bootstrapToken = readBootstrapToken();
+	clearBootstrapToken();
+	if (bootstrapToken) {
+		await bootstrapAuthSession(bootstrapToken);
+	}
+
+	const clientSession = await api.postJson("/api/client", {});
+	if (!clientSession || typeof clientSession.clientId !== "string" || clientSession.clientId.length === 0) {
+		throw new Error("Failed to establish browser session.");
+	}
+	clientId = clientSession.clientId;
+} catch (error) {
+	showFatalError(error);
+	throw error;
+}
+
+const shouldUseFaceId = !isLoopbackBrowserHost(window.location.hostname);
+const faceIdGuard = shouldUseFaceId ? installFaceIdGuard({ api }) : null;
 
 let workingIntervalId = null;
 let workingFrame = 0;
@@ -179,14 +219,14 @@ function updateControls() {
 	const phone = isPhoneLike();
 	const canChangeSettings = hasSession && isController && !streaming;
 
-	btnAbort.disabled = !hasSession;
+	btnAbort.disabled = !hasSession || !isController;
 	btnTakeover.disabled = !hasSession || isController || streaming;
 	btnRelease.disabled = !hasSession || !isController;
 	input.disabled = !hasSession || !isController;
 	if (btnModel) btnModel.disabled = !canChangeSettings;
 	if (btnThinking) btnThinking.disabled = !canChangeSettings;
 
-	if (kbEsc) kbEsc.disabled = !hasSession;
+	if (kbEsc) kbEsc.disabled = !hasSession || !isController;
 	if (kbTakeover) kbTakeover.disabled = !hasSession || isController || streaming;
 	if (kbRelease) kbRelease.disabled = !hasSession || !isController;
 	if (kbEnter) kbEnter.disabled = !hasSession || !isController;
@@ -200,7 +240,7 @@ function updateControls() {
 				? "Streaming… (Esc to abort, Enter to queue follow-up)"
 				: "Type a prompt (Enter to send, Shift+Enter for newline)";
 	} else {
-		input.placeholder = streaming ? "Viewer mode — Esc to abort" : "Viewer mode — Take over to type";
+		input.placeholder = streaming ? "Viewer mode — Take over after the run finishes" : "Viewer mode — Take over to type";
 	}
 
 	updateTopSelectors();
@@ -236,7 +276,6 @@ const sessionCtrl = createSessionController({
 	msgsEl: msgs,
 	api,
 	clientId,
-	token,
 	isPhoneLikeFn: isPhoneLike,
 	onStateChange: () => {
 		updateFooter();
@@ -258,7 +297,7 @@ sidebarCtrl = createSidebar({
 	clientId,
 	onNotice: sessionCtrl.appendNotice,
 	getActiveSessionId: () => sessionCtrl.getActiveSessionId(),
-	onSelectSession: (s) => sessionCtrl.selectSession(s),
+	onSelectSession: (session) => sessionCtrl.selectSession(session),
 	onSessionIdSelected: (sessionId) => {
 		sessionCtrl.openSessionId(sessionId);
 		updateControls();
@@ -319,11 +358,13 @@ window.addEventListener("resize", () => sidebarCtrl.setOpen(false));
 updateFooter();
 updateControls();
 
+if (faceIdGuard) {
+	await faceIdGuard.start();
+}
+
 if (replayName) {
 	void sessionCtrl.runReplay(replayName);
 } else {
 	void sidebarCtrl.refresh();
 	setInterval(() => void sidebarCtrl.refresh(), 5_000);
 }
-
-void faceIdGuard.start();

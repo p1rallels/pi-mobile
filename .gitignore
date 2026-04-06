@@ -21,3 +21,6 @@ plan.md
 # playwright
 playwright-report/
 test-results/
+
+# local binaries
+bin/

@@ -9,11 +9,11 @@
 		"test:e2e": "playwright test"
 	},
 	"dependencies": {
-		"@mariozechner/pi-coding-agent": "~0.53.0",
-		"@simplewebauthn/browser": "^13.2.2",
-		"@simplewebauthn/server": "^13.2.3"
+		"@mariozechner/pi-coding-agent": "0.65.0",
+		"@simplewebauthn/browser": "13.2.2",
+		"@simplewebauthn/server": "13.2.3"
 	},
 	"devDependencies": {
-		"@playwright/test": "^1.51.0"
+		"@playwright/test": "1.51.0"
 	}
 }

@@ -35,6 +35,17 @@ export function installFaceIdGuard({ api }) {
         const ui = createOverlay();
         let locked = true;
         let inFlight = false;
+        let initialUnlockResolve = null;
+        let initialUnlockDone = false;
+
+        function resolveInitialUnlock() {
+                if (initialUnlockDone) return;
+                initialUnlockDone = true;
+                if (typeof initialUnlockResolve === "function") {
+                        initialUnlockResolve();
+                        initialUnlockResolve = null;
+                }
+        }
 
         function setLocked(value) {
                 locked = value;
@@ -82,12 +93,16 @@ export function installFaceIdGuard({ api }) {
                         }
                         const status = await api.getJson("/api/faceid/status");
                         if (!status.enrolled) {
+                                if (!status.canRegister) {
+                                        throw new Error("First-time remote Face ID enrollment requires a trusted bootstrap. Temporarily enable PI_WEB_TOKEN and open the app with ?token=..., or enroll from a trusted local browser.");
+                                }
                                 setStatus("First-time setup: approve Face ID to enroll this browser.");
                                 await runRegistration();
                         }
                         setStatus("Confirm with Face ID to unlock.");
                         await runAuthentication();
                         setLocked(false);
+                        resolveInitialUnlock();
                 } catch (error) {
                         setLocked(true);
                         setStatus(normalizeErrorMessage(error), { showRetry: true });
@@ -96,9 +111,9 @@ export function installFaceIdGuard({ api }) {
                 }
         }
 
-        function lockAndRequirePresence() {
+        function lockAndRequirePresence(message = "Prompting Face ID…") {
                 setLocked(true);
-                setStatus("Prompting Face ID…");
+                setStatus(message);
                 void ensureUnlocked();
         }
 
@@ -129,6 +144,14 @@ export function installFaceIdGuard({ api }) {
                         lockAndRequirePresence();
                 });
 
+                window.addEventListener("pi-web-faceid-required", (event) => {
+                        const message =
+                                event && event.detail && typeof event.detail.message === "string"
+                                        ? event.detail.message
+                                        : "Fresh Face ID verification required.";
+                        lockAndRequirePresence(message);
+                });
+
                 if (ui.button) {
                         ui.button.addEventListener("click", () => {
                                 lockAndRequirePresence();
@@ -139,7 +162,12 @@ export function installFaceIdGuard({ api }) {
         return {
                 async start() {
                         bindVisibilityHooks();
+                        const unlockPromise = new Promise((resolve) => {
+                                initialUnlockResolve = resolve;
+                        });
                         lockAndRequirePresence();
+                        if (!locked) return;
+                        await unlockPromise;
                 },
         };
 }

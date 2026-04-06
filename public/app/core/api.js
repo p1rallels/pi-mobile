@@ -1,28 +1,47 @@
-export function createApi(token) {
+async function handleJsonResponse(res) {
+	const body = await res.json().catch(() => ({}));
+	if (res.ok) return body;
+	const message = body.error || `${res.status} ${res.statusText}`;
+	if (
+		res.status === 401 &&
+		typeof message === "string" &&
+		message.toLowerCase().includes("face id")
+	) {
+		window.dispatchEvent(new CustomEvent("pi-web-faceid-required", { detail: { message } }));
+	}
+	throw new Error(message);
+}
+
+export async function bootstrapAuthSession(token) {
+	const res = await fetch("/api/auth/session", {
+		method: "POST",
+		credentials: "same-origin",
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+	return handleJsonResponse(res);
+}
+
+export function createApi() {
 	function headers() {
-		const h = { "content-type": "application/json" };
-		if (token) h.authorization = `Bearer ${token}`;
-		return h;
+		return { "content-type": "application/json" };
 	}
 
 	async function getJson(path) {
-		const res = await fetch(path, { headers: headers() });
-		const body = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
-		return body;
+		const res = await fetch(path, { headers: headers(), credentials: "same-origin" });
+		return handleJsonResponse(res);
 	}
 
 	async function postJson(path, payload) {
 		const res = await fetch(path, {
 			method: "POST",
+			credentials: "same-origin",
 			headers: headers(),
 			body: JSON.stringify(payload),
 		});
-		const body = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
-		return body;
+		return handleJsonResponse(res);
 	}
 
 	return { headers, getJson, postJson };
 }
-

@@ -5,7 +5,6 @@ export function createSessionController({
 	msgsEl,
 	api,
 	clientId,
-	token,
 	isPhoneLikeFn,
 	onStateChange,
 	onCloseMenu,
@@ -32,11 +31,7 @@ export function createSessionController({
 
 	function connectEvents(sessionId) {
 		closeEvents();
-
-		const qs = new URLSearchParams({ clientId });
-		if (token) qs.set("token", token);
-
-		eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events?${qs.toString()}`);
+		eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
 		eventSource.onmessage = (msg) => {
 			const payload = JSON.parse(msg.data);
 			handleSse(payload);

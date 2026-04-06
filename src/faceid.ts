@@ -1,7 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 
 import {
@@ -14,6 +12,7 @@ import {
 	type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
+import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 
 type ChallengeKind = "register" | "authenticate";
 
@@ -46,6 +45,7 @@ interface VerifyOutcome {
 }
 
 const CHALLENGE_TTL_MS = 90_000;
+const MAX_PENDING_CHALLENGES = 256;
 
 export class FaceIdService {
 	private storePath: string;
@@ -57,20 +57,25 @@ export class FaceIdService {
 
 	private async readStore(): Promise<FaceIdStore> {
 		try {
-			const raw = await readFile(this.storePath, "utf8");
-			const parsed = JSON.parse(raw) as Partial<FaceIdStore>;
-			if (parsed.version !== 2 || !parsed.rpCredentials || typeof parsed.rpCredentials !== "object") {
+			const parsed = await readPrivateJsonFile<unknown>(this.storePath);
+			if (!parsed || typeof parsed !== "object") {
+				throw new Error(`Invalid Face ID store: ${this.storePath}`);
+			}
+			const store = parsed as Partial<FaceIdStore>;
+			if (store.version !== 2 || !store.rpCredentials || typeof store.rpCredentials !== "object" || Array.isArray(store.rpCredentials)) {
+				throw new Error(`Invalid Face ID store: ${this.storePath}`);
+			}
+			return { version: 2, rpCredentials: store.rpCredentials };
+		} catch (error) {
+			if (isMissingFileError(error)) {
 				return { version: 2, rpCredentials: {} };
 			}
-			return { version: 2, rpCredentials: parsed.rpCredentials };
-		} catch {
-			return { version: 2, rpCredentials: {} };
+			throw error;
 		}
 	}
 
 	private async writeStore(store: FaceIdStore): Promise<void> {
-		mkdirSync(dirname(this.storePath), { recursive: true });
-		await writeFile(this.storePath, JSON.stringify(store, null, 2), "utf8");
+		await writePrivateJsonFile(this.storePath, store);
 	}
 
 	private pruneChallenges(now = Date.now()): void {
@@ -105,6 +110,9 @@ export class FaceIdService {
 		options: Record<string, unknown>;
 	}> {
 		this.pruneChallenges();
+		if (this.challenges.size >= MAX_PENDING_CHALLENGES) {
+			throw new Error("too_many_pending_faceid_challenges");
+		}
 		const credentials = await this.listCredentialsForRp(rpId);
 
 		if (kind === "authenticate" && credentials.length === 0) {

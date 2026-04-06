@@ -10,9 +10,9 @@ Web UI for the `pi` coding agent, built on the `@mariozechner/pi-coding-agent` S
 - Stream assistant output, reasoning, and tool execution live
 - Switch model and thinking level mid-session
 - Mobile-friendly: keybar for Esc / Release / Take over / Enter, slide-out sidebar
-- **Tailscale** — bind to your tailnet IP, auto-TLS with MagicDNS, no token needed
-- **Cloudflare Tunnels** — expose securely with `cloudflared`, Cloudflare Access for auth
-- **Face ID / Touch ID** — WebAuthn enrollment for biometric access control on remote
+- **Tailscale** — bind to your tailnet IP, auto-TLS with MagicDNS, optional app token for defense in depth
+- **Cloudflare Tunnels** — expose securely with `cloudflared`, Cloudflare Access, and optional app token auth
+- **Face ID / Touch ID** — WebAuthn-backed server unlock for remote API access
 
 SDK upstream: https://github.com/badlogic/pi-mono
 
@@ -35,6 +35,14 @@ Note: Face ID (WebAuthn) generally requires a hostname like `localhost` or a rea
 
 See the Runbook (RUNBOOK.md) for Tailscale, Cloudflare, and token auth setup.
 
+When token auth is enabled, open the browser once with `?token=...`. The app exchanges that token for an HttpOnly session cookie and removes the token from the URL.
+
+If you expose `pi-web` through a hostname that differs from the bind host, set `PI_WEB_PUBLIC_ORIGIN` (or `PI_WEB_ALLOWED_ORIGINS`) so the server only trusts your real browser origin.
+
+If `pi-web` is behind a TLS-terminating proxy or tunnel, set `PI_WEB_TRUST_PROXY=1` so the server can safely honor forwarded protocol/client IP headers.
+
+Project/global SDK extensions (`.pi/extensions`, `~/.pi/agent/extensions`) are disabled in `pi-web` and are not loaded by the web wrapper.
+
 ## Data locations
 
 | What | Path |
@@ -47,8 +55,17 @@ See the Runbook (RUNBOOK.md) for Tailscale, Cloudflare, and token auth setup.
 
 - **Abort** stops the current run but keeps the session runtime alive. Never deletes JSONL.
 - **Release** aborts and disposes the web runtime so you can safely resume the same JSONL in the native CLI (no concurrent writers).
+- New sessions can only start from the current working directory or repos you explicitly save in the UI. Historical session files can still be resumed, but old session metadata no longer auto-whitelists new repo roots.
 
 Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI.
+
+## Security notes
+
+- First remote Face ID enrollment is no longer anonymous. On remote hosts, enroll from a trusted local browser or temporarily enable `PI_WEB_TOKEN` and bootstrap once with `?token=...`.
+- `pi-web` now enforces an explicit host/origin allowlist. For Cloudflare, reverse proxies, or MagicDNS hostnames that differ from the bind host, configure `PI_WEB_PUBLIC_ORIGIN` or `PI_WEB_ALLOWED_ORIGINS`.
+- Non-loopback control actions now require a recent Face ID verification, not just an old unlock cookie. The remote session stays unlocked for a limited window, but starting sessions, sending prompts, takeovers, releases, and repo changes require fresh presence.
+- Browser responses now ship with a strict CSP and related security headers. Pair this with HTTPS or a trusted proxy/tunnel.
+- The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS` and `PI_WEB_MAX_CLIENTS_PER_SESSION` if needed.
 
 ## Credits
 

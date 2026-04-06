@@ -1,18 +1,17 @@
 import {
 	AuthStorage,
 	createAgentSession,
+	DefaultResourceLoader,
 	ModelRegistry,
 	SessionManager,
 	type AgentSession,
 	type AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent";
 import { existsSync } from "node:fs";
-import { mkdirSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type {
 	ApiCommandRequest,
 	ApiCreateSessionRequest,
@@ -23,6 +22,7 @@ import type {
 	ApiSessionPatch,
 	SseEvent,
 } from "./types.ts";
+import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 
 export interface SessionClient {
 	clientId: string;
@@ -39,6 +39,11 @@ interface RunningSession {
 	controllerClientId: string | null;
 	clients: Map<string, SessionClient>;
 	unsubscribe: (() => void) | null;
+}
+
+interface PiWebRuntimeOptions {
+	maxRunningSessions?: number;
+	maxClientsPerSession?: number;
 }
 
 function extractTextContent(content: unknown): string {
@@ -166,39 +171,52 @@ export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
 	private authStorage = AuthStorage.create();
-	private modelRegistry = new ModelRegistry(this.authStorage);
+	private modelRegistry = ModelRegistry.create(this.authStorage);
 	private repoStorePath = join(homedir(), ".pi", "agent", "pi-web", "repos.json");
+	private maxRunningSessions: number;
+	private maxClientsPerSession: number;
+
+	constructor(options: PiWebRuntimeOptions = {}) {
+		this.maxRunningSessions = options.maxRunningSessions ?? 24;
+		this.maxClientsPerSession = options.maxClientsPerSession ?? 8;
+	}
 
 	private async loadReposFromDisk(): Promise<string[]> {
 		try {
-			const raw = await readFile(this.repoStorePath, "utf8");
-			const parsed = JSON.parse(raw);
-			if (!Array.isArray(parsed)) return [];
+			const parsed = await readPrivateJsonFile<unknown>(this.repoStorePath);
+			if (!Array.isArray(parsed)) {
+				throw new Error(`Invalid repo store: ${this.repoStorePath}`);
+			}
 			return parsed.filter((p) => typeof p === "string").map((p) => p.trim()).filter(Boolean);
-		} catch {
-			return [];
+		} catch (error) {
+			if (isMissingFileError(error)) return [];
+			throw error;
 		}
 	}
 
 	private async saveReposToDisk(repos: string[]): Promise<void> {
-		const dir = dirname(this.repoStorePath);
-		mkdirSync(dir, { recursive: true });
-		const payload = JSON.stringify(repos, null, 2);
-		await writeFile(this.repoStorePath, payload, "utf8");
+		await writePrivateJsonFile(this.repoStorePath, repos);
+	}
+
+	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<AgentSession> {
+		const resourceLoader = new DefaultResourceLoader({ cwd, noExtensions: true });
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			sessionManager,
+			authStorage: this.authStorage,
+			modelRegistry: this.modelRegistry,
+			resourceLoader,
+		});
+		return session;
 	}
 
 	async listRepos(): Promise<string[]> {
 		const repos = new Set<string>();
+		repos.add(resolve(process.cwd()));
 
 		for (const repo of await this.loadReposFromDisk()) {
 			repos.add(repo);
-		}
-
-		const saved = await SessionManager.listAll().catch(() => []);
-		for (const entry of saved) {
-			if (typeof entry.cwd === "string" && entry.cwd.trim()) {
-				repos.add(entry.cwd.trim());
-			}
 		}
 
 		for (const runtime of this.runningById.values()) {
@@ -242,7 +260,7 @@ export class PiWebRuntime {
 
 		for (const entry of saved) {
 			const summary = serializeSessionSummary(entry);
-			summary.isRunning = this.runningByPath.has(entry.path);
+			summary.isRunning = this.runningByPath.has(resolve(entry.path));
 			byId.set(summary.id, summary);
 		}
 
@@ -276,6 +294,44 @@ export class PiWebRuntime {
 		const sessions = [...byId.values()];
 		sessions.sort((a, b) => b.modified.localeCompare(a.modified));
 		return sessions;
+	}
+
+	private async listKnownSessionPaths(): Promise<Set<string>> {
+		const paths = new Set<string>();
+
+		const saved = await SessionManager.listAll().catch(() => []);
+		for (const entry of saved) {
+			if (typeof entry.path === "string" && entry.path.trim()) {
+				paths.add(resolve(entry.path));
+			}
+		}
+
+		for (const path of this.runningByPath.keys()) {
+			paths.add(resolve(path));
+		}
+
+		return paths;
+	}
+
+	private async assertAllowedCwd(rawCwd: string): Promise<string> {
+		const cwd = normalizeCwd(rawCwd);
+		await ensureDirectory(cwd);
+
+		const allowed = new Set(await this.listRepos());
+		if (!allowed.has(cwd)) {
+			throw new Error(`cwd_not_allowed: ${cwd}`);
+		}
+
+		return cwd;
+	}
+
+	private async assertAllowedResumePath(rawPath: string): Promise<string> {
+		const path = resolve(rawPath.trim());
+		const knownPaths = await this.listKnownSessionPaths();
+		if (!knownPaths.has(path)) {
+			throw new Error(`session_path_not_allowed: ${path}`);
+		}
+		return path;
 	}
 
 	async listModels(): Promise<ApiModelInfo[]> {
@@ -326,6 +382,9 @@ export class PiWebRuntime {
 		if (!runtime) {
 			throw new Error("session_not_running");
 		}
+		if (!runtime.clients.has(client.clientId) && runtime.clients.size >= this.maxClientsPerSession) {
+			throw new Error("too_many_clients");
+		}
 		runtime.clients.set(client.clientId, client);
 		return this.getSessionRole(sessionId, client.clientId);
 	}
@@ -340,7 +399,7 @@ export class PiWebRuntime {
 		const clientId = request.clientId ?? randomUUID();
 
 		if (request.resumeSessionPath) {
-			const path = request.resumeSessionPath;
+			const path = await this.assertAllowedResumePath(request.resumeSessionPath);
 			const existingId = this.runningByPath.get(path);
 			if (existingId) {
 				const existing = this.runningById.get(existingId);
@@ -357,25 +416,14 @@ export class PiWebRuntime {
 
 			const sessionManager = SessionManager.open(path);
 			const cwd = sessionManager.getCwd();
-			const { session } = await createAgentSession({
-				cwd,
-				sessionManager,
-				authStorage: this.authStorage,
-				modelRegistry: this.modelRegistry,
-			});
+			const session = await this.createRuntimeSession(cwd, sessionManager);
 			const runtime = this.registerSession(session, cwd, clientId);
 			return { sessionId: runtime.session.sessionId };
 		}
 
-		const cwd = request.cwd ?? process.cwd();
-		await ensureDirectory(cwd);
+		const cwd = await this.assertAllowedCwd(request.cwd ?? process.cwd());
 		const sessionManager = SessionManager.create(cwd);
-		const { session } = await createAgentSession({
-			cwd,
-			sessionManager,
-			authStorage: this.authStorage,
-			modelRegistry: this.modelRegistry,
-		});
+		const session = await this.createRuntimeSession(cwd, sessionManager);
 		const runtime = this.registerSession(session, cwd, clientId);
 		return { sessionId: runtime.session.sessionId };
 	}
@@ -387,6 +435,7 @@ export class PiWebRuntime {
 		}
 
 		if (command.type === "abort") {
+			this.assertController(runtime, command.clientId);
 			await runtime.session.abort();
 			return;
 		}
@@ -498,6 +547,11 @@ export class PiWebRuntime {
 		} catch {
 			// best effort
 		}
+		try {
+			runtime.unsubscribe?.();
+		} catch {
+			// best effort
+		}
 
 		this.runningById.delete(sessionId);
 		if (runtime.sessionFile) {
@@ -507,7 +561,11 @@ export class PiWebRuntime {
 
 	private registerSession(session: AgentSession, cwd: string, controllerClientId: string): RunningSession {
 		const sessionId = session.sessionId;
-		const sessionFile = session.sessionFile ?? null;
+		const sessionFile = session.sessionFile ? resolve(session.sessionFile) : null;
+
+		if (this.runningById.size >= this.maxRunningSessions) {
+			throw new Error("too_many_active_sessions");
+		}
 
 		if (sessionFile) {
 			const existingId = this.runningByPath.get(sessionFile);
