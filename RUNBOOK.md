@@ -109,6 +109,16 @@ If a control action says fresh Face ID is required, the browser should immediate
 
 Note: WebAuthn generally requires a hostname like `localhost` or a real domain; raw IPs (including Tailscale `100.x` addresses) may fail. Prefer MagicDNS hostnames like `https://your-machine.ts.net:4317`.
 
+## Tripwire alerts
+
+Tripwires run in the server-side session runtime, not in the browser attachment. Long-running sessions keep executing while the phone disconnects, and tripwire alerts continue accumulating in `~/.pi/agent/pi-web/tripwire-state.json`.
+
+Current behavior:
+
+- repo-external reads/searches and runaway patterns log persistent alerts
+- repo-external writes/edits, host secret access, persistence attempts, destructive bash patterns, and suspicious upload or download-and-exec commands trigger a persistent critical alert and request an abort
+- reconnecting browsers fetch unread alerts immediately after reattaching to a session
+
 ## Runtime caps
 
 Tune live-session limits with environment variables:

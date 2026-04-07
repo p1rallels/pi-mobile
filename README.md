@@ -13,6 +13,7 @@ Web UI for the `pi` coding agent, built on the `@mariozechner/pi-coding-agent` S
 - **Tailscale** — bind to your tailnet IP, auto-TLS with MagicDNS, optional app token for defense in depth
 - **Cloudflare Tunnels** — expose securely with `cloudflared`, Cloudflare Access, and optional app token auth
 - **Face ID / Touch ID** — WebAuthn-backed server unlock for remote API access
+- **Tripwire alerts** — server-side detection of repo escape, secret access, persistence, destructive commands, and suspicious network patterns
 
 SDK upstream: https://github.com/badlogic/pi-mono
 
@@ -50,6 +51,7 @@ Project/global SDK extensions (`.pi/extensions`, `~/.pi/agent/extensions`) are d
 | Sessions (JSONL) | `~/.pi/agent/sessions/` |
 | Saved repos | `~/.pi/agent/pi-web/repos.json` |
 | Face ID credentials | `~/.pi/agent/pi-web/faceid-credentials.json` |
+| Tripwire alerts/read state | `~/.pi/agent/pi-web/tripwire-state.json` |
 
 ## Session semantics
 
@@ -64,6 +66,8 @@ Do not open the same session in `pi-web` and the native `pi` CLI simultaneously.
 - First remote Face ID enrollment is no longer anonymous. On remote hosts, enroll from a trusted local browser or temporarily enable `PI_WEB_TOKEN` and bootstrap once with `?token=...`.
 - `pi-web` now enforces an explicit host/origin allowlist. For Cloudflare, reverse proxies, or MagicDNS hostnames that differ from the bind host, configure `PI_WEB_PUBLIC_ORIGIN` or `PI_WEB_ALLOWED_ORIGINS`.
 - Non-loopback control actions now require a recent Face ID verification, not just an old unlock cookie. The remote session stays unlocked for a limited window, but starting sessions, sending prompts, takeovers, releases, and repo changes require fresh presence.
+- Tripwires run server-side with the session runtime, so unattended work keeps running even with zero browser clients attached. Alerts persist to disk and reconnecting browsers fetch unread alerts immediately.
+- The first critical auto-abort shortlist is intentionally narrow: repo-external writes/edits, host secret access, host persistence attempts, host-destructive bash patterns, and suspicious upload or download-and-exec bash commands.
 - Browser responses now ship with a strict CSP and related security headers. Pair this with HTTPS or a trusted proxy/tunnel.
 - The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS` and `PI_WEB_MAX_CLIENTS_PER_SESSION` if needed.
 

@@ -17,6 +17,7 @@ export function createSessionController({
 	let role = "viewer";
 	let eventSource = null;
 	let lastCliCommand = null;
+	let shownTripwireAlertIds = new Set();
 
 	let pendingPrompt = false;
 
@@ -41,6 +42,35 @@ export function createSessionController({
 		};
 	}
 
+	function resetTripwireAlerts() {
+		shownTripwireAlertIds = new Set();
+	}
+
+	function appendTripwireAlert(alert) {
+		if (!alert || typeof alert.id !== "string") return;
+		if (shownTripwireAlertIds.has(alert.id)) return;
+		shownTripwireAlertIds.add(alert.id);
+
+		const severity = alert.severity === "critical" ? "critical" : "observe";
+		const category = typeof alert.category === "string" ? alert.category.replaceAll("_", " ") : "tripwire";
+		const summary = typeof alert.summary === "string" ? alert.summary : "Tripwire alert";
+		const detail = typeof alert.detail === "string" && alert.detail.trim() ? ` ${alert.detail.trim()}` : "";
+		chatView.appendNotice(`[tripwire ${severity}][${category}] ${summary}${detail}`, severity === "critical" ? "error" : "info");
+	}
+
+	async function loadTripwireAlerts(sessionId) {
+		if (!sessionId || sessionId === "replay") return;
+		try {
+			const snapshot = await api.getJson(`/api/sessions/${encodeURIComponent(sessionId)}/tripwire-alerts`);
+			const unreadAlerts = Array.isArray(snapshot?.unreadAlerts) ? snapshot.unreadAlerts : [];
+			for (const alert of unreadAlerts) {
+				appendTripwireAlert(alert);
+			}
+		} catch (error) {
+			console.error("Failed to sync tripwire alerts", error);
+		}
+	}
+
 	function handleSse(event) {
 		if (!event || typeof event.type !== "string") return;
 
@@ -54,6 +84,9 @@ export function createSessionController({
 			chatView.clear();
 			chatView.renderHistory(activeState.messages || []);
 			onStateChange();
+			if (activeSessionId) {
+				void loadTripwireAlerts(activeSessionId);
+			}
 			chatView.scrollToBottom();
 			return;
 		}
@@ -82,10 +115,16 @@ export function createSessionController({
 			activeState = null;
 			controllerClientId = null;
 			role = "viewer";
+			resetTripwireAlerts();
 
 			chatView.renderReleased({ cliCommand: cmd });
 			onStateChange();
 			onSidebarRefresh();
+			return;
+		}
+
+		if (event.type === "tripwire_alert") {
+			appendTripwireAlert(event.alert);
 			return;
 		}
 
@@ -166,6 +205,7 @@ export function createSessionController({
 		activeState = null;
 		controllerClientId = null;
 		role = "viewer";
+		resetTripwireAlerts();
 
 		chatView.clear();
 		chatView.appendNotice(`Loading replay: ${safeName}`);
@@ -209,6 +249,7 @@ export function createSessionController({
 	}
 
 	async function selectSession(session) {
+		resetTripwireAlerts();
 		if (session.isRunning) {
 			activeSessionId = session.id;
 			connectEvents(activeSessionId);
@@ -275,6 +316,7 @@ export function createSessionController({
 	}
 
 	function openSessionId(sessionId) {
+		resetTripwireAlerts();
 		activeSessionId = sessionId;
 		connectEvents(activeSessionId);
 		onStateChange();

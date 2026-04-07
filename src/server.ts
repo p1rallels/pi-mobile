@@ -16,6 +16,7 @@ import type {
 	ApiReleaseRequest,
 	ApiSessionState,
 	ApiTakeoverRequest,
+	ApiTripwireAlertsResponse,
 	SseEvent,
 } from "./types.ts";
 
@@ -968,6 +969,17 @@ Bun.serve({
 			try {
 				const state: ApiSessionState = runtime.getSessionState(sessionId);
 				return json(state, 200);
+			} catch {
+				return errorResponse("Session not running", 404);
+			}
+		}
+
+		if (req.method === "GET" && action === "tripwire-alerts") {
+			const client = resolveClientCookie(req);
+			if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
+			try {
+				const body: ApiTripwireAlertsResponse = await runtime.getTripwireAlerts(sessionId, client.clientId);
+				return json(body, 200);
 			} catch {
 				return errorResponse("Session not running", 404);
 			}

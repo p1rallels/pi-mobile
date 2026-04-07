@@ -109,6 +109,31 @@ export interface ApiSessionPatch {
 	contextUsage?: ApiSessionState["contextUsage"];
 }
 
+export type ApiTripwireSeverity = "observe" | "critical";
+
+export type ApiTripwireCategory = "repo_escape" | "secret_access" | "persistence" | "destructive" | "network" | "runaway";
+
+export type ApiTripwireResponse = "logged" | "abort_requested";
+
+export interface ApiTripwireAlert {
+	id: string;
+	sessionId: string;
+	created: string;
+	severity: ApiTripwireSeverity;
+	category: ApiTripwireCategory;
+	summary: string;
+	detail?: string;
+	toolName?: string;
+	toolCallId?: string;
+	response: ApiTripwireResponse;
+}
+
+export interface ApiTripwireAlertsResponse {
+	alerts: ApiTripwireAlert[];
+	unreadAlerts: ApiTripwireAlert[];
+	unreadCount: number;
+}
+
 export interface ApiOkResponse {
 	ok: true;
 }
@@ -130,6 +155,7 @@ export type SseEvent =
 			role: ClientRole;
 	  }
 	| { type: "agent_event"; event: AgentSessionEvent }
+	| { type: "tripwire_alert"; alert: ApiTripwireAlert }
 	| { type: "state_patch"; patch: ApiSessionPatch }
 	| { type: "controller_changed"; controllerClientId: string | null }
 	| { type: "released"; byClientId: string };

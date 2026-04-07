@@ -12,6 +12,7 @@ import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { TripwireService } from "./tripwire.ts";
 import type {
 	ApiCommandRequest,
 	ApiCreateSessionRequest,
@@ -20,6 +21,7 @@ import type {
 	ApiSessionSummary,
 	ClientRole,
 	ApiSessionPatch,
+	ApiTripwireAlertsResponse,
 	SseEvent,
 } from "./types.ts";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
@@ -39,6 +41,8 @@ interface RunningSession {
 	controllerClientId: string | null;
 	clients: Map<string, SessionClient>;
 	unsubscribe: (() => void) | null;
+	tripwireAllowedRoots: Set<string>;
+	tripwireAbortRequested: boolean;
 }
 
 interface PiWebRuntimeOptions {
@@ -173,6 +177,8 @@ export class PiWebRuntime {
 	private authStorage = AuthStorage.create();
 	private modelRegistry = ModelRegistry.create(this.authStorage);
 	private repoStorePath = join(homedir(), ".pi", "agent", "pi-web", "repos.json");
+	private internalStateRoot = join(homedir(), ".pi", "agent");
+	private tripwireService = new TripwireService();
 	private maxRunningSessions: number;
 	private maxClientsPerSession: number;
 
@@ -233,6 +239,10 @@ export class PiWebRuntime {
 		const repos = new Set(await this.loadReposFromDisk());
 		repos.add(cwd);
 		await this.saveReposToDisk([...repos].sort((a, b) => a.localeCompare(b)));
+
+		for (const runtime of this.runningById.values()) {
+			runtime.tripwireAllowedRoots.add(cwd);
+		}
 	}
 
 	listActiveSessions(): ApiSessionSummary[] {
@@ -367,6 +377,14 @@ export class PiWebRuntime {
 		return buildState(runtime.session, runtime.cwd);
 	}
 
+	async getTripwireAlerts(sessionId: string, clientId: string): Promise<ApiTripwireAlertsResponse> {
+		const runtime = this.runningById.get(sessionId);
+		if (!runtime) {
+			throw new Error("session_not_running");
+		}
+		return this.tripwireService.consumeAlerts(sessionId, clientId);
+	}
+
 	getSessionRole(sessionId: string, clientId: string): { role: ClientRole; controllerClientId: string | null } {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
@@ -417,14 +435,16 @@ export class PiWebRuntime {
 			const sessionManager = SessionManager.open(path);
 			const cwd = sessionManager.getCwd();
 			const session = await this.createRuntimeSession(cwd, sessionManager);
-			const runtime = this.registerSession(session, cwd, clientId);
+			const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
+			const runtime = this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
 			return { sessionId: runtime.session.sessionId };
 		}
 
 		const cwd = await this.assertAllowedCwd(request.cwd ?? process.cwd());
 		const sessionManager = SessionManager.create(cwd);
 		const session = await this.createRuntimeSession(cwd, sessionManager);
-		const runtime = this.registerSession(session, cwd, clientId);
+		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
+		const runtime = this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
 		return { sessionId: runtime.session.sessionId };
 	}
 
@@ -557,9 +577,23 @@ export class PiWebRuntime {
 		if (runtime.sessionFile) {
 			this.runningByPath.delete(runtime.sessionFile);
 		}
+		this.tripwireService.forgetSession(sessionId);
 	}
 
-	private registerSession(session: AgentSession, cwd: string, controllerClientId: string): RunningSession {
+	private async buildTripwireAllowedRoots(cwd: string): Promise<Set<string>> {
+		const roots = new Set<string>();
+		roots.add(resolve(cwd));
+		roots.add(resolve(process.cwd()));
+		roots.add(resolve(this.internalStateRoot));
+
+		for (const repo of await this.loadReposFromDisk()) {
+			roots.add(resolve(repo));
+		}
+
+		return roots;
+	}
+
+	private registerSession(session: AgentSession, cwd: string, controllerClientId: string, tripwireAllowedRoots: Set<string>): RunningSession {
 		const sessionId = session.sessionId;
 		const sessionFile = session.sessionFile ? resolve(session.sessionFile) : null;
 
@@ -584,13 +618,38 @@ export class PiWebRuntime {
 			controllerClientId,
 			clients: new Map(),
 			unsubscribe: null,
+			tripwireAllowedRoots,
+			tripwireAbortRequested: false,
 		};
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			runtime.modifiedAtMs = Date.now();
+			const inspection = this.tripwireService.inspectEvent(
+				{
+					sessionId,
+					cwd: runtime.cwd,
+					allowedRoots: runtime.tripwireAllowedRoots,
+				},
+				event,
+			);
 			this.broadcast(sessionId, { type: "agent_event", event });
 
+			if (inspection.alerts.length > 0) {
+				for (const alert of inspection.alerts) {
+					this.broadcast(sessionId, { type: "tripwire_alert", alert: this.tripwireService.toApiAlert(alert) });
+				}
+				void this.tripwireService.recordAlerts(sessionId, inspection.alerts);
+
+				if (inspection.shouldAbort && !runtime.tripwireAbortRequested) {
+					runtime.tripwireAbortRequested = true;
+					void runtime.session.abort().catch(() => {
+						// best effort
+					});
+				}
+			}
+
 			if (event.type === "agent_end" || event.type === "auto_compaction_end") {
+				runtime.tripwireAbortRequested = false;
 				this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session) });
 			}
 		});
