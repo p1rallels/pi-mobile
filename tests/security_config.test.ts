@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCaddyfile, writeCaddyfile } from "../src/caddy-config.ts";
-import { emptyDeviceRegistry, isDeviceAllowed, normalizeFingerprint, type DeviceRecord } from "../src/device-registry.ts";
+import { emptyDeviceRegistry, expiredDevices, expiringDevices, isDeviceAllowed, normalizeFingerprint, type DeviceRecord } from "../src/device-registry.ts";
 import { runDoctor } from "../src/doctor.ts";
 import { createSecureConfig, ensurePiWebDirs, resolvePiWebPaths } from "../src/security-config.ts";
 
@@ -53,6 +53,20 @@ describe("security config", () => {
 		expect(isDeviceAllowed(registry, "00".repeat(32)).reason).toBe("unknown_device");
 		expect(isDeviceAllowed({ ...registry, devices: [device({ revokedAt: "2026-02-01T00:00:00.000Z" })] }, fingerprint).reason).toBe("revoked");
 		expect(isDeviceAllowed(registry, fingerprint, new Date("2028-01-01T00:00:00.000Z")).reason).toBe("expired");
+	});
+
+	test("classifies expired and expiring devices", () => {
+		const registry = {
+			...emptyDeviceRegistry(),
+			devices: [
+				device({ name: "expired", expiresAt: "2026-01-01T00:00:00.000Z" }),
+				device({ name: "soon", expiresAt: "2026-06-15T00:00:00.000Z" }),
+				device({ name: "later", expiresAt: "2026-12-01T00:00:00.000Z" }),
+			],
+		};
+		const now = new Date("2026-06-01T00:00:00.000Z");
+		expect(expiredDevices(registry, now).map((entry) => entry.name)).toEqual(["expired"]);
+		expect(expiringDevices(registry, 30, now).map((entry) => entry.name)).toEqual(["soon"]);
 	});
 
 	test("creates secure config and caddy mtls proxy config", () => {

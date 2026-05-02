@@ -172,8 +172,10 @@ async function commandDeviceList(): Promise<void> {
 		return;
 	}
 	for (const device of registry.devices) {
-		const status = device.revokedAt ? `revoked ${device.revokedAt}` : Date.parse(device.expiresAt) <= Date.now() ? "expired" : "active";
-		console.log(`${device.name}\t${device.platform}\t${status}\t${device.fingerprintSha256}`);
+		const expiresAtMs = Date.parse(device.expiresAt);
+		const expiresSoon = Number.isFinite(expiresAtMs) && expiresAtMs > Date.now() && expiresAtMs <= Date.now() + 30 * 24 * 60 * 60 * 1000;
+		const status = device.revokedAt ? `revoked ${device.revokedAt}` : expiresAtMs <= Date.now() ? "expired" : expiresSoon ? "expiring" : "active";
+		console.log(`${device.name}\t${device.platform}\t${status}\texpires=${device.expiresAt}\t${device.fingerprintSha256}`);
 	}
 }
 

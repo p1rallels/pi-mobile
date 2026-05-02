@@ -91,7 +91,7 @@ Avoid embedded in-app browsers for mTLS.
 
 ## Device management
 
-List devices:
+List devices and expiry status:
 
 ```bash
 bun run cli -- device list
@@ -188,4 +188,4 @@ Run:
 bun run cli -- doctor
 ```
 
-Doctor checks config presence, Caddy, mTLS files, Tailscale, key permissions, tracked secret-looking files, and active device registrations.
+Doctor checks config presence, Caddy, mTLS files, Tailscale, key permissions, tracked secret-looking files, active device registrations, and expired/soon-expiring device certificates.

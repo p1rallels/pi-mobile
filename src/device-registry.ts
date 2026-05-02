@@ -102,6 +102,19 @@ export function activeDevices(registry: DeviceRegistry, now = new Date()): Devic
 	return registry.devices.filter((device) => isDeviceAllowed(registry, device.fingerprintSha256, now).allowed);
 }
 
+export function expiredDevices(registry: DeviceRegistry, now = new Date()): DeviceRecord[] {
+	return registry.devices.filter((device) => !device.revokedAt && Date.parse(device.expiresAt) <= now.getTime());
+}
+
+export function expiringDevices(registry: DeviceRegistry, days = 30, now = new Date()): DeviceRecord[] {
+	const windowMs = days * 24 * 60 * 60 * 1000;
+	return registry.devices.filter((device) => {
+		if (device.revokedAt) return false;
+		const expiresAtMs = Date.parse(device.expiresAt);
+		return Number.isFinite(expiresAtMs) && expiresAtMs > now.getTime() && expiresAtMs <= now.getTime() + windowMs;
+	});
+}
+
 export function isDeviceAllowed(registry: DeviceRegistry, rawFingerprint: string | null | undefined, now = new Date()): DeviceAuthResult {
 	const fingerprint = normalizeFingerprint(rawFingerprint);
 	if (!fingerprint) return { allowed: false, reason: "missing_fingerprint", device: null };

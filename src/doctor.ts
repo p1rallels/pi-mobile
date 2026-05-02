@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { loadDeviceRegistry, activeDevices } from "./device-registry.ts";
+import { activeDevices, expiredDevices, expiringDevices, loadDeviceRegistry } from "./device-registry.ts";
 import { clientCaPaths } from "./certificates.ts";
 import { configExists, isLoopbackBindHost, type PiWebConfig, type PiWebPaths } from "./security-config.ts";
 
@@ -120,8 +120,16 @@ export async function runDoctor(paths: PiWebPaths, config: PiWebConfig | null): 
 
 	const registry = await loadDeviceRegistry(paths.devicesPath);
 	const active = activeDevices(registry);
+	const expired = expiredDevices(registry);
+	const expiring = expiringDevices(registry, 30);
 	if (config.secureMode) {
 		checks.push(active.length > 0 ? check("devices.active", "ok", `${String(active.length)} active device(s) allowed`) : check("devices.active", "warn", "no active devices are allowed yet"));
+	}
+	if (expired.length > 0) {
+		checks.push(check("devices.expired", "error", `${String(expired.length)} device certificate(s) expired: ${expired.map((device) => device.name).join(", ")}`));
+	}
+	if (expiring.length > 0) {
+		checks.push(check("devices.expiring", "warn", `${String(expiring.length)} device certificate(s) expire within 30 days: ${expiring.map((device) => device.name).join(", ")}`));
 	}
 
 	return checks;
