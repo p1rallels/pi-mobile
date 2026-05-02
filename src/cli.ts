@@ -16,7 +16,7 @@ function usage(): string {
 Usage:
   pi-web start
   pi-web doctor
-  pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>] [--device <name>] [--platform <platform>]
+  pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>] [--server-cert <path>] [--server-key <path>] [--device <name>] [--platform <platform>]
   pi-web device issue <name> [--platform ios|android|macos|windows|linux|other] [--days <days>]
   pi-web device list
   pi-web device revoke <name>
@@ -98,7 +98,12 @@ async function commandSecureInit(args: ParsedArgs): Promise<void> {
 	const listenHost = flagString(args.flags, "listen-host") ?? detected.ip ?? "127.0.0.1";
 	const listenPort = flagInt(args.flags, "listen-port", 443);
 	const port = flagInt(args.flags, "port", 4317);
-	const config = createSecureConfig(paths, { domain, listenHost, listenPort, port, tailscaleRequired: Boolean(detected.ip || detected.dnsName) });
+	const serverCert = flagString(args.flags, "server-cert");
+	const serverKey = flagString(args.flags, "server-key");
+	if (Boolean(serverCert) !== Boolean(serverKey)) {
+		throw new Error("--server-cert and --server-key must be provided together.");
+	}
+	const config = createSecureConfig(paths, { domain, listenHost, listenPort, port, tailscaleRequired: Boolean(detected.ip || detected.dnsName), serverCert, serverKey });
 	await savePiWebConfig(paths, config);
 	const ca = await ensureClientCa(paths);
 	if (!(await loadDeviceRegistry(paths.devicesPath)).devices.length) {

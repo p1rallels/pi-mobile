@@ -66,10 +66,25 @@ describe("security config", () => {
 		expect(config.host).toBe("127.0.0.1");
 		expect(config.publicOrigins).toEqual(["https://pi.example.test"]);
 		const caddyfile = buildCaddyfile(config);
+		expect(caddyfile).toContain("tls internal");
 		expect(caddyfile).toContain("client_auth");
 		expect(caddyfile).toContain("mode require_and_verify");
 		expect(caddyfile).toContain("reverse_proxy 127.0.0.1:4317");
 		expect(caddyfile).toContain("X-PI-Web-Client-Cert-Fingerprint");
+	});
+
+	test("uses configured trusted server certificate in caddy config", () => {
+		const paths = resolvePiWebPaths("/private/tmp/pi-web-test");
+		const config = createSecureConfig(paths, {
+			domain: "pi.example.test",
+			listenHost: "100.64.0.1",
+			listenPort: 443,
+			serverCert: "/certs/server.crt",
+			serverKey: "/certs/server.key",
+		});
+		const caddyfile = buildCaddyfile(config);
+		expect(caddyfile).toContain('tls "/certs/server.crt" "/certs/server.key"');
+		expect(caddyfile).not.toContain("tls internal");
 	});
 
 	test("doctor fails closed when secure-mode caddyfile is missing", async () => {

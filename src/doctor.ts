@@ -90,6 +90,16 @@ export async function runDoctor(paths: PiWebPaths, config: PiWebConfig | null): 
 		if (caddyfileExists) {
 			checks.push(...(await inspectCaddyfile(config.caddy.caddyfile, config)));
 		}
+		if (config.caddy.serverCert || config.caddy.serverKey) {
+			if (!config.caddy.serverCert || !config.caddy.serverKey) {
+				checks.push(check("caddy.server.tls", "error", "server cert and server key must be configured together"));
+			} else {
+				checks.push(existsSync(config.caddy.serverCert) ? check("caddy.server.cert", "ok", `server cert found: ${config.caddy.serverCert}`) : check("caddy.server.cert", "error", `server cert missing: ${config.caddy.serverCert}`));
+				checks.push(await checkPrivateFile(config.caddy.serverKey, "caddy.server.key"));
+			}
+		} else if (config.secureMode) {
+			checks.push(check("caddy.server.tls", "warn", "caddyfile uses tls internal; mobile devices must trust Caddy's local CA or you should configure a trusted server cert"));
+		}
 		if (caddyfileExists && caddyExists) {
 			checks.push(commandOk(["caddy", "validate", "--config", config.caddy.caddyfile]) ? check("caddyfile.valid", "ok", "caddyfile validates") : check("caddyfile.valid", "error", "caddyfile validation failed"));
 		}

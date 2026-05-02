@@ -30,6 +30,8 @@ export interface PiWebConfig {
 		listenPort: number;
 		caddyfile: string;
 		clientCaCert: string;
+		serverCert: string | null;
+		serverKey: string | null;
 	};
 	tailscale: {
 		required: boolean;
@@ -96,6 +98,8 @@ export function defaultPiWebConfig(paths: PiWebPaths, input: Partial<PiWebConfig
 		listenPort: input.caddy?.listenPort ?? 8443,
 		caddyfile: input.caddy?.caddyfile ?? paths.caddyfilePath,
 		clientCaCert: input.caddy?.clientCaCert ?? join(paths.caDir, "client-ca.crt"),
+		serverCert: input.caddy?.serverCert ?? null,
+		serverKey: input.caddy?.serverKey ?? null,
 	};
 	const origin = defaultPublicOrigin({ caddy });
 	return {
@@ -150,6 +154,8 @@ export function parsePiWebConfig(raw: unknown, paths: PiWebPaths): PiWebConfig {
 			listenPort: readPort(caddyInput.listenPort, base.caddy.listenPort),
 			caddyfile: readString(caddyInput.caddyfile, base.caddy.caddyfile),
 			clientCaCert: readString(caddyInput.clientCaCert, base.caddy.clientCaCert),
+			serverCert: readNullableString(caddyInput.serverCert),
+			serverKey: readNullableString(caddyInput.serverKey),
 		},
 		tailscale: {
 			required: readBoolean(tailscaleInput.required, base.tailscale.required),
@@ -171,10 +177,12 @@ export async function savePiWebConfig(paths: PiWebPaths, config: PiWebConfig): P
 	await writePrivateJsonFile(paths.configPath, config);
 }
 
-export function createSecureConfig(paths: PiWebPaths, input: { domain?: string | null; listenHost?: string; listenPort?: number; port?: number; tailscaleRequired?: boolean }): PiWebConfig {
+export function createSecureConfig(paths: PiWebPaths, input: { domain?: string | null; listenHost?: string; listenPort?: number; port?: number; tailscaleRequired?: boolean; serverCert?: string | null; serverKey?: string | null }): PiWebConfig {
 	const listenPort = input.listenPort ?? 443;
 	const domain = input.domain && input.domain.trim() ? input.domain.trim() : null;
 	const publicOrigin = domain ? normalizeOrigin(`https://${domain}${listenPort === 443 ? "" : `:${String(listenPort)}`}`) : null;
+	const serverCert = input.serverCert && input.serverCert.trim() ? resolve(input.serverCert.trim()) : null;
+	const serverKey = input.serverKey && input.serverKey.trim() ? resolve(input.serverKey.trim()) : null;
 	return defaultPiWebConfig(paths, {
 		host: "127.0.0.1",
 		port: input.port ?? 4317,
@@ -187,6 +195,8 @@ export function createSecureConfig(paths: PiWebPaths, input: { domain?: string |
 			listenPort,
 			caddyfile: paths.caddyfilePath,
 			clientCaCert: join(paths.caDir, "client-ca.crt"),
+			serverCert,
+			serverKey,
 		},
 		tailscale: {
 			required: input.tailscaleRequired ?? true,

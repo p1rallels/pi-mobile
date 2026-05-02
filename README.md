@@ -40,6 +40,8 @@ bun run cli -- doctor
 bun run cli -- start
 ```
 
+If you have a trusted server certificate/key, pass `--server-cert` and `--server-key` during init. Otherwise generated Caddy config uses `tls internal`, which requires client devices to trust Caddy's local CA.
+
 Install the generated `.p12` on the target device. Each device should get its own certificate so it can be revoked independently.
 
 Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intentionally rejected.

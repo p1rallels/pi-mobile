@@ -131,7 +131,7 @@ commands:
 ```bash
 pi-web start
 pi-web doctor
-pi-web secure init [--device <name>]
+pi-web secure init [--device <name>] [--server-cert <path> --server-key <path>]
 pi-web device issue <name>
 pi-web device list
 pi-web device revoke <name>
@@ -193,7 +193,9 @@ rough shape:
     "listenHost": "100.x.y.z",
     "listenPort": 443,
     "domain": "pi.example.ts.net",
-    "clientCaCert": "~/.pi-web/mtls/ca/client-ca.crt"
+    "clientCaCert": "~/.pi-web/mtls/ca/client-ca.crt",
+    "serverCert": null,
+    "serverKey": null
   },
   "tailscale": {
     "required": true
@@ -254,6 +256,7 @@ face id/webAuthn: enabled for control actions
 - caddy exists and config validates
 - caddy requires mtls client auth
 - caddy reverse proxies only to localhost
+- caddy has either trusted server cert/key or warns about `tls internal`
 - tailscale is installed and connected when required
 - public origin/domain matches config
 - allowed origins are configured

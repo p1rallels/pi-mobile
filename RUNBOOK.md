@@ -27,6 +27,12 @@ Initialize config and issue the first device certificate:
 bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X --device iphone --platform ios
 ```
 
+If you already have a trusted server certificate/key, such as a Tailscale certificate, provide it so phones/tablets do not need to trust Caddy's internal CA:
+
+```bash
+bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X --server-cert .tls/your-machine.ts.net.crt --server-key .tls/your-machine.ts.net.key --device iphone --platform ios
+```
+
 Issue more certificates as needed, one per device:
 
 ```bash

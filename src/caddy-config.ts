@@ -16,10 +16,17 @@ function maybeBind(config: PiWebConfig): string {
 	return `\n\tbind ${host}`;
 }
 
+function tlsDirective(config: PiWebConfig): string {
+	if (config.caddy.serverCert && config.caddy.serverKey) {
+		return `tls ${caddyQuote(config.caddy.serverCert)} ${caddyQuote(config.caddy.serverKey)}`;
+	}
+	return "tls internal";
+}
+
 export function buildCaddyfile(config: PiWebConfig): string {
 	const target = `127.0.0.1:${String(config.port)}`;
 	return `${siteAddress(config)} {${maybeBind(config)}
-	tls internal {
+	${tlsDirective(config)} {
 		client_auth {
 			mode require_and_verify
 			trusted_ca_cert_file ${caddyQuote(config.caddy.clientCaCert)}
