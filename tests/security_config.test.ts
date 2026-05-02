@@ -2,10 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCaddyfile } from "../src/caddy-config.ts";
+import { buildCaddyfile, writeCaddyfile } from "../src/caddy-config.ts";
 import { emptyDeviceRegistry, isDeviceAllowed, normalizeFingerprint, type DeviceRecord } from "../src/device-registry.ts";
 import { runDoctor } from "../src/doctor.ts";
-import { createSecureConfig, resolvePiWebPaths } from "../src/security-config.ts";
+import { createSecureConfig, ensurePiWebDirs, resolvePiWebPaths } from "../src/security-config.ts";
 
 const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
 const normalized = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
@@ -82,5 +82,22 @@ describe("security config", () => {
 		});
 		const checks = await runDoctor(paths, config);
 		expect(checks.find((item) => item.id === "caddyfile.exists")?.level).toBe("error");
+	});
+
+	test("doctor statically verifies generated caddy mtls config", async () => {
+		const paths = resolvePiWebPaths(await tempHome());
+		await ensurePiWebDirs(paths);
+		const config = createSecureConfig(paths, {
+			domain: "pi.example.test",
+			listenHost: "127.0.0.1",
+			listenPort: 8443,
+			tailscaleRequired: false,
+		});
+		await writeCaddyfile(paths, config);
+		const checks = await runDoctor(paths, config);
+		expect(checks.find((item) => item.id === "caddy.mtls")?.level).toBe("ok");
+		expect(checks.find((item) => item.id === "caddy.mtls.mode")?.level).toBe("ok");
+		expect(checks.find((item) => item.id === "caddy.proxy.localhost")?.level).toBe("ok");
+		expect(checks.find((item) => item.id === "caddy.cert.header")?.level).toBe("ok");
 	});
 });

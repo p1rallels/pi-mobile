@@ -131,7 +131,7 @@ commands:
 ```bash
 pi-web start
 pi-web doctor
-pi-web secure init
+pi-web secure init [--device <name>]
 pi-web device issue <name>
 pi-web device list
 pi-web device revoke <name>
@@ -273,7 +273,7 @@ face id/webAuthn: enabled for control actions
 4. detect tailscale domain/ip if available
 5. set pi-web host to `127.0.0.1`
 6. create empty device registry
-7. offer to issue first device cert
+7. issue first device cert when `--device <name>` is provided
 8. run doctor
 
 ## device issue behavior

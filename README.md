@@ -32,11 +32,10 @@ Recommended remote architecture:
 trusted browser -> Tailscale -> Caddy with mTLS -> pi-web on 127.0.0.1
 ```
 
-Initialize secure mode and issue one device certificate:
+Initialize secure mode and issue the first device certificate:
 
 ```bash
-bun run cli -- secure init --domain pi.example.ts.net --listen-host 100.X.X.X
-bun run cli -- device issue phone --platform ios
+bun run cli -- secure init --domain pi.example.ts.net --listen-host 100.X.X.X --device phone --platform ios
 bun run cli -- doctor
 bun run cli -- start
 ```

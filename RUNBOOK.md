@@ -21,16 +21,15 @@ Secure-mode target:
 browser -> Tailscale -> Caddy requiring client cert -> pi-web on 127.0.0.1
 ```
 
-Initialize config:
+Initialize config and issue the first device certificate:
 
 ```bash
-bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X
+bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X --device iphone --platform ios
 ```
 
-Issue one certificate per device:
+Issue more certificates as needed, one per device:
 
 ```bash
-bun run cli -- device issue iphone --platform ios
 bun run cli -- device issue pixel --platform android
 bun run cli -- device issue laptop --platform macos
 ```

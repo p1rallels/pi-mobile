@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { loadDeviceRegistry, activeDevices } from "./device-registry.ts";
 import { clientCaPaths } from "./certificates.ts";
@@ -39,6 +39,18 @@ function modeIsPrivate(mode: number | null): boolean {
 	return mode !== null && (mode & 0o077) === 0;
 }
 
+async function inspectCaddyfile(path: string, config: PiWebConfig): Promise<DoctorCheck[]> {
+	const text = await readFile(path, "utf8").catch(() => "");
+	if (!text) return [];
+	const checks: DoctorCheck[] = [];
+	checks.push(/\bclient_auth\b/.test(text) ? check("caddy.mtls", "ok", "caddyfile has client_auth block") : check("caddy.mtls", "error", "caddyfile is missing client_auth block"));
+	checks.push(/\bmode\s+require_and_verify\b/.test(text) ? check("caddy.mtls.mode", "ok", "caddyfile requires verified client certificates") : check("caddy.mtls.mode", "error", "caddyfile does not require verified client certificates"));
+	checks.push(text.includes("trusted_ca_cert_file") ? check("caddy.mtls.ca", "ok", "caddyfile pins a trusted client CA") : check("caddy.mtls.ca", "error", "caddyfile is missing trusted_ca_cert_file"));
+	checks.push(text.includes(`reverse_proxy 127.0.0.1:${String(config.port)}`) ? check("caddy.proxy.localhost", "ok", "caddyfile proxies only to localhost pi-web") : check("caddy.proxy.localhost", "error", "caddyfile must reverse_proxy to localhost pi-web"));
+	checks.push(text.includes("X-PI-Web-Client-Cert-Fingerprint") ? check("caddy.cert.header", "ok", "caddyfile forwards client certificate fingerprint") : check("caddy.cert.header", "error", "caddyfile must forward client certificate fingerprint"));
+	return checks;
+}
+
 async function checkPrivateFile(path: string, id: string): Promise<DoctorCheck> {
 	const mode = await fileMode(path);
 	if (mode === null) return check(id, "error", `missing private file: ${path}`);
@@ -75,6 +87,9 @@ export async function runDoctor(paths: PiWebPaths, config: PiWebConfig | null): 
 		const caddyfileExists = existsSync(config.caddy.caddyfile);
 		checks.push(caddyExists ? check("caddy.exists", "ok", "caddy found") : check("caddy.exists", config.secureMode ? "error" : "warn", "caddy not found in PATH"));
 		checks.push(caddyfileExists ? check("caddyfile.exists", "ok", `caddyfile found: ${config.caddy.caddyfile}`) : check("caddyfile.exists", config.secureMode ? "error" : "warn", `caddyfile not found: ${config.caddy.caddyfile}`));
+		if (caddyfileExists) {
+			checks.push(...(await inspectCaddyfile(config.caddy.caddyfile, config)));
+		}
 		if (caddyfileExists && caddyExists) {
 			checks.push(commandOk(["caddy", "validate", "--config", config.caddy.caddyfile]) ? check("caddyfile.valid", "ok", "caddyfile validates") : check("caddyfile.valid", "error", "caddyfile validation failed"));
 		}

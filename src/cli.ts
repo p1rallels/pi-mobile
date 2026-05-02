@@ -16,7 +16,7 @@ function usage(): string {
 Usage:
   pi-web start
   pi-web doctor
-  pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>]
+  pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>] [--device <name>] [--platform <platform>]
   pi-web device issue <name> [--platform ios|android|macos|windows|linux|other] [--days <days>]
   pi-web device list
   pi-web device revoke <name>
@@ -105,11 +105,30 @@ async function commandSecureInit(args: ParsedArgs): Promise<void> {
 		await saveDeviceRegistry(paths.devicesPath, emptyDeviceRegistry());
 	}
 	await writeCaddyfile(paths, config);
+	const firstDeviceName = flagString(args.flags, "device");
+	let issued: Awaited<ReturnType<typeof issueDeviceCertificate>> | null = null;
+	if (firstDeviceName) {
+		issued = await issueDeviceCertificate({
+			paths,
+			name: firstDeviceName,
+			platform: flagString(args.flags, "platform") ?? "other",
+			days: flagInt(args.flags, "days", 365),
+		});
+		await upsertDevice(paths.devicesPath, issued.device);
+	}
 	console.log(`config: ${paths.configPath}`);
 	console.log(`client ca: ${ca.certPath}${ca.created ? " (created)" : ""}`);
 	console.log(`caddyfile: ${paths.caddyfilePath}`);
 	if (config.publicOrigins.length > 0) console.log(`url: ${config.publicOrigins[0]}`);
-	console.log("next: pi-web device issue <name> --platform ios|android|macos|windows|linux");
+	if (issued) {
+		console.log(`device: ${issued.device.name}`);
+		console.log(`platform: ${issued.device.platform}`);
+		console.log(`fingerprint: ${issued.device.fingerprintSha256}`);
+		console.log(`p12: ${issued.p12Path}`);
+		console.log(`p12 password: ${issued.p12Password}`);
+	} else {
+		console.log("next: pi-web device issue <name> --platform ios|android|macos|windows|linux");
+	}
 }
 
 async function commandDoctor(): Promise<void> {
