@@ -2,9 +2,13 @@
 	"name": "pi-web",
 	"private": true,
 	"type": "module",
+	"bin": {
+		"pi-web": "./src/cli.ts"
+	},
 	"scripts": {
 		"dev": "bun --hot src/server.ts",
 		"start": "bun src/server.ts",
+		"cli": "bun src/cli.ts",
 		"test": "bun test",
 		"test:e2e": "playwright test"
 	},

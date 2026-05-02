@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { FaceIdService } from "./faceid.ts";
+import { resolvePiWebPaths } from "./security-config.ts";
 import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
 import type {
 	ApiActiveSessionsResponse,
@@ -29,6 +31,9 @@ interface ServerArgs {
 	allowedOrigins: string[];
 	maxRunningSessions: number;
 	maxClientsPerSession: number;
+	secureMode: boolean;
+	deviceRegistryPath: string;
+	clientCertHeader: string;
 }
 
 interface CookieOptions {
@@ -285,6 +290,10 @@ function parseArgs(argv: string[]): ServerArgs {
 	let port = Number.parseInt(process.env.PI_WEB_PORT?.trim() || "4317", 10);
 	let token = process.env.PI_WEB_TOKEN?.trim() || null;
 	const trustProxy = process.env.PI_WEB_TRUST_PROXY?.trim() === "1";
+	let secureMode = process.env.PI_WEB_SECURE_MODE?.trim() === "1";
+	const piWebPaths = resolvePiWebPaths();
+	const deviceRegistryPath = process.env.PI_WEB_DEVICE_REGISTRY?.trim() || piWebPaths.devicesPath;
+	const clientCertHeader = process.env.PI_WEB_CLIENT_CERT_HEADER?.trim() || "x-pi-web-client-cert-fingerprint";
 	const maxRunningSessions = parsePositiveInt(process.env.PI_WEB_MAX_RUNNING_SESSIONS, 24, "PI_WEB_MAX_RUNNING_SESSIONS");
 	const maxClientsPerSession = parsePositiveInt(process.env.PI_WEB_MAX_CLIENTS_PER_SESSION, 8, "PI_WEB_MAX_CLIENTS_PER_SESSION");
 
@@ -296,6 +305,8 @@ function parseArgs(argv: string[]): ServerArgs {
 			port = Number.parseInt(args[++i] ?? "", 10);
 		} else if (arg === "--token" && i + 1 < args.length) {
 			token = args[++i] ?? null;
+		} else if (arg === "--secure-mode") {
+			secureMode = true;
 		} else if (arg === "--help" || arg === "-h") {
 			console.log(`pi-web
 
@@ -311,6 +322,9 @@ Env:
   PI_WEB_TRUST_PROXY=1
   PI_WEB_MAX_RUNNING_SESSIONS
   PI_WEB_MAX_CLIENTS_PER_SESSION
+  PI_WEB_SECURE_MODE=1
+  PI_WEB_DEVICE_REGISTRY
+  PI_WEB_CLIENT_CERT_HEADER
 `);
 			process.exit(0);
 		}
@@ -318,6 +332,9 @@ Env:
 
 	if (!Number.isFinite(port) || port <= 0 || port > 65535) {
 		throw new Error(`Invalid port: ${String(port)}`);
+	}
+	if (secureMode && !isLoopbackHost(host)) {
+		throw new Error("Secure mode requires pi-web to bind to localhost/127.0.0.1 behind a trusted local mTLS proxy.");
 	}
 	if (isAnyAddressHost(host)) {
 		throw new Error(
@@ -343,7 +360,7 @@ Env:
 	];
 	const allowedOrigins = deriveAllowedOrigins(host, port, scheme, extraOrigins);
 
-	return { host, port, token, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession };
+	return { host, port, token, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession, secureMode, deviceRegistryPath, clientCertHeader };
 }
 
 function resolveBearerToken(req: Request): string | null {
@@ -704,6 +721,9 @@ const {
 	allowedOrigins,
 	maxRunningSessions,
 	maxClientsPerSession,
+	secureMode,
+	deviceRegistryPath,
+	clientCertHeader,
 } = parseArgs(process.argv);
 const tokenEnabled = typeof token === "string" && token.length > 0;
 const replayEnabled = process.env.PI_WEB_REPLAY?.trim() === "1";
@@ -744,12 +764,21 @@ Bun.serve({
 		const url = new URL(req.url);
 		const secure = isSecureRequest(req, url, trustProxy);
 		const requestProtocol = secure ? "https:" : url.protocol;
+		const directAddress = server.requestIP(req)?.address;
 		const requesterId = resolveRequesterId(req, server);
 		const trustError = ensureTrustedRequest(req, url, requestProtocol);
 		if (trustError) return trustError;
 
 		if (url.pathname === "/health") {
 			return json({ ok: true }, 200);
+		}
+
+		if (secureMode) {
+			const deviceAuth = await verifyClientCertificateRequest(req, directAddress, {
+				registryPath: deviceRegistryPath,
+				headerName: clientCertHeader,
+			});
+			if (!deviceAuth.ok) return errorResponse(deviceAuth.message, deviceAuth.status);
 		}
 
 		const authError = ensureApiAuth(req, url);
@@ -1107,6 +1136,10 @@ if (trustProxy) {
 console.log(`Response security headers enabled${enableHsts ? " (including HSTS)." : "."}`);
 console.log(`Face ID remote session window: ${String(Math.floor(FACEID_TTL_MS / 60000))}m total, ${String(Math.floor(FACEID_FRESH_TTL_MS / 60000))}m freshness for control actions.`);
 console.log(`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session.`);
+if (secureMode) {
+	console.log(`Secure mode enabled: client certificate fingerprints must be allowed in ${deviceRegistryPath}.`);
+	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
+}
 console.log("SDK extension auto-loading is disabled.");
 if (tokenEnabled) {
 	console.log("Browser token bootstrap enabled. Open the app with ?token=YOUR_TOKEN once to establish a secure session cookie.");

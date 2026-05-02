@@ -11,6 +11,13 @@ bun.lockb
 # tls certs
 .tls/
 
+# generated security material
+.pi-web/
+*.key
+*.pem
+*.p12
+*.pfx
+
 # marbles task tracker
 .marbles/
 
