@@ -25,7 +25,11 @@ function tlsDirective(config: PiWebConfig): string {
 
 export function buildCaddyfile(config: PiWebConfig): string {
 	const target = `127.0.0.1:${String(config.port)}`;
-	return `${siteAddress(config)} {${maybeBind(config)}
+	return `{
+	auto_https disable_redirects
+}
+
+${siteAddress(config)} {${maybeBind(config)}
 	${tlsDirective(config)} {
 		client_auth {
 			mode require_and_verify

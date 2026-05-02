@@ -80,6 +80,7 @@ describe("security config", () => {
 		expect(config.host).toBe("127.0.0.1");
 		expect(config.publicOrigins).toEqual(["https://pi.example.test"]);
 		const caddyfile = buildCaddyfile(config);
+		expect(caddyfile).toContain("auto_https disable_redirects");
 		expect(caddyfile).toContain("tls internal");
 		expect(caddyfile).toContain("client_auth");
 		expect(caddyfile).toContain("mode require_and_verify");
