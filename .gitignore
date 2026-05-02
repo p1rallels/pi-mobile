@@ -17,6 +17,7 @@ bun.lockb
 *.pem
 *.p12
 *.pfx
+*.pass
 
 # marbles task tracker
 .marbles/

@@ -130,7 +130,7 @@ async function commandSecureInit(args: ParsedArgs): Promise<void> {
 		console.log(`platform: ${issued.device.platform}`);
 		console.log(`fingerprint: ${issued.device.fingerprintSha256}`);
 		console.log(`p12: ${issued.p12Path}`);
-		console.log(`p12 password: ${issued.p12Password}`);
+		console.log(`p12 password file: ${issued.p12PasswordPath}`);
 	} else {
 		console.log("next: pi-web device issue <name> --platform ios|android|macos|windows|linux");
 	}
@@ -160,7 +160,7 @@ async function commandDeviceIssue(args: ParsedArgs): Promise<void> {
 	console.log(`platform: ${issued.device.platform}`);
 	console.log(`fingerprint: ${issued.device.fingerprintSha256}`);
 	console.log(`p12: ${issued.p12Path}`);
-	console.log(`p12 password: ${issued.p12Password}`);
+	console.log(`p12 password file: ${issued.p12PasswordPath}`);
 	console.log("install the .p12 on the target device, then remove temporary transfer copies.");
 }
 

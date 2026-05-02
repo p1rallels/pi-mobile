@@ -16,7 +16,7 @@ export interface IssuedDeviceCertificate {
 	keyPath: string;
 	certPath: string;
 	p12Path: string;
-	p12Password: string;
+	p12PasswordPath: string;
 }
 
 function decodeBytes(bytes: Uint8Array): string {
@@ -115,10 +115,11 @@ export async function issueDeviceCertificate(input: {
 	const csrPath = join(input.paths.devicesDir, `${name}.csr`);
 	const certPath = join(input.paths.devicesDir, `${name}.crt`);
 	const p12Path = join(input.paths.devicesDir, `${name}.p12`);
+	const p12PasswordPath = join(input.paths.devicesDir, `${name}.p12.pass`);
 	const extPath = join(input.paths.devicesDir, `${name}.client.ext`);
 	const passPath = join(input.paths.devicesDir, `${name}.${process.pid}.${Date.now()}.pass`);
 
-	for (const path of [keyPath, csrPath, certPath, p12Path]) {
+	for (const path of [keyPath, csrPath, certPath, p12Path, p12PasswordPath]) {
 		if (existsSync(path)) throw new Error(`Device certificate file already exists: ${path}`);
 	}
 
@@ -150,6 +151,8 @@ export async function issueDeviceCertificate(input: {
 		await chmod(certPath, 0o644).catch(() => undefined);
 		runOpenSsl(["pkcs12", "-export", "-inkey", keyPath, "-in", certPath, "-certfile", ca.certPath, "-out", p12Path, "-name", `pi-web ${name}`, "-passout", `file:${passPath}`]);
 		await chmod(p12Path, 0o600).catch(() => undefined);
+		await writeFile(p12PasswordPath, `${p12Password}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		await chmod(p12PasswordPath, 0o600).catch(() => undefined);
 	} finally {
 		await rm(passPath, { force: true }).catch(() => undefined);
 		await rm(extPath, { force: true }).catch(() => undefined);
@@ -170,5 +173,5 @@ export async function issueDeviceCertificate(input: {
 		expiresAt: addDays(now, days).toISOString(),
 		revokedAt: null,
 	};
-	return { device, keyPath, certPath, p12Path, p12Password };
+	return { device, keyPath, certPath, p12Path, p12PasswordPath };
 }

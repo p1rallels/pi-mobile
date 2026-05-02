@@ -40,7 +40,7 @@ bun run cli -- device issue pixel --platform android
 bun run cli -- device issue laptop --platform macos
 ```
 
-Install the generated `.p12` on the target device, then remove temporary transfer copies. Keep the `.p12` password somewhere safe.
+Install the generated `.p12` on the target device, then remove temporary transfer copies. The CLI writes the `.p12` password to a private `.p12.pass` file next to the bundle; keep it somewhere safe and do not commit it.
 
 Start secure mode:
 
