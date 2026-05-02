@@ -1,7 +1,6 @@
-import { bootstrapAuthSession, createApi } from "./core/api.js";
+import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
-import { clearBootstrapToken, readBootstrapToken } from "./core/storage.js";
 import { createSessionController } from "./session/controller.js";
 import { createMenu } from "./ui/menu.js";
 import { createSidebar } from "./ui/sidebar.js";
@@ -70,12 +69,6 @@ function showFatalError(error) {
 
 let clientId;
 try {
-	const bootstrapToken = readBootstrapToken();
-	clearBootstrapToken();
-	if (bootstrapToken) {
-		await bootstrapAuthSession(bootstrapToken);
-	}
-
 	const clientSession = await api.postJson("/api/client", {});
 	if (!clientSession || typeof clientSession.clientId !== "string" || clientSession.clientId.length === 0) {
 		throw new Error("Failed to establish browser session.");

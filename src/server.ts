@@ -25,7 +25,6 @@ import type {
 interface ServerArgs {
 	host: string;
 	port: number;
-	token: string | null;
 	trustProxy: boolean;
 	tls: { certFile: string; keyFile: string } | null;
 	allowedOrigins: string[];
@@ -54,11 +53,9 @@ interface RateLimitResult {
 	retryAfterSeconds: number;
 }
 
-const AUTH_COOKIE = "pi_web_auth";
 const CLIENT_COOKIE = "pi_web_client";
 const FACEID_COOKIE = "pi_web_faceid";
 
-const AUTH_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const CLIENT_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const FACEID_TTL_MS = 1000 * 60 * 60 * 4;
 const FACEID_FRESH_TTL_MS = 1000 * 60 * 10;
@@ -288,7 +285,9 @@ function parseArgs(argv: string[]): ServerArgs {
 	const args = argv.slice(2);
 	let host = process.env.PI_WEB_HOST?.trim() || "localhost";
 	let port = Number.parseInt(process.env.PI_WEB_PORT?.trim() || "4317", 10);
-	let token = process.env.PI_WEB_TOKEN?.trim() || null;
+	if (process.env.PI_WEB_TOKEN?.trim()) {
+		throw new Error("PI_WEB_TOKEN has been removed. Use secure mode with mTLS device certificates instead.");
+	}
 	const trustProxy = process.env.PI_WEB_TRUST_PROXY?.trim() === "1";
 	let secureMode = process.env.PI_WEB_SECURE_MODE?.trim() === "1";
 	const piWebPaths = resolvePiWebPaths();
@@ -303,20 +302,19 @@ function parseArgs(argv: string[]): ServerArgs {
 			host = args[++i];
 		} else if (arg === "--port" && i + 1 < args.length) {
 			port = Number.parseInt(args[++i] ?? "", 10);
-		} else if (arg === "--token" && i + 1 < args.length) {
-			token = args[++i] ?? null;
+		} else if (arg === "--token") {
+			throw new Error("--token has been removed. Use secure mode with mTLS device certificates instead.");
 		} else if (arg === "--secure-mode") {
 			secureMode = true;
 		} else if (arg === "--help" || arg === "-h") {
 			console.log(`pi-web
 
 Usage:
-  bun run dev [--host <host>] [--port <port>] [--token <token>]
+  bun run dev [--host <host>] [--port <port>] [--secure-mode]
 
 Env:
   PI_WEB_HOST
   PI_WEB_PORT
-  PI_WEB_TOKEN
   PI_WEB_PUBLIC_ORIGIN
   PI_WEB_ALLOWED_ORIGINS
   PI_WEB_TRUST_PROXY=1
@@ -360,16 +358,7 @@ Env:
 	];
 	const allowedOrigins = deriveAllowedOrigins(host, port, scheme, extraOrigins);
 
-	return { host, port, token, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession, secureMode, deviceRegistryPath, clientCertHeader };
-}
-
-function resolveBearerToken(req: Request): string | null {
-	const headerValue = req.headers.get("authorization");
-	if (!headerValue) return null;
-	const normalized = headerValue.trim();
-	if (!normalized.toLowerCase().startsWith("bearer ")) return null;
-	const provided = normalized.slice(7).trim();
-	return provided.length > 0 ? provided : null;
+	return { host, port, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession, secureMode, deviceRegistryPath, clientCertHeader };
 }
 
 function parseCookies(req: Request): Map<string, string> {
@@ -562,7 +551,6 @@ function isApiPath(pathname: string): boolean {
 
 function isFaceIdExemptPath(pathname: string): boolean {
 	return (
-		pathname === "/api/auth/session" ||
 		pathname === "/api/client" ||
 		pathname === "/api/faceid/status" ||
 		pathname === "/api/faceid/challenge" ||
@@ -586,10 +574,6 @@ function isFaceIdControlRoute(method: string, pathname: string): boolean {
 	return sessionRoute.action === "command" || sessionRoute.action === "takeover" || sessionRoute.action === "release";
 }
 
-function resolveAuthCookie(req: Request): { kind: "token" } | null {
-	return authSessions.get(parseCookies(req).get(AUTH_COOKIE));
-}
-
 function resolveClientCookie(req: Request): { clientId: string } | null {
 	return clientSessions.get(parseCookies(req).get(CLIENT_COOKIE));
 }
@@ -598,15 +582,10 @@ function resolveFaceIdCookie(req: Request): { rpId: string; clientId: string; ve
 	return faceIdSessions.get(parseCookies(req).get(FACEID_COOKIE));
 }
 
-function hasBootstrapAuth(req: Request): boolean {
-	if (resolveAuthCookie(req)) return true;
-	return tokenEnabled && resolveBearerToken(req) === token;
-}
-
-function canRegisterFaceId(req: Request, url: URL, credentialCount: number): boolean {
+function canRegisterFaceId(url: URL, credentialCount: number): boolean {
 	if (credentialCount !== 0) return false;
 	if (isLoopbackHost(url.hostname)) return true;
-	return hasBootstrapAuth(req);
+	return secureMode;
 }
 
 function ensureTrustedRequest(req: Request, url: URL, requestProtocol: string): Response | null {
@@ -630,13 +609,6 @@ function ensureTrustedRequest(req: Request, url: URL, requestProtocol: string): 
 	}
 
 	return null;
-}
-
-function ensureApiAuth(req: Request, url: URL): Response | null {
-	if (!tokenEnabled) return null;
-	if (!isApiPath(url.pathname)) return null;
-	if (hasBootstrapAuth(req)) return null;
-	return errorResponse("Unauthorized. Provide a valid bearer token or browser auth session.", 401);
 }
 
 function ensureFaceIdAuth(req: Request, url: URL): Response | null {
@@ -715,7 +687,6 @@ function resolveRequesterId(req: Request, server: Bun.Server): string {
 const {
 	host,
 	port,
-	token,
 	trustProxy,
 	tls,
 	allowedOrigins,
@@ -725,14 +696,12 @@ const {
 	deviceRegistryPath,
 	clientCertHeader,
 } = parseArgs(process.argv);
-const tokenEnabled = typeof token === "string" && token.length > 0;
 const replayEnabled = process.env.PI_WEB_REPLAY?.trim() === "1";
 const enableHsts = !isLoopbackHost(host) && (Boolean(tls) || trustProxy);
 const allowedOriginsSet = new Set(allowedOrigins);
 const allowedHostPorts = collectAllowedHostPorts(allowedOrigins);
 const allowedHostNames = collectAllowedHostNames(allowedOrigins);
 
-const authBootstrapLimiter = createRateLimiter(60_000, 8);
 const clientSessionLimiter = createRateLimiter(60_000, 20);
 const repoMutationLimiter = createRateLimiter(60_000, 12);
 const sessionCreateLimiter = createRateLimiter(60_000, 12);
@@ -742,12 +711,11 @@ const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
 
 const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession });
 const faceId = new FaceIdService();
-const authSessions = createSessionStore<{ kind: "token" }>();
 const clientSessions = createSessionStore<{ clientId: string }>();
 const faceIdSessions = createSessionStore<{ rpId: string; clientId: string; verifiedAt: number }>();
 
-if (!isLoopbackHost(host) && !isTailnetHost(host) && !tokenEnabled) {
-	throw new Error(`Missing token. Provide --token <token> or set PI_WEB_TOKEN when binding to non-loopback host (${host}).`);
+if (!isLoopbackHost(host) && !isTailnetHost(host)) {
+	throw new Error(`Non-loopback binding is only allowed on Tailscale addresses. Use secure mode behind a local mTLS proxy for other exposure patterns (${host}).`);
 }
 
 const publicDir = join(import.meta.dir, "..", "public");
@@ -781,8 +749,6 @@ Bun.serve({
 			if (!deviceAuth.ok) return errorResponse(deviceAuth.message, deviceAuth.status);
 		}
 
-		const authError = ensureApiAuth(req, url);
-		if (authError) return authError;
 		const faceIdError = ensureFaceIdAuth(req, url);
 		if (faceIdError) return faceIdError;
 
@@ -802,26 +768,6 @@ Bun.serve({
 		if (req.method === "GET" && !isApiPath(url.pathname)) {
 			const filePath = resolvePublicFile(url);
 			if (filePath) return serveStatic(filePath);
-		}
-
-		if (req.method === "POST" && url.pathname === "/api/auth/session") {
-			const limited = authBootstrapLimiter.check(`auth:${requesterId}`);
-			if (limited) return rateLimitResponse(limited);
-			if (!tokenEnabled) return ok();
-			if (resolveAuthCookie(req)) return ok();
-			if (resolveBearerToken(req) !== token) {
-				return errorResponse("Unauthorized. Provide a valid bearer token.", 401);
-			}
-			const sessionToken = authSessions.create({ kind: "token" }, AUTH_TTL_MS);
-			return createCookieResponse(
-				{ ok: true },
-				200,
-				buildSetCookie(AUTH_COOKIE, sessionToken, {
-					maxAge: AUTH_TTL_MS / 1000,
-					httpOnly: true,
-					secure,
-				}),
-			);
 		}
 
 		if (req.method === "POST" && url.pathname === "/api/client") {
@@ -880,7 +826,7 @@ Bun.serve({
 				const status = await faceId.status(url.hostname);
 				const body = {
 					...status,
-					canRegister: canRegisterFaceId(req, url, status.credentialCount),
+					canRegister: canRegisterFaceId(url, status.credentialCount),
 					freshForSeconds: Math.floor(FACEID_FRESH_TTL_MS / 1000),
 					sessionForSeconds: Math.floor(FACEID_TTL_MS / 1000),
 				};
@@ -922,9 +868,9 @@ Bun.serve({
 				}
 				if (kind === "register") {
 					const status = await faceId.status(url.hostname);
-					if (!canRegisterFaceId(req, url, status.credentialCount)) {
+					if (!canRegisterFaceId(url, status.credentialCount)) {
 						return errorResponse(
-							"First remote Face ID enrollment requires a trusted app bootstrap. Temporarily set PI_WEB_TOKEN and open the app with ?token=..., or enroll from a trusted local browser.",
+							"First remote Face ID enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.",
 							403,
 						);
 					}
@@ -1141,10 +1087,7 @@ if (secureMode) {
 	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
 }
 console.log("SDK extension auto-loading is disabled.");
-if (tokenEnabled) {
-	console.log("Browser token bootstrap enabled. Open the app with ?token=YOUR_TOKEN once to establish a secure session cookie.");
-	console.log("Authorization: Bearer YOUR_TOKEN is still accepted for token-gated routes, but remote control actions also require Face ID.");
-} else if (isTailnetHost(host)) {
-	console.log("Tailscale IP detected: app token auth disabled; rely on tailnet ACLs and Face ID on non-loopback hosts.");
-	console.log("First remote Face ID enrollment is blocked without a trusted bootstrap. Enroll locally or temporarily set PI_WEB_TOKEN.");
+if (isTailnetHost(host) && !secureMode) {
+	console.log("Tailscale IP detected: rely on tailnet ACLs and Face ID on non-loopback hosts.");
+	console.log("First remote Face ID enrollment requires secure mode with mTLS, or enrollment from a trusted local browser.");
 }

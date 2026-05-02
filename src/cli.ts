@@ -172,7 +172,7 @@ function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<
 		env.PI_WEB_PUBLIC_ORIGIN = config.publicOrigins[0]!;
 		env.PI_WEB_ALLOWED_ORIGINS = config.publicOrigins.slice(1).join(",");
 	}
-	if (config.secureMode) delete env.PI_WEB_TOKEN;
+	delete env.PI_WEB_TOKEN;
 	return env;
 }
 

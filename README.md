@@ -1,29 +1,21 @@
-# pi-mobile
-
-<video src="piwebdemo.mp4" autoplay loop muted playsinline width="400"></video>
+# pi-web
 
 Web UI for the `pi` coding agent, built on the `@mariozechner/pi-coding-agent` SDK.
 
-`pi-mobile` runs the agent on whatever machine hosts the server. You connect from any device (laptop, phone, tablet) to control and view sessions through a browser.
+`pi-web` runs the agent on whatever machine hosts the server. You connect from a trusted browser on a laptop, phone, or tablet to control and view sessions.
 
-- Create, resume, and stream sessions live (reasoning, tool calls, output)
-- Stream assistant output, reasoning, and tool execution live
+- Create, resume, and stream sessions live
+- Stream assistant output, reasoning, and tool execution
 - Switch model and thinking level mid-session
-- Mobile-friendly: keybar for Esc / Release / Take over / Enter, slide-out sidebar
-- **Tailscale** — bind to your tailnet IP, auto-TLS with MagicDNS, optional app token for defense in depth
-- **Cloudflare Tunnels** — expose securely with `cloudflared`, Cloudflare Access, and optional app token auth
-- **Face ID / Touch ID** — WebAuthn-backed server unlock for remote API access
-- **Tripwire alerts** — server-side detection of repo escape, secret access, persistence, destructive commands, and suspicious network patterns
+- Mobile-friendly keybar for Esc / Release / Take over / Enter
+- Secure-mode CLI for reproducible startup
+- Tailscale + Caddy mTLS for private-network and enrolled-device access
+- Face ID / Touch ID / WebAuthn freshness checks for remote control actions
+- Tripwire alerts for repo escape, secret access, persistence, destructive commands, and suspicious network patterns
 
 SDK upstream: https://github.com/badlogic/pi-mono
 
-
-https://github.com/user-attachments/assets/f21f9abf-23e5-43a1-9ef4-40ec70940e78
-
-
-Sessions are JSONL on disk, same location as the native `pi` CLI.
- 
-## Quick start
+## Quick start: local dev
 
 ```bash
 bun install
@@ -32,43 +24,54 @@ bun run dev -- --port 4317
 
 Open `http://localhost:4317`.
 
-Note: Face ID (WebAuthn) generally requires a hostname like `localhost` or a real domain; raw IPs like `127.0.0.1` may fail.
+## Secure remote setup
 
-See the Runbook (RUNBOOK.md) for Tailscale, Cloudflare, and token auth setup.
+Recommended remote architecture:
 
-When token auth is enabled, open the browser once with `?token=...`. The app exchanges that token for an HttpOnly session cookie and removes the token from the URL.
+```text
+trusted browser -> Tailscale -> Caddy with mTLS -> pi-web on 127.0.0.1
+```
 
-If you expose `pi-web` through a hostname that differs from the bind host, set `PI_WEB_PUBLIC_ORIGIN` (or `PI_WEB_ALLOWED_ORIGINS`) so the server only trusts your real browser origin.
+Initialize secure mode and issue one device certificate:
 
-If `pi-web` is behind a TLS-terminating proxy or tunnel, set `PI_WEB_TRUST_PROXY=1` so the server can safely honor forwarded protocol/client IP headers.
+```bash
+bun run cli -- secure init --domain pi.example.ts.net --listen-host 100.X.X.X
+bun run cli -- device issue phone --platform ios
+bun run cli -- doctor
+bun run cli -- start
+```
 
-Project/global SDK extensions (`.pi/extensions`, `~/.pi/agent/extensions`) are disabled in `pi-web` and are not loaded by the web wrapper.
+Install the generated `.p12` on the target device. Each device should get its own certificate so it can be revoked independently.
+
+Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intentionally rejected.
 
 ## Data locations
 
 | What | Path |
 |------|------|
+| Secure-mode config | `~/.pi-web/config.json` |
+| Device registry | `~/.pi-web/devices.json` |
+| mTLS material | `~/.pi-web/mtls/` |
 | Sessions (JSONL) | `~/.pi/agent/sessions/` |
 | Saved repos | `~/.pi/agent/pi-web/repos.json` |
-| Face ID credentials | `~/.pi/agent/pi-web/faceid-credentials.json` |
+| WebAuthn credentials | `~/.pi/agent/pi-web/faceid-credentials.json` |
 | Tripwire alerts/read state | `~/.pi/agent/pi-web/tripwire-state.json` |
 
 ## Session semantics
 
 - **Abort** stops the current run but keeps the session runtime alive. Never deletes JSONL.
-- **Release** aborts and disposes the web runtime so you can safely resume the same JSONL in the native CLI (no concurrent writers).
-- New sessions can only start from the current working directory or repos you explicitly save in the UI. Historical session files can still be resumed, but old session metadata no longer auto-whitelists new repo roots.
+- **Release** aborts and disposes the web runtime so you can safely resume the same JSONL in the native CLI.
+- New sessions can only start from the current working directory or repos you explicitly save in the UI.
 
 Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI.
 
 ## Security notes
 
-- First remote Face ID enrollment is no longer anonymous. On remote hosts, enroll from a trusted local browser or temporarily enable `PI_WEB_TOKEN` and bootstrap once with `?token=...`.
-- `pi-web` now enforces an explicit host/origin allowlist. For Cloudflare, reverse proxies, or MagicDNS hostnames that differ from the bind host, configure `PI_WEB_PUBLIC_ORIGIN` or `PI_WEB_ALLOWED_ORIGINS`.
-- Non-loopback control actions now require a recent Face ID verification, not just an old unlock cookie. The remote session stays unlocked for a limited window, but starting sessions, sending prompts, takeovers, releases, and repo changes require fresh presence.
-- Tripwires run server-side with the session runtime, so unattended work keeps running even with zero browser clients attached. Alerts persist to disk and reconnecting browsers fetch unread alerts immediately.
-- The first critical auto-abort shortlist is intentionally narrow: repo-external writes/edits, host secret access, host persistence attempts, host-destructive bash patterns, and suspicious upload or download-and-exec bash commands.
-- Browser responses now ship with a strict CSP and related security headers. Pair this with HTTPS or a trusted proxy/tunnel.
+- Secure mode requires pi-web to bind to localhost behind a trusted local mTLS proxy.
+- Direct non-loopback binding is only allowed for Tailscale addresses and is not the preferred secure-mode path.
+- First remote WebAuthn enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.
+- Non-loopback control actions require recent WebAuthn verification.
+- Browser responses ship with a strict CSP and related security headers.
 - The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS` and `PI_WEB_MAX_CLIENTS_PER_SESSION` if needed.
 
 ## Credits

@@ -12,17 +12,6 @@ async function handleJsonResponse(res) {
 	throw new Error(message);
 }
 
-export async function bootstrapAuthSession(token) {
-	const res = await fetch("/api/auth/session", {
-		method: "POST",
-		credentials: "same-origin",
-		headers: {
-			authorization: `Bearer ${token}`,
-		},
-	});
-	return handleJsonResponse(res);
-}
-
 export function createApi() {
 	function headers() {
 		return { "content-type": "application/json" };

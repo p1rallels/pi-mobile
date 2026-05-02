@@ -94,7 +94,7 @@ export function installFaceIdGuard({ api }) {
                         const status = await api.getJson("/api/faceid/status");
                         if (!status.enrolled) {
                                 if (!status.canRegister) {
-                                        throw new Error("First-time remote Face ID enrollment requires a trusted bootstrap. Temporarily enable PI_WEB_TOKEN and open the app with ?token=..., or enroll from a trusted local browser.");
+                                        throw new Error("First-time remote Face ID enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.");
                                 }
                                 setStatus("First-time setup: approve Face ID to enroll this browser.");
                                 await runRegistration();

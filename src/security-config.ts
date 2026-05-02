@@ -34,9 +34,6 @@ export interface PiWebConfig {
 	tailscale: {
 		required: boolean;
 	};
-	token: {
-		localhostOnly: boolean;
-	};
 }
 
 export function resolvePiWebHome(raw = process.env.PI_WEB_HOME): string {
@@ -111,9 +108,6 @@ export function defaultPiWebConfig(paths: PiWebPaths, input: Partial<PiWebConfig
 		tailscale: {
 			required: input.tailscale?.required ?? false,
 		},
-		token: {
-			localhostOnly: input.token?.localhostOnly ?? true,
-		},
 	};
 }
 
@@ -142,7 +136,6 @@ export function parsePiWebConfig(raw: unknown, paths: PiWebPaths): PiWebConfig {
 	const input = raw as Record<string, unknown>;
 	const caddyInput = input.caddy && typeof input.caddy === "object" && !Array.isArray(input.caddy) ? (input.caddy as Record<string, unknown>) : {};
 	const tailscaleInput = input.tailscale && typeof input.tailscale === "object" && !Array.isArray(input.tailscale) ? (input.tailscale as Record<string, unknown>) : {};
-	const tokenInput = input.token && typeof input.token === "object" && !Array.isArray(input.token) ? (input.token as Record<string, unknown>) : {};
 	const base = defaultPiWebConfig(paths);
 	return defaultPiWebConfig(paths, {
 		version: 1,
@@ -160,9 +153,6 @@ export function parsePiWebConfig(raw: unknown, paths: PiWebPaths): PiWebConfig {
 		},
 		tailscale: {
 			required: readBoolean(tailscaleInput.required, base.tailscale.required),
-		},
-		token: {
-			localhostOnly: readBoolean(tokenInput.localhostOnly, base.token.localhostOnly),
 		},
 	});
 }
@@ -200,9 +190,6 @@ export function createSecureConfig(paths: PiWebPaths, input: { domain?: string |
 		},
 		tailscale: {
 			required: input.tailscaleRequired ?? true,
-		},
-		token: {
-			localhostOnly: true,
 		},
 	});
 }

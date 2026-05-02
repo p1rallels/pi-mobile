@@ -11,7 +11,7 @@ tailscale = private network reachability
 caddy mtls = enrolled device trust
 pi-web cert allowlist = per-device authorization/revocation
 face id / webauthn = human-presence freshness for sensitive actions
-token auth = localhost dev only
+token auth = removed
 ```
 
 ## threat model
@@ -114,14 +114,13 @@ but do not treat it as the primary security boundary. mtls + allowlist should de
 
 ### token auth
 
-purpose: local dev only.
+token auth has been removed.
 
 rules:
 
-- allowed for `localhost` development
-- disabled/refused for remote secure mode
-- never required for normal phone/tablet/laptop usage
-- no `?token=` bootstrap for production secure mode
+- `PI_WEB_TOKEN`, `--token`, and `?token=` are rejected
+- localhost development requires no token
+- normal phone/tablet/laptop usage relies on mTLS device certificates plus WebAuthn freshness
 
 ## cli plan
 
@@ -198,9 +197,6 @@ rough shape:
   },
   "tailscale": {
     "required": true
-  },
-  "token": {
-    "localhostOnly": true
   }
 }
 ```
@@ -255,7 +251,6 @@ face id/webAuthn: enabled for control actions
 `pi-web doctor` should check:
 
 - pi-web is not bound to `0.0.0.0`
-- secure mode does not allow token auth remotely
 - caddy exists and config validates
 - caddy requires mtls client auth
 - caddy reverse proxies only to localhost
@@ -277,10 +272,9 @@ face id/webAuthn: enabled for control actions
 3. generate caddy config
 4. detect tailscale domain/ip if available
 5. set pi-web host to `127.0.0.1`
-6. disable remote token auth
-7. create empty device registry
-8. offer to issue first device cert
-9. run doctor
+6. create empty device registry
+7. offer to issue first device cert
+8. run doctor
 
 ## device issue behavior
 
@@ -395,7 +389,7 @@ exact placeholder names must be verified against caddy docs/version before imple
 
 - localhost only
 - no caddy required
-- token optional/local only
+- no token
 - fastest path for contributors
 
 ### recommended personal secure mode
@@ -447,11 +441,11 @@ exact placeholder names must be verified against caddy docs/version before imple
 - wire allowed origins/public url
 - add doctor checks
 
-### phase 5: token removal from secure mode
+### phase 5: token removal
 
-- make token localhost/dev only
-- remove token bootstrap from recommended setup
-- add explicit fail-closed behavior for remote token use
+- remove `PI_WEB_TOKEN`, `--token`, and browser `?token=` bootstrap
+- reject token env/flag use explicitly
+- remove token auth docs and frontend bootstrap
 
 ### phase 6: docs and guided onboarding
 

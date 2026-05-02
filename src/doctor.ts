@@ -64,7 +64,6 @@ export async function runDoctor(paths: PiWebPaths, config: PiWebConfig | null): 
 
 	if (config.secureMode) {
 		checks.push(isLoopbackBindHost(config.host) ? check("bind.loopback", "ok", `pi-web binds to ${config.host}`) : check("bind.loopback", "error", `secure mode must bind pi-web to localhost, got ${config.host}`));
-		checks.push(config.token.localhostOnly ? check("token.localhost", "ok", "token auth is localhost-only") : check("token.localhost", "error", "secure mode cannot allow remote token auth"));
 		checks.push(config.caddy.enabled ? check("caddy.enabled", "ok", "caddy is enabled") : check("caddy.enabled", "error", "secure mode requires caddy mtls front door"));
 		checks.push(config.publicOrigins.length > 0 ? check("origins.configured", "ok", `public origins: ${config.publicOrigins.join(", ")}`) : check("origins.configured", "warn", "no public origins configured"));
 	} else {
