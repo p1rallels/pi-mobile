@@ -1,10 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildCaddyfile } from "../src/caddy-config.ts";
 import { emptyDeviceRegistry, isDeviceAllowed, normalizeFingerprint, type DeviceRecord } from "../src/device-registry.ts";
+import { runDoctor } from "../src/doctor.ts";
 import { createSecureConfig, resolvePiWebPaths } from "../src/security-config.ts";
 
 const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
 const normalized = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+const tempDirs: string[] = [];
 
 function device(input: Partial<DeviceRecord> = {}): DeviceRecord {
 	return {
@@ -18,6 +23,21 @@ function device(input: Partial<DeviceRecord> = {}): DeviceRecord {
 		...input,
 	};
 }
+
+async function tempHome() {
+	const tempRoot = await realpath(tmpdir());
+	const dir = await mkdtemp(join(tempRoot, "pi-web-security-config-"));
+	tempDirs.push(dir);
+	return dir;
+}
+
+afterEach(async () => {
+	while (tempDirs.length > 0) {
+		const dir = tempDirs.pop();
+		if (!dir) continue;
+		await rm(dir, { recursive: true, force: true });
+	}
+});
 
 describe("security config", () => {
 	test("normalizes mtls certificate fingerprints", () => {
@@ -36,7 +56,7 @@ describe("security config", () => {
 	});
 
 	test("creates secure config and caddy mtls proxy config", () => {
-		const paths = resolvePiWebPaths("/tmp/pi-web-test");
+		const paths = resolvePiWebPaths("/private/tmp/pi-web-test");
 		const config = createSecureConfig(paths, {
 			domain: "pi.example.test",
 			listenHost: "100.64.0.1",
@@ -50,5 +70,17 @@ describe("security config", () => {
 		expect(caddyfile).toContain("mode require_and_verify");
 		expect(caddyfile).toContain("reverse_proxy 127.0.0.1:4317");
 		expect(caddyfile).toContain("X-PI-Web-Client-Cert-Fingerprint");
+	});
+
+	test("doctor fails closed when secure-mode caddyfile is missing", async () => {
+		const paths = resolvePiWebPaths(await tempHome());
+		const config = createSecureConfig(paths, {
+			domain: "pi.example.test",
+			listenHost: "127.0.0.1",
+			listenPort: 8443,
+			tailscaleRequired: false,
+		});
+		const checks = await runDoctor(paths, config);
+		expect(checks.find((item) => item.id === "caddyfile.exists")?.level).toBe("error");
 	});
 });

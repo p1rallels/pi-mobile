@@ -72,9 +72,11 @@ export async function runDoctor(paths: PiWebPaths, config: PiWebConfig | null): 
 	}
 
 	if (config.caddy.enabled) {
-		checks.push(commandExists("caddy") ? check("caddy.exists", "ok", "caddy found") : check("caddy.exists", "warn", "caddy not found in PATH"));
-		checks.push(existsSync(config.caddy.caddyfile) ? check("caddyfile.exists", "ok", `caddyfile found: ${config.caddy.caddyfile}`) : check("caddyfile.exists", "warn", `caddyfile not found: ${config.caddy.caddyfile}`));
-		if (existsSync(config.caddy.caddyfile) && commandExists("caddy")) {
+		const caddyExists = commandExists("caddy");
+		const caddyfileExists = existsSync(config.caddy.caddyfile);
+		checks.push(caddyExists ? check("caddy.exists", "ok", "caddy found") : check("caddy.exists", config.secureMode ? "error" : "warn", "caddy not found in PATH"));
+		checks.push(caddyfileExists ? check("caddyfile.exists", "ok", `caddyfile found: ${config.caddy.caddyfile}`) : check("caddyfile.exists", config.secureMode ? "error" : "warn", `caddyfile not found: ${config.caddy.caddyfile}`));
+		if (caddyfileExists && caddyExists) {
 			checks.push(commandOk(["caddy", "validate", "--config", config.caddy.caddyfile]) ? check("caddyfile.valid", "ok", "caddyfile validates") : check("caddyfile.valid", "error", "caddyfile validation failed"));
 		}
 	}
