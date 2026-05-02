@@ -69,7 +69,7 @@ Do not open the same session in `pi-web` and the native `pi` CLI simultaneously.
 ## Security notes
 
 - Secure mode requires pi-web to bind to localhost behind a trusted local mTLS proxy.
-- Direct non-loopback binding is only allowed for Tailscale addresses and is not the preferred secure-mode path.
+- Direct non-loopback binding is disabled by default. A Tailscale-only testing escape hatch requires `PI_WEB_ALLOW_DIRECT_TAILSCALE=1`.
 - First remote WebAuthn enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.
 - Non-loopback control actions require recent WebAuthn verification.
 - Browser responses ship with a strict CSP and related security headers.

@@ -129,10 +129,10 @@ Credentials are stored in `~/.pi/agent/pi-web/faceid-credentials.json`.
 
 ## Direct Tailscale binding
 
-Direct binding to a Tailscale IP still works for local/private testing:
+Direct binding to a Tailscale IP is an insecure escape hatch for private testing and requires explicit opt-in:
 
 ```bash
-bun run dev -- --host 100.X.X.X --port 4317
+PI_WEB_ALLOW_DIRECT_TAILSCALE=1 bun run dev -- --host 100.X.X.X --port 4317
 ```
 
 This is not the recommended secure-mode architecture because pi-web is directly reachable on the tailnet. Prefer Caddy mTLS in front of localhost-bound pi-web.
@@ -140,7 +140,7 @@ This is not the recommended secure-mode architecture because pi-web is directly 
 If you use a hostname that differs from the bind host, configure the trusted public origin:
 
 ```bash
-PI_WEB_PUBLIC_ORIGIN=https://your-machine.ts.net:4317 bun run dev -- --host 100.X.X.X --port 4317
+PI_WEB_ALLOW_DIRECT_TAILSCALE=1 PI_WEB_PUBLIC_ORIGIN=https://your-machine.ts.net:4317 bun run dev -- --host 100.X.X.X --port 4317
 ```
 
 Raw IPs may fail WebAuthn. Prefer a real hostname such as a Tailscale MagicDNS name.

@@ -23,7 +23,7 @@ protect against:
 - public internet scanning and bot traffic
 - leaked urls
 - leaked bearer tokens
-- accidental exposure on `0.0.0.0`
+- accidental non-loopback/direct exposure
 - unauthorized tailnet devices
 - stolen/reused shared credentials
 - lost phones/tablets/laptops
@@ -47,7 +47,7 @@ trusted device browser
   -> pi coding agent runtime
 ```
 
-pi-web should not be directly reachable from the lan, tailnet, or public internet. only the local reverse proxy should reach it.
+pi-web should not be directly reachable from the lan, tailnet, or public internet. only the local reverse proxy should reach it. direct tailnet binding is an explicit testing escape hatch only.
 
 ## layers
 

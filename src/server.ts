@@ -289,6 +289,7 @@ function parseArgs(argv: string[]): ServerArgs {
 		throw new Error("PI_WEB_TOKEN has been removed. Use secure mode with mTLS device certificates instead.");
 	}
 	const trustProxy = process.env.PI_WEB_TRUST_PROXY?.trim() === "1";
+	const allowDirectTailnet = process.env.PI_WEB_ALLOW_DIRECT_TAILSCALE?.trim() === "1";
 	let secureMode = process.env.PI_WEB_SECURE_MODE?.trim() === "1";
 	const piWebPaths = resolvePiWebPaths();
 	const deviceRegistryPath = process.env.PI_WEB_DEVICE_REGISTRY?.trim() || piWebPaths.devicesPath;
@@ -323,6 +324,7 @@ Env:
   PI_WEB_SECURE_MODE=1
   PI_WEB_DEVICE_REGISTRY
   PI_WEB_CLIENT_CERT_HEADER
+  PI_WEB_ALLOW_DIRECT_TAILSCALE=1 (insecure escape hatch)
 `);
 			process.exit(0);
 		}
@@ -333,6 +335,12 @@ Env:
 	}
 	if (secureMode && !isLoopbackHost(host)) {
 		throw new Error("Secure mode requires pi-web to bind to localhost/127.0.0.1 behind a trusted local mTLS proxy.");
+	}
+	if (!isLoopbackHost(host) && !allowDirectTailnet) {
+		throw new Error("Direct non-loopback binding is disabled. Run secure mode behind Caddy mTLS, or set PI_WEB_ALLOW_DIRECT_TAILSCALE=1 for private testing on a Tailscale IP.");
+	}
+	if (!isLoopbackHost(host) && allowDirectTailnet && !isTailnetHost(host)) {
+		throw new Error(`Direct non-loopback binding is only allowed on Tailscale addresses (${host}).`);
 	}
 	if (isAnyAddressHost(host)) {
 		throw new Error(
@@ -714,10 +722,6 @@ const faceId = new FaceIdService();
 const clientSessions = createSessionStore<{ clientId: string }>();
 const faceIdSessions = createSessionStore<{ rpId: string; clientId: string; verifiedAt: number }>();
 
-if (!isLoopbackHost(host) && !isTailnetHost(host)) {
-	throw new Error(`Non-loopback binding is only allowed on Tailscale addresses. Use secure mode behind a local mTLS proxy for other exposure patterns (${host}).`);
-}
-
 const publicDir = join(import.meta.dir, "..", "public");
 const publicRoot = resolve(publicDir) + sep;
 const simpleWebAuthnBrowserDir = join(import.meta.dir, "..", "node_modules", "@simplewebauthn", "browser", "esm");
@@ -1088,6 +1092,6 @@ if (secureMode) {
 }
 console.log("SDK extension auto-loading is disabled.");
 if (isTailnetHost(host) && !secureMode) {
-	console.log("Tailscale IP detected: rely on tailnet ACLs and Face ID on non-loopback hosts.");
+	console.log("Direct Tailscale binding enabled by explicit opt-in. Prefer secure mode behind Caddy mTLS.");
 	console.log("First remote Face ID enrollment requires secure mode with mTLS, or enrollment from a trusted local browser.");
 }
