@@ -260,6 +260,7 @@ function metrics(session) {
 
 function setSidebarButton(button, icon, label) {
 	button.innerHTML = `${icon}<span class="txt">${label}</span>`;
+	button.classList.remove("mock-hidden", "mock-wide");
 	button.classList.toggle("mock-positive", label.toLowerCase().includes("new") || label.toLowerCase().includes("add"));
 }
 
@@ -374,10 +375,11 @@ function renderSidebar() {
 
 	sidebarLabel.textContent = "Menu";
 	sidebarLabel.title = "";
-	setSidebarButton(btnSidebarLeft, iconPlus, "New session");
-	setSidebarButton(btnSidebarRight, iconFolder, "Repos");
-	btnSidebarLeft.onclick = newSession;
-	btnSidebarRight.onclick = () => {
+	setSidebarButton(btnSidebarLeft, iconFolder, "Repos");
+	setSidebarButton(btnSidebarRight, "", "");
+	btnSidebarLeft.classList.add("mock-wide");
+	btnSidebarRight.classList.add("mock-hidden");
+	btnSidebarLeft.onclick = () => {
 		state.mode = "repos";
 		render();
 	};
