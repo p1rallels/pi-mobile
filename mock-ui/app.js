@@ -102,6 +102,57 @@ const fakeHosts = [
 	},
 ];
 
+const generatedHost = (index) => {
+	const id = `box-${String(index).padStart(2, "0")}`;
+	const label = `box-${String(index).padStart(2, "0")}`;
+	const minutes = 12 + index * 7;
+	return {
+		id,
+		label,
+		url: `https://${id}.tailnet.example.ts.net:8443`,
+		repos: [`/srv/${id}/pi-web`, `/srv/${id}/worktree`],
+		sessions: [
+			{
+				id: `${id}-main-session`,
+				name: `${label} active task`,
+				firstMessage: `check ${label}`,
+				cwd: `/srv/${id}/pi-web`,
+				modified: new Date(now - minutes * 60_000).toISOString(),
+				isRunning: index % 3 === 0,
+				role: "viewer",
+				isStreaming: index % 3 === 0,
+				model: { provider: "anthropic", id: index % 2 === 0 ? "claude-sonnet-4" : "claude-haiku-4" },
+				thinkingLevel: index % 2 === 0 ? "medium" : "low",
+				stats: { tokens: { input: 1500 * index, output: 240 * index, cacheRead: 3200 * index, cacheWrite: index % 4 === 0 ? 800 : 0 }, cost: 0.006 * index },
+				contextUsage: { percent: Math.min(82, 10 + index * 4), contextWindow: 200000 },
+				messages: [
+					{ role: "user", text: `open ${label} and show me what is active.` },
+					{ role: "assistant", text: `${label} is fake, but this proves sessions change per selected host.` },
+				],
+			},
+			{
+				id: `${id}-notes-session`,
+				name: `${label} notes`,
+				firstMessage: `notes for ${label}`,
+				cwd: `/srv/${id}/worktree`,
+				modified: new Date(now - (minutes + 18) * 60_000).toISOString(),
+				isRunning: false,
+				role: "controller",
+				isStreaming: false,
+				model: { provider: "anthropic", id: "claude-sonnet-4" },
+				thinkingLevel: "off",
+				stats: { tokens: { input: 600 * index, output: 90 * index, cacheRead: 0, cacheWrite: 0 }, cost: 0.002 * index },
+				contextUsage: { percent: Math.min(46, 4 + index * 2), contextWindow: 200000 },
+				messages: [
+					{ role: "assistant", text: `secondary mock session for ${label}.` },
+				],
+			},
+		],
+	};
+};
+
+fakeHosts.push(...Array.from({ length: 12 }, (_, index) => generatedHost(index + 4)));
+
 const models = [
 	{ provider: "anthropic", id: "claude-haiku-4", name: "fast" },
 	{ provider: "anthropic", id: "claude-sonnet-4", name: "default" },
@@ -227,7 +278,7 @@ function closeSidebar() {
 
 function appendSectionLabel(label) {
 	const row = document.createElement("div");
-	row.className = "si";
+	row.className = "si mock-section";
 	row.style.cursor = "default";
 	const meta = document.createElement("div");
 	meta.className = "si-meta";
@@ -236,22 +287,29 @@ function appendSectionLabel(label) {
 	sessionsList.appendChild(row);
 }
 
+function createHostRow(host) {
+	const row = document.createElement("div");
+	row.className = `si${host.id === state.hostId ? " active" : ""}`;
+	row.dataset.hostId = host.id;
+	row.innerHTML = `<div class="si-name">${escapeHtml(host.label)}</div><div class="si-meta">${host.id === state.hostId ? "current host" : escapeHtml(host.url)}</div>`;
+	row.addEventListener("click", () => {
+		state.hostId = host.id;
+		state.sessionId = host.sessions[0]?.id || null;
+		state.mode = "active";
+		render();
+	});
+	return row;
+}
+
 function appendHostRows() {
-	appendSectionLabel("Hosts");
+	appendSectionLabel(`Hosts · ${fakeHosts.length}`);
+	const hostScroll = document.createElement("div");
+	hostScroll.className = "mock-host-scroll";
 	for (const host of fakeHosts) {
-		const row = document.createElement("div");
-		row.className = `si${host.id === state.hostId ? " active" : ""}`;
-		row.dataset.hostId = host.id;
-		row.innerHTML = `<div class="si-name">${escapeHtml(host.label)}</div><div class="si-meta">${host.id === state.hostId ? "current host" : escapeHtml(host.url)}</div>`;
-		row.addEventListener("click", () => {
-			state.hostId = host.id;
-			state.sessionId = host.sessions[0]?.id || null;
-			state.mode = "active";
-			render();
-		});
-		sessionsList.appendChild(row);
+		hostScroll.appendChild(createHostRow(host));
 	}
-	appendSectionLabel("Active Sessions");
+	sessionsList.appendChild(hostScroll);
+	appendSectionLabel(`Active Sessions · ${activeHost().label}`);
 }
 
 function appendSessionRows(sessions) {

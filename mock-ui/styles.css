@@ -492,3 +492,47 @@
       }
       .sidebar.open { transform: translateX(0); }
     }
+
+    .mock-section {
+      margin: 8px 2px 5px;
+      padding: 6px 8px 5px;
+      background: #15151e;
+      border: 1px solid #2a2a32;
+      border-left-color: #8abeb7;
+      border-radius: 6px;
+      cursor: default;
+    }
+
+    .mock-section:first-child {
+      margin-top: 2px;
+    }
+
+    .mock-section:hover {
+      background: #15151e;
+    }
+
+    .mock-section .si-meta {
+      color: #8abeb7;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .mock-host-scroll {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      max-height: 205px;
+      overflow-y: auto;
+      margin: 0 0 8px;
+      padding: 0 0 7px;
+      border-bottom: 1px solid #2a2a32;
+      scrollbar-width: thin;
+      scrollbar-color: #2a2a32 transparent;
+    }
+
+    .mock-host-scroll .si {
+      flex: 0 0 auto;
+      min-height: 40px;
+    }
