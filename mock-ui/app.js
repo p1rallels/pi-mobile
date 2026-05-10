@@ -260,6 +260,7 @@ function metrics(session) {
 
 function setSidebarButton(button, icon, label) {
 	button.innerHTML = `${icon}<span class="txt">${label}</span>`;
+	button.classList.toggle("mock-positive", label.toLowerCase().includes("new") || label.toLowerCase().includes("add"));
 }
 
 const iconPlus = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
@@ -278,12 +279,8 @@ function closeSidebar() {
 
 function appendSectionLabel(label) {
 	const row = document.createElement("div");
-	row.className = "si mock-section";
-	row.style.cursor = "default";
-	const meta = document.createElement("div");
-	meta.className = "si-meta";
-	meta.textContent = label;
-	row.appendChild(meta);
+	row.className = "mock-section-title";
+	row.textContent = label;
 	sessionsList.appendChild(row);
 }
 
@@ -375,7 +372,7 @@ function renderSidebar() {
 		return;
 	}
 
-	sidebarLabel.textContent = "Active Sessions";
+	sidebarLabel.textContent = "Menu";
 	sidebarLabel.title = "";
 	setSidebarButton(btnSidebarLeft, iconPlus, "New session");
 	setSidebarButton(btnSidebarRight, iconFolder, "Repos");

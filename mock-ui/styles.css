@@ -242,6 +242,15 @@
 	    }
 	    .sidebar-actions .new-btn { width: auto; flex: 1; }
 	    .new-btn:hover { background: #252530; color: #d4d4d4; }
+    .new-btn.mock-positive {
+      background: #1e2a20;
+      border-color: #2a3a2a;
+      color: #b5bd68;
+    }
+    .new-btn.mock-positive:hover {
+      background: #233624;
+      color: #d4d4d4;
+    }
     .sessions {
       flex: 1; overflow-y: auto; padding: 6px 6px;
       display: flex; flex-direction: column; gap: 1px;
@@ -493,30 +502,16 @@
       .sidebar.open { transform: translateX(0); }
     }
 
-    .mock-section {
-      margin: 8px 2px 5px;
-      padding: 6px 8px 5px;
-      background: #15151e;
-      border: 1px solid #2a2a32;
-      border-left-color: #8abeb7;
-      border-radius: 6px;
-      cursor: default;
-    }
-
-    .mock-section:first-child {
-      margin-top: 2px;
-    }
-
-    .mock-section:hover {
-      background: #15151e;
-    }
-
-    .mock-section .si-meta {
-      color: #8abeb7;
+    .mock-section-title {
+      margin: 10px 8px 5px;
+      color: #505050;
       font-size: 10px;
-      font-weight: 700;
-      letter-spacing: .1em;
+      letter-spacing: .08em;
       text-transform: uppercase;
+    }
+
+    .mock-section-title:first-child {
+      margin-top: 2px;
     }
 
     .mock-host-scroll {
