@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+	<meta name="color-scheme" content="dark" />
+	<title>pi-web mock ui</title>
+	<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+	<div class="app-shell">
+		<header class="topbar">
+			<button class="icon-button mobile-only" id="open-drawer" aria-label="open sidebar">
+				<span></span><span></span><span></span>
+			</button>
+			<div class="brand">
+				<div class="brand-mark">π</div>
+				<div>
+					<div class="brand-title">pi-web</div>
+					<div class="brand-subtitle" id="active-host-subtitle">mock ui</div>
+				</div>
+			</div>
+			<div class="top-actions">
+				<button class="pill-button" id="model-button">model <strong id="model-label">sonnet</strong></button>
+				<button class="pill-button" id="thinking-button">thinking <strong id="thinking-label">medium</strong></button>
+				<button class="pill-button role-pill" id="role-button">viewer</button>
+			</div>
+		</header>
+
+		<div class="workspace">
+			<div class="drawer-scrim" id="drawer-scrim"></div>
+			<aside class="sidebar" id="sidebar">
+				<div class="sidebar-head">
+					<div>
+						<div class="eyebrow">federation</div>
+						<h1>hosts</h1>
+					</div>
+					<button class="round-button" id="new-thread-button" aria-label="new session">+</button>
+				</div>
+				<div class="host-list" id="host-list"></div>
+				<div class="section-row">
+					<span>sessions</span>
+					<button class="text-button" id="filter-button">active</button>
+				</div>
+				<div class="thread-list" id="thread-list"></div>
+			</aside>
+
+			<main class="chat-pane">
+				<section class="session-hero">
+					<div>
+						<div class="eyebrow">selected session</div>
+						<h2 id="thread-title">—</h2>
+						<p id="thread-meta">—</p>
+					</div>
+					<div class="session-controls">
+						<button class="control-button" id="takeover-button">take over</button>
+						<button class="control-button muted" id="release-button">release</button>
+						<button class="control-button danger" id="abort-button">abort</button>
+					</div>
+				</section>
+
+				<section class="messages" id="messages"></section>
+
+				<section class="quick-actions" id="quick-actions">
+					<button data-prompt="summarize the current diff">summarize diff</button>
+					<button data-prompt="make the sidebar feel more like telegram">sidebar pass</button>
+					<button data-prompt="tighten the mobile composer spacing">mobile polish</button>
+				</section>
+
+				<footer class="composer">
+					<textarea id="composer-input" rows="1" placeholder="mock message…"></textarea>
+					<button id="send-button">send</button>
+				</footer>
+			</main>
+		</div>
+	</div>
+
+	<div class="sheet-backdrop" id="sheet-backdrop"></div>
+	<section class="sheet" id="sheet" aria-live="polite"></section>
+
+	<script type="module" src="/app.js"></script>
+</body>
+</html>

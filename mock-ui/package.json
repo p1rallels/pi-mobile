@@ -1,0 +1,9 @@
+{
+	"name": "pi-web-mock-ui",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "bun server.ts",
+		"test": "bun test server.test.ts"
+	}
+}
