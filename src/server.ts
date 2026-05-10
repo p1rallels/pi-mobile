@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { FaceIdService } from "./faceid.ts";
+import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
 import type {
@@ -11,6 +12,7 @@ import type {
 	ApiCommandRequest,
 	ApiCreateSessionRequest,
 	ApiErrorResponse,
+	ApiListHostsResponse,
 	ApiListModelsResponse,
 	ApiListReposResponse,
 	ApiListSessionsResponse,
@@ -32,6 +34,7 @@ interface ServerArgs {
 	maxClientsPerSession: number;
 	secureMode: boolean;
 	deviceRegistryPath: string;
+	hostRegistryPath: string;
 	clientCertHeader: string;
 }
 
@@ -293,6 +296,7 @@ function parseArgs(argv: string[]): ServerArgs {
 	let secureMode = process.env.PI_WEB_SECURE_MODE?.trim() === "1";
 	const piWebPaths = resolvePiWebPaths();
 	const deviceRegistryPath = process.env.PI_WEB_DEVICE_REGISTRY?.trim() || piWebPaths.devicesPath;
+	const hostRegistryPath = process.env.PI_WEB_HOST_REGISTRY?.trim() || piWebPaths.hostsPath;
 	const clientCertHeader = process.env.PI_WEB_CLIENT_CERT_HEADER?.trim() || "x-pi-web-client-cert-fingerprint";
 	const maxRunningSessions = parsePositiveInt(process.env.PI_WEB_MAX_RUNNING_SESSIONS, 24, "PI_WEB_MAX_RUNNING_SESSIONS");
 	const maxClientsPerSession = parsePositiveInt(process.env.PI_WEB_MAX_CLIENTS_PER_SESSION, 8, "PI_WEB_MAX_CLIENTS_PER_SESSION");
@@ -323,6 +327,7 @@ Env:
   PI_WEB_MAX_CLIENTS_PER_SESSION
   PI_WEB_SECURE_MODE=1
   PI_WEB_DEVICE_REGISTRY
+  PI_WEB_HOST_REGISTRY
   PI_WEB_CLIENT_CERT_HEADER
   PI_WEB_ALLOW_DIRECT_TAILSCALE=1 (insecure escape hatch)
 `);
@@ -366,7 +371,7 @@ Env:
 	];
 	const allowedOrigins = deriveAllowedOrigins(host, port, scheme, extraOrigins);
 
-	return { host, port, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession, secureMode, deviceRegistryPath, clientCertHeader };
+	return { host, port, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession, secureMode, deviceRegistryPath, hostRegistryPath, clientCertHeader };
 }
 
 function parseCookies(req: Request): Map<string, string> {
@@ -702,6 +707,7 @@ const {
 	maxClientsPerSession,
 	secureMode,
 	deviceRegistryPath,
+	hostRegistryPath,
 	clientCertHeader,
 } = parseArgs(process.argv);
 const replayEnabled = process.env.PI_WEB_REPLAY?.trim() === "1";
@@ -728,11 +734,52 @@ const simpleWebAuthnBrowserDir = join(import.meta.dir, "..", "node_modules", "@s
 const simpleWebAuthnBrowserRoot = resolve(simpleWebAuthnBrowserDir) + sep;
 const simpleWebAuthnBrowserUrlPrefix = "/vendor/simplewebauthn/browser/esm/";
 
-Bun.serve({
-	hostname: host,
-	port,
-	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
-	async fetch(req, server): Promise<Response> {
+function appendVary(headers: Headers, value: string): void {
+	const existing = headers.get("vary");
+	if (!existing) {
+		headers.set("vary", value);
+		return;
+	}
+	const parts = existing.split(",").map((part) => part.trim().toLowerCase());
+	if (!parts.includes(value.toLowerCase())) {
+		headers.set("vary", `${existing}, ${value}`);
+	}
+}
+
+function resolveCorsOrigin(req: Request): string | null {
+	const origin = req.headers.get("origin");
+	if (!origin) return null;
+	try {
+		const normalized = normalizeOrigin(origin);
+		return allowedOriginsSet.has(normalized) ? normalized : null;
+	} catch {
+		return null;
+	}
+}
+
+function applyCorsHeaders(req: Request, headers: Headers): void {
+	const origin = resolveCorsOrigin(req);
+	if (!origin) return;
+	headers.set("access-control-allow-origin", origin);
+	headers.set("access-control-allow-credentials", "true");
+	appendVary(headers, "Origin");
+}
+
+function corsPreflightResponse(req: Request): Response | null {
+	const origin = resolveCorsOrigin(req);
+	if (!origin) return null;
+	const headers = new Headers();
+	applySecurityHeaders(headers);
+	headers.set("access-control-allow-origin", origin);
+	headers.set("access-control-allow-credentials", "true");
+	headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
+	headers.set("access-control-allow-headers", "content-type");
+	headers.set("access-control-max-age", "600");
+	appendVary(headers, "Origin");
+	return new Response(null, { status: 204, headers });
+}
+
+async function handleFetch(req: Request, server: Bun.Server): Promise<Response> {
 		const url = new URL(req.url);
 		const secure = isSecureRequest(req, url, trustProxy);
 		const requestProtocol = secure ? "https:" : url.protocol;
@@ -751,6 +798,10 @@ Bun.serve({
 				headerName: clientCertHeader,
 			});
 			if (!deviceAuth.ok) return errorResponse(deviceAuth.message, deviceAuth.status);
+		}
+
+		if (req.method === "OPTIONS" && isApiPath(url.pathname)) {
+			return corsPreflightResponse(req) ?? errorResponse("Untrusted origin.", 403);
 		}
 
 		const faceIdError = ensureFaceIdAuth(req, url);
@@ -822,6 +873,12 @@ Bun.serve({
 		if (req.method === "GET" && url.pathname === "/api/repos") {
 			const repos = await runtime.listRepos();
 			const body: ApiListReposResponse = { repos };
+			return json(body, 200);
+		}
+
+		if (req.method === "GET" && url.pathname === "/api/hosts") {
+			const registry = await loadHostRegistry(hostRegistryPath);
+			const body: ApiListHostsResponse = { hosts: registry.hosts.filter((host) => host.enabled) };
 			return json(body, 200);
 		}
 
@@ -1070,6 +1127,16 @@ Bun.serve({
 		}
 
 		return plainText("Not found", 404);
+}
+
+Bun.serve({
+	hostname: host,
+	port,
+	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
+	async fetch(req, server): Promise<Response> {
+		const response = await handleFetch(req, server);
+		applyCorsHeaders(req, response.headers);
+		return response;
 	},
 });
 

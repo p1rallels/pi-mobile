@@ -10,6 +10,7 @@ export interface PiWebPaths {
 	home: string;
 	configPath: string;
 	devicesPath: string;
+	hostsPath: string;
 	mtlsRoot: string;
 	caDir: string;
 	devicesDir: string;
@@ -55,6 +56,7 @@ export function resolvePiWebPaths(home = resolvePiWebHome()): PiWebPaths {
 		home: root,
 		configPath: join(root, "config.json"),
 		devicesPath: join(root, "devices.json"),
+		hostsPath: join(root, "hosts.json"),
 		mtlsRoot,
 		caDir,
 		devicesDir,

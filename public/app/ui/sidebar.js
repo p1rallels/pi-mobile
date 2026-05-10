@@ -43,6 +43,18 @@ function shouldShowSessionInLists(s) {
 	return first && first !== "(no messages)";
 }
 
+function currentOrigin() {
+	return new URL(window.location.href).origin;
+}
+
+function hostOrigin(host) {
+	try {
+		return new URL(host.url).origin;
+	} catch {
+		return "";
+	}
+}
+
 export function createSidebar({
 	sessionsList,
 	sidebar,
@@ -51,11 +63,14 @@ export function createSidebar({
 	btnSidebarLeft,
 	btnSidebarRight,
 	api,
-	clientId,
+	getClientId,
 	onNotice,
 	getActiveSessionId,
 	onSelectSession,
 	onSessionIdSelected,
+	getHosts = () => [],
+	getActiveHost = () => null,
+	onSelectHost = () => {},
 }) {
 	let isOpen = false;
 	let mode = "active"; // active | repos | repoSessions
@@ -122,8 +137,53 @@ export function createSidebar({
 		});
 	}
 
-	function renderSessions(sessions, view = "active") {
-		sessionsList.innerHTML = "";
+	function appendSectionLabel(label) {
+		const row = document.createElement("div");
+		row.className = "si";
+		row.style.cursor = "default";
+		const name = document.createElement("div");
+		name.className = "si-meta";
+		name.textContent = label;
+		row.appendChild(name);
+		sessionsList.appendChild(row);
+	}
+
+	function renderHosts(hosts) {
+		const activeHost = getActiveHost();
+		const activeOrigin = activeHost && typeof activeHost.url === "string" ? hostOrigin(activeHost) : currentOrigin();
+		const enabled = hosts.filter((host) => host && typeof host === "object" && host.enabled !== false && typeof host.url === "string");
+		if (enabled.length === 0) return;
+		appendSectionLabel("Hosts");
+		for (const host of enabled) {
+			const origin = hostOrigin(host);
+			if (!origin) continue;
+			const row = document.createElement("div");
+			row.className = `si${origin === activeOrigin ? " active" : ""}`;
+			row.dataset.hostId = typeof host.id === "string" ? host.id : origin;
+
+			const name = document.createElement("div");
+			name.className = "si-name";
+			const label = (typeof host.label === "string" && host.label.trim()) || (typeof host.id === "string" && host.id.trim()) || origin;
+			name.textContent = label;
+			name.title = origin;
+
+			const meta = document.createElement("div");
+			meta.className = "si-meta";
+			meta.textContent = origin === activeOrigin ? "current host" : origin;
+
+			row.appendChild(name);
+			row.appendChild(meta);
+			row.addEventListener("click", () => {
+				if (origin === activeOrigin) return;
+				void onSelectHost(host);
+			});
+			sessionsList.appendChild(row);
+		}
+		appendSectionLabel("Active Sessions");
+	}
+
+	function renderSessions(sessions, view = "active", { clear = true } = {}) {
+		if (clear) sessionsList.innerHTML = "";
 		for (const s of sessions) {
 			const row = document.createElement("div");
 			row.className = `si${s.id === getActiveSessionId() ? " active" : ""}`;
@@ -246,7 +306,7 @@ export function createSidebar({
 		if (!repoCwd || typeof repoCwd !== "string") return;
 		const cwd = repoCwd.trim();
 		if (!cwd) return;
-		const result = await api.postJson("/api/sessions", { clientId, cwd });
+		const result = await api.postJson("/api/sessions", { clientId: getClientId(), cwd });
 		onSessionIdSelected(result.sessionId);
 		setOpen(false);
 		setMode("active");
@@ -274,9 +334,12 @@ export function createSidebar({
 				return;
 			}
 
-			const data = await api.getJson("/api/active-sessions");
-			const raw = Array.isArray(data.sessions) ? data.sessions : [];
-			renderSessions(raw, "active");
+			const sessionData = await api.getJson("/api/active-sessions");
+			const hosts = getHosts();
+			const raw = Array.isArray(sessionData.sessions) ? sessionData.sessions : [];
+			sessionsList.innerHTML = "";
+			renderHosts(hosts);
+			renderSessions(raw, "active", { clear: false });
 		} catch (error) {
 			sessionsList.innerHTML = "";
 			const row = document.createElement("div");

@@ -43,7 +43,17 @@ const kbRelease = document.getElementById("kb-release");
 const kbEnter = document.getElementById("kb-enter");
 
 const replayName = new URL(window.location.href).searchParams.get("replay")?.trim() || null;
-const api = createApi();
+const initialHost = {
+	id: "current",
+	label: window.location.hostname || "current",
+	url: window.location.origin,
+	enabled: true,
+};
+const api = createApi({ baseUrl: initialHost.url });
+let activeHost = initialHost;
+let hosts = [];
+let clientId = null;
+const clientIdsByOrigin = new Map();
 
 function isLoopbackBrowserHost(hostname) {
 	const normalized = String(hostname || "").trim().toLowerCase();
@@ -67,13 +77,67 @@ function showFatalError(error) {
 	msgs.appendChild(block);
 }
 
-let clientId;
-try {
+function hostOrigin(host) {
+	return new URL(host.url, window.location.href).origin;
+}
+
+function mergeHosts(rawHosts) {
+	const byOrigin = new Map();
+	for (const host of rawHosts) {
+		if (!host || typeof host !== "object" || host.enabled === false || typeof host.url !== "string") continue;
+		try {
+			byOrigin.set(hostOrigin(host), { ...host, url: hostOrigin(host) });
+		} catch {
+			continue;
+		}
+	}
+	return [...byOrigin.values()].sort((a, b) => String(a.label || a.id || a.url).localeCompare(String(b.label || b.id || b.url)));
+}
+
+async function ensureClientSession() {
+	const origin = api.getBaseUrl();
+	const cached = clientIdsByOrigin.get(origin);
+	if (cached) {
+		clientId = cached;
+		return cached;
+	}
 	const clientSession = await api.postJson("/api/client", {});
 	if (!clientSession || typeof clientSession.clientId !== "string" || clientSession.clientId.length === 0) {
 		throw new Error("Failed to establish browser session.");
 	}
+	clientIdsByOrigin.set(origin, clientSession.clientId);
 	clientId = clientSession.clientId;
+	return clientId;
+}
+
+async function loadHosts() {
+	const data = await api.getJson("/api/hosts").catch(() => ({ hosts: [] }));
+	const rawHosts = Array.isArray(data.hosts) ? data.hosts : [];
+	hosts = mergeHosts(rawHosts);
+	if (!hosts.some((host) => hostOrigin(host) === api.getBaseUrl())) {
+		hosts = mergeHosts([...hosts, activeHost]);
+	}
+}
+
+async function switchHost(host) {
+	const origin = hostOrigin(host);
+	if (origin === api.getBaseUrl()) return;
+	menuCtrl?.close();
+	api.setBaseUrl(origin);
+	activeHost = { ...host, url: origin };
+	try {
+		await ensureClientSession();
+		sessionCtrl.reset();
+		updateFooter();
+		updateControls();
+		await sidebarCtrl.refresh();
+	} catch (error) {
+		showFatalError(error);
+	}
+}
+
+try {
+	await ensureClientSession();
 } catch (error) {
 	showFatalError(error);
 	throw error;
@@ -141,9 +205,9 @@ function buildSessionMetrics(state) {
 function updateFooter() {
 	const activeState = sessionCtrl.getActiveState();
 	if (!activeState) {
-		footerLine1.textContent = "—";
+		footerLine1.textContent = activeHost?.label ? `host: ${activeHost.label}` : "—";
 		footerLeft2.textContent = "—";
-		footerRight2.textContent = "—";
+		footerRight2.textContent = api.getBaseUrl();
 		return;
 	}
 
@@ -268,7 +332,7 @@ function sendPromptFromInput() {
 const sessionCtrl = createSessionController({
 	msgsEl: msgs,
 	api,
-	clientId,
+	getClientId: () => clientId,
 	isPhoneLikeFn: isPhoneLike,
 	onStateChange: () => {
 		updateFooter();
@@ -287,7 +351,7 @@ sidebarCtrl = createSidebar({
 	btnSidebarLeft,
 	btnSidebarRight,
 	api,
-	clientId,
+	getClientId: () => clientId,
 	onNotice: sessionCtrl.appendNotice,
 	getActiveSessionId: () => sessionCtrl.getActiveSessionId(),
 	onSelectSession: (session) => sessionCtrl.selectSession(session),
@@ -295,6 +359,9 @@ sidebarCtrl = createSidebar({
 		sessionCtrl.openSessionId(sessionId);
 		updateControls();
 	},
+	getHosts: () => hosts,
+	getActiveHost: () => activeHost,
+	onSelectHost: switchHost,
 });
 
 menuCtrl = createMenu({
@@ -304,7 +371,7 @@ menuCtrl = createMenu({
 	btnModel,
 	btnThinking,
 	api,
-	clientId,
+	getClientId: () => clientId,
 	onNotice: sessionCtrl.appendNotice,
 	getActiveSessionId: () => sessionCtrl.getActiveSessionId(),
 	getActiveState: () => sessionCtrl.getActiveState(),
@@ -358,6 +425,7 @@ if (faceIdGuard) {
 if (replayName) {
 	void sessionCtrl.runReplay(replayName);
 } else {
+	await loadHosts();
 	void sidebarCtrl.refresh();
 	setInterval(() => void sidebarCtrl.refresh(), 5_000);
 }

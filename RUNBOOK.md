@@ -53,14 +53,57 @@ bun run cli -- start
 
 ---
 
+## Multi-host federation
+
+For a small set of Tailscale machines, keep each host independently secured and add host links locally:
+
+```bash
+pi-web host add local https://local.tailnet.example.ts.net:8443
+pi-web host discover
+pi-web host discover --add
+pi-web host list
+```
+
+The sidebar shows configured hosts. Clicking another host switches the active host inside the same page: API calls, session creation, and live SSE streams point at the selected host. There is no central gateway with command-routing access to every box.
+
+Each host should still run its own secure setup and device allowlist. For true in-page switching, each host must allow the UI origin in its trusted origins. The `pi-web start` path includes configured host origins from `~/.pi-web/hosts.json`.
+
+For a guided second-machine walkthrough, see `SECOND_HOST_SETUP.md`.
+
+---
+
 ## Device certificate install notes
 
 ### iOS / iPadOS
 
-- transfer the generated `.p12` via AirDrop, 1Password, or another secure channel
-- tap/install it as a profile/identity certificate
-- Safari uses the installed iOS identity when Caddy requests a client certificate
-- delete temporary `.p12` copies after install
+Issue a separate certificate per device:
+
+```bash
+pi-web device issue iphone-2 --platform ios
+```
+
+Transfer the generated `.p12` via AirDrop, 1Password, or another secure channel. The `.p12.pass` file stays on the Mac unless you need to store it; read it once and type the password manually:
+
+```bash
+cat ~/.pi-web/mtls/devices/iphone-2.p12.pass
+```
+
+On the iPhone/iPad:
+
+1. accept the AirDrop / transferred `.p12`
+2. open Settings
+3. tap **Profile Downloaded** near the top
+4. if it is not visible, go to Settings → General → VPN & Device Management
+5. tap the pi-web certificate/profile
+6. tap Install
+7. enter the iPhone/iPad passcode
+8. enter the password from the `.p12.pass` file
+9. finish installation
+10. close/reopen Safari and visit the pi-web URL
+
+When Safari says the website requires a certificate, choose/allow the installed pi-web identity if prompted. Safari then uses the installed iOS identity for mTLS.
+
+Delete temporary `.p12` copies from Files/Downloads/AirDrop after install.
 
 ### Android
 

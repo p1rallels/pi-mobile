@@ -10,6 +10,7 @@ Web UI for the `pi` coding agent, built on the `@mariozechner/pi-coding-agent` S
 - Mobile-friendly keybar for Esc / Release / Take over / Enter
 - Secure-mode CLI for reproducible startup
 - Tailscale + Caddy mTLS for private-network and enrolled-device access
+- Federated host list for switching across a few independently secured boxes
 - Face ID / Touch ID / WebAuthn freshness checks for remote control actions
 - Tripwire alerts for repo escape, secret access, persistence, destructive commands, and suspicious network patterns
 
@@ -42,7 +43,9 @@ bun run cli -- start
 
 If you have a trusted server certificate/key, pass `--server-cert` and `--server-key` during init. Otherwise generated Caddy config uses `tls internal`, which requires client devices to trust Caddy's local CA.
 
-Install the generated `.p12` on the target device. Each device should get its own certificate so it can be revoked independently.
+Install the generated `.p12` on the target device. Each device should get its own certificate so it can be revoked independently. On iPhone/iPad, accepting the `.p12` transfer is not enough; finish installation in Settings → Profile Downloaded or Settings → General → VPN & Device Management.
+
+For multiple Tailscale hosts, add host links with `pi-web host add <id> <url>` or inspect suggestions with `pi-web host discover`. The sidebar can switch the active host in-page; each host still enforces its own mTLS and WebAuthn policy. See [SECOND_HOST_SETUP.md](SECOND_HOST_SETUP.md) for the guided flow.
 
 Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intentionally rejected.
 

@@ -20,6 +20,20 @@ export interface ApiListReposResponse {
 	repos: string[];
 }
 
+export interface ApiHostRecord {
+	id: string;
+	label: string;
+	url: string;
+	tailscaleName?: string;
+	tailscaleIp?: string;
+	enabled: boolean;
+	createdAt: string;
+}
+
+export interface ApiListHostsResponse {
+	hosts: ApiHostRecord[];
+}
+
 export interface ApiAddRepoRequest {
 	cwd: string;
 }

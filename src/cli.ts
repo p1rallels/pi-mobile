@@ -3,6 +3,7 @@ import { emptyDeviceRegistry, loadDeviceRegistry, revokeDevice, saveDeviceRegist
 import { ensureClientCa, issueDeviceCertificate } from "./certificates.ts";
 import { writeCaddyfile } from "./caddy-config.ts";
 import { hasDoctorErrors, runDoctor, type DoctorCheck } from "./doctor.ts";
+import { loadHostRegistry, removeHost, upsertHost, type HostRecord } from "./host-registry.ts";
 import { createSecureConfig, defaultPiWebConfig, ensurePiWebDirs, loadPiWebConfig, resolvePiWebPaths, savePiWebConfig, type PiWebConfig } from "./security-config.ts";
 
 interface ParsedArgs {
@@ -20,6 +21,10 @@ Usage:
   pi-web device issue <name> [--platform ios|android|macos|windows|linux|other] [--days <days>]
   pi-web device list
   pi-web device revoke <name>
+  pi-web host add <id> <url> [--label <label>] [--tailscale-name <name>] [--tailscale-ip <ip>]
+  pi-web host list
+  pi-web host remove <id>
+  pi-web host discover [--port <port>] [--add]
 
 Env:
   PI_WEB_HOME   defaults to ~/.pi-web
@@ -88,6 +93,29 @@ function detectTailscaleHost(): { ip: string | null; dnsName: string | null } {
 		}
 	}
 	return { ip: ip.ok && ip.stdout ? ip.stdout.split("\n")[0]!.trim() : null, dnsName };
+}
+
+function tailscaleNodes(): Array<{ id: string; label: string; dnsName: string; ip: string | undefined; online: boolean }> {
+	const status = runSync(["tailscale", "status", "--json"]);
+	if (!status.ok || !status.stdout) return [];
+	try {
+		const parsed = JSON.parse(status.stdout) as {
+			Self?: Record<string, unknown>;
+			Peer?: Record<string, Record<string, unknown>>;
+		};
+		const rawNodes = [parsed.Self, ...Object.values(parsed.Peer ?? {})].filter((node): node is Record<string, unknown> => Boolean(node));
+		return rawNodes.flatMap((node) => {
+			const dnsRaw = typeof node.DNSName === "string" ? node.DNSName.trim().replace(/\.$/, "") : "";
+			if (!dnsRaw) return [];
+			const dnsLabel = dnsRaw.split(".")[0] || dnsRaw;
+			const hostName = typeof node.HostName === "string" && node.HostName.trim() && node.HostName.trim() !== "localhost" ? node.HostName.trim() : dnsLabel;
+			const ips = Array.isArray(node.TailscaleIPs) ? node.TailscaleIPs : [];
+			const ip = ips.find((value): value is string => typeof value === "string" && value.includes("."));
+			return [{ id: dnsLabel.toLowerCase(), label: hostName, dnsName: dnsRaw, ip, online: node.Online === true }];
+		});
+	} catch {
+		return [];
+	}
 }
 
 async function commandSecureInit(args: ParsedArgs): Promise<void> {
@@ -187,6 +215,75 @@ async function commandDeviceRevoke(args: ParsedArgs): Promise<void> {
 	console.log(`revoked: ${device.name}`);
 }
 
+function printHost(host: HostRecord): void {
+	const bits = [host.id, host.label, host.enabled ? "enabled" : "disabled", host.url];
+	if (host.tailscaleName) bits.push(`ts=${host.tailscaleName}`);
+	if (host.tailscaleIp) bits.push(`ip=${host.tailscaleIp}`);
+	console.log(bits.join("\t"));
+}
+
+async function commandHostAdd(args: ParsedArgs): Promise<void> {
+	const id = args.positionals[2];
+	const url = args.positionals[3];
+	if (!id || !url) throw new Error("Usage: pi-web host add <id> <url>");
+	const paths = resolvePiWebPaths();
+	await ensurePiWebDirs(paths);
+	const registry = await upsertHost(paths.hostsPath, {
+		id,
+		url,
+		label: flagString(args.flags, "label") ?? undefined,
+		tailscaleName: flagString(args.flags, "tailscale-name") ?? undefined,
+		tailscaleIp: flagString(args.flags, "tailscale-ip") ?? undefined,
+	});
+	const host = registry.hosts.find((entry) => entry.id === id.toLowerCase());
+	if (host) printHost(host);
+}
+
+async function commandHostList(): Promise<void> {
+	const paths = resolvePiWebPaths();
+	const registry = await loadHostRegistry(paths.hostsPath);
+	if (registry.hosts.length === 0) {
+		console.log("no hosts");
+		return;
+	}
+	for (const host of registry.hosts) printHost(host);
+}
+
+async function commandHostRemove(args: ParsedArgs): Promise<void> {
+	const id = args.positionals[2];
+	if (!id) throw new Error("Usage: pi-web host remove <id>");
+	const paths = resolvePiWebPaths();
+	const host = await removeHost(paths.hostsPath, id);
+	console.log(`removed: ${host.id}`);
+}
+
+async function commandHostDiscover(args: ParsedArgs): Promise<void> {
+	const paths = resolvePiWebPaths();
+	const port = flagInt(args.flags, "port", 8443);
+	const shouldAdd = args.flags.get("add") === true;
+	const nodes = tailscaleNodes();
+	if (nodes.length === 0) {
+		console.log("no tailscale nodes discovered");
+		return;
+	}
+	if (shouldAdd) await ensurePiWebDirs(paths);
+	for (const node of nodes) {
+		const url = `https://${node.dnsName}${port === 443 ? "" : `:${String(port)}`}`;
+		if (shouldAdd) {
+			await upsertHost(paths.hostsPath, {
+				id: node.id,
+				label: node.label,
+				url,
+				tailscaleName: node.label,
+				tailscaleIp: node.ip,
+			});
+			console.log(`added ${node.id}\t${node.online ? "online" : "offline"}\t${url}`);
+		} else {
+			console.log(`pi-web host add ${node.id} ${url} --label ${JSON.stringify(node.label)} --tailscale-name ${JSON.stringify(node.label)}${node.ip ? ` --tailscale-ip ${JSON.stringify(node.ip)}` : ""} # ${node.online ? "online" : "offline"}`);
+		}
+	}
+}
+
 function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<string, string> {
 	const env: Record<string, string> = { ...process.env } as Record<string, string>;
 	env.PI_WEB_HOST = config.host;
@@ -194,6 +291,7 @@ function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<
 	env.PI_WEB_TRUST_PROXY = config.caddy.enabled ? "1" : env.PI_WEB_TRUST_PROXY ?? "0";
 	env.PI_WEB_SECURE_MODE = config.secureMode ? "1" : "0";
 	env.PI_WEB_DEVICE_REGISTRY = paths.devicesPath;
+	env.PI_WEB_HOST_REGISTRY = paths.hostsPath;
 	if (config.publicOrigins.length > 0) {
 		env.PI_WEB_PUBLIC_ORIGIN = config.publicOrigins[0]!;
 		env.PI_WEB_ALLOWED_ORIGINS = config.publicOrigins.slice(1).join(",");
@@ -222,7 +320,7 @@ async function commandStart(): Promise<void> {
 	}
 	ensureCaddy(config);
 	const proc = Bun.spawn({
-		cmd: [Bun.execPath, new URL("./server.ts", import.meta.url).pathname],
+		cmd: [process.execPath, new URL("./server.ts", import.meta.url).pathname],
 		stdin: "inherit",
 		stdout: "inherit",
 		stderr: "inherit",
@@ -245,6 +343,10 @@ async function main(): Promise<void> {
 	if (cmd === "device" && subcmd === "issue") return commandDeviceIssue(args);
 	if (cmd === "device" && subcmd === "list") return commandDeviceList();
 	if (cmd === "device" && subcmd === "revoke") return commandDeviceRevoke(args);
+	if (cmd === "host" && subcmd === "add") return commandHostAdd(args);
+	if (cmd === "host" && subcmd === "list") return commandHostList();
+	if (cmd === "host" && subcmd === "remove") return commandHostRemove(args);
+	if (cmd === "host" && subcmd === "discover") return commandHostDiscover(args);
 	throw new Error(`Unknown command: ${args.positionals.join(" ")}`);
 }
 

@@ -33,7 +33,7 @@ export function createMenu({
 	btnModel,
 	btnThinking,
 	api,
-	clientId,
+	getClientId,
 	onNotice,
 	getActiveSessionId,
 	getActiveState,
@@ -102,7 +102,7 @@ export function createMenu({
 		if (!activeSessionId) return;
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
 			type: "set_model",
-			clientId,
+			clientId: getClientId(),
 			provider,
 			modelId,
 		});
@@ -113,7 +113,7 @@ export function createMenu({
 		if (!activeSessionId) return;
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
 			type: "set_thinking_level",
-			clientId,
+			clientId: getClientId(),
 			level,
 		});
 	}

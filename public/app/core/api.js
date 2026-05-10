@@ -12,25 +12,47 @@ async function handleJsonResponse(res) {
 	throw new Error(message);
 }
 
-export function createApi() {
+function normalizeBaseUrl(baseUrl) {
+	return new URL(baseUrl || window.location.origin, window.location.href).origin;
+}
+
+export function createApi({ baseUrl = window.location.origin } = {}) {
+	let currentBaseUrl = normalizeBaseUrl(baseUrl);
+
 	function headers() {
 		return { "content-type": "application/json" };
 	}
 
+	function resolveUrl(path) {
+		return new URL(path, currentBaseUrl).toString();
+	}
+
+	function setBaseUrl(nextBaseUrl) {
+		currentBaseUrl = normalizeBaseUrl(nextBaseUrl);
+	}
+
+	function getBaseUrl() {
+		return currentBaseUrl;
+	}
+
 	async function getJson(path) {
-		const res = await fetch(path, { headers: headers(), credentials: "same-origin" });
+		const res = await fetch(resolveUrl(path), { headers: headers(), credentials: "include" });
 		return handleJsonResponse(res);
 	}
 
 	async function postJson(path, payload) {
-		const res = await fetch(path, {
+		const res = await fetch(resolveUrl(path), {
 			method: "POST",
-			credentials: "same-origin",
+			credentials: "include",
 			headers: headers(),
 			body: JSON.stringify(payload),
 		});
 		return handleJsonResponse(res);
 	}
 
-	return { headers, getJson, postJson };
+	function eventSource(path) {
+		return new EventSource(resolveUrl(path), { withCredentials: true });
+	}
+
+	return { headers, getJson, postJson, eventSource, getBaseUrl, setBaseUrl, resolveUrl };
 }

@@ -4,7 +4,7 @@ import { createChatView } from "./chat_view.js";
 export function createSessionController({
 	msgsEl,
 	api,
-	clientId,
+	getClientId,
 	isPhoneLikeFn,
 	onStateChange,
 	onCloseMenu,
@@ -32,7 +32,7 @@ export function createSessionController({
 
 	function connectEvents(sessionId) {
 		closeEvents();
-		eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+		eventSource = api.eventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
 		eventSource.onmessage = (msg) => {
 			const payload = JSON.parse(msg.data);
 			handleSse(payload);
@@ -71,6 +71,19 @@ export function createSessionController({
 		}
 	}
 
+	function reset() {
+		closeEvents();
+		activeSessionId = null;
+		activeState = null;
+		controllerClientId = null;
+		role = "viewer";
+		lastCliCommand = null;
+		pendingPrompt = false;
+		resetTripwireAlerts();
+		chatView.clear();
+		chatView.appendNotice("No session selected.");
+	}
+
 	function handleSse(event) {
 		if (!event || typeof event.type !== "string") return;
 
@@ -102,7 +115,7 @@ export function createSessionController({
 
 		if (event.type === "controller_changed") {
 			controllerClientId = event.controllerClientId || null;
-			role = controllerClientId === clientId ? "controller" : "viewer";
+			role = controllerClientId === getClientId() ? "controller" : "viewer";
 			onStateChange();
 			return;
 		}
@@ -232,8 +245,8 @@ export function createSessionController({
 				if (ev && typeof ev === "object" && ev.type === "init") {
 					handleSse({
 						...ev,
-						yourClientId: clientId,
-						controllerClientId: clientId,
+						yourClientId: getClientId(),
+						controllerClientId: getClientId(),
 						role: "controller",
 					});
 					continue;
@@ -262,7 +275,7 @@ export function createSessionController({
 			throw new Error("Missing session path");
 		}
 
-		const result = await api.postJson("/api/sessions", { clientId, resumeSessionPath: session.path });
+		const result = await api.postJson("/api/sessions", { clientId: getClientId(), resumeSessionPath: session.path });
 		activeSessionId = result.sessionId;
 		connectEvents(activeSessionId);
 		onSidebarClose();
@@ -276,7 +289,7 @@ export function createSessionController({
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
 				type: "prompt",
-				clientId,
+				clientId: getClientId(),
 				text,
 			});
 		} catch (error) {
@@ -292,7 +305,7 @@ export function createSessionController({
 		const hadAssistant = chatView.hasAssistant();
 		const hadStreaming = Boolean(activeState?.isStreaming);
 		const shouldShowNotice = Boolean(hadStreaming || pendingPrompt || hadAssistant || hadPendingTools);
-		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, { type: "abort", clientId });
+		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, { type: "abort", clientId: getClientId() });
 		pendingPrompt = false;
 		onStateChange();
 
@@ -307,12 +320,12 @@ export function createSessionController({
 
 	async function takeOver() {
 		if (!activeSessionId) return;
-		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/takeover`, { clientId });
+		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/takeover`, { clientId: getClientId() });
 	}
 
 	async function release() {
 		if (!activeSessionId) return;
-		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/release`, { clientId });
+		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/release`, { clientId: getClientId() });
 	}
 
 	function openSessionId(sessionId) {
@@ -328,8 +341,9 @@ export function createSessionController({
 		getControllerClientId: () => controllerClientId,
 		getRole: () => role,
 		getPendingPrompt: () => pendingPrompt,
-		isController: () => Boolean(activeSessionId && controllerClientId === clientId),
+		isController: () => Boolean(activeSessionId && controllerClientId === getClientId()),
 		appendNotice: chatView.appendNotice,
+		reset,
 		runReplay,
 		selectSession,
 		sendPrompt,
