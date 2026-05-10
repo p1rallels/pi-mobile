@@ -6,7 +6,7 @@ test("serves the mock ui shell", async () => {
 	const body = await response.text();
 	expect(response.status).toBe(200);
 	expect(response.headers.get("content-type")).toContain("text/html");
-	expect(body).toContain("pi-web mock ui");
+	expect(body).toContain("id=\"sessions-list\"");
 });
 
 test("rejects missing files", async () => {

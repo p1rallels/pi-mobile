@@ -1,6 +1,6 @@
 # pi-web mock ui
 
-standalone clickable prototype for fast ui iteration. it does not call pi-web, caddy, tailscale, webauthn, or any backend api.
+standalone clickable 1:1 shell for fast ui iteration. it copies the real pi-web html/css chrome and uses fake browser-only state. it does not call pi-web, caddy, tailscale, webauthn, or any backend api.
 
 ## run locally
 
@@ -51,7 +51,7 @@ brew install cloudflared
 - composer send
 - expandable tool cards
 
-state is local only and stored in `localStorage` so refreshes keep your last mock selection.
+state is local only and stored in `localStorage` so refreshes keep your last mock selection. keep `index.html` and `styles.css` visually aligned with `../public/` when changing the real app chrome.
 
 ## reset state
 

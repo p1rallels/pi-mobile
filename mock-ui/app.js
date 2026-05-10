@@ -1,345 +1,633 @@
-const data = {
-	hosts: [
-		{
-			id: "local",
-			label: "local mac",
-			url: "https://local.tailnet.example.ts.net:8443",
-			status: "online",
-			sessions: [
-				{
-					id: "ui-polish",
-					title: "mobile ui polish",
-					subtitle: "composer, sidebar, tool cards",
-					updated: "now",
-					status: "working",
-					messages: [
-						{ from: "user", text: "can we make this feel more like telegram switching between boxes?" },
-						{ from: "pi", text: "yep. host switching should feel like chat switching: fast, local, obvious, and mildly sybaritic.", tool: { title: "read public/app/main.js", body: "loaded host-aware state, per-origin client ids, and sse reset hooks" } },
-						{ from: "pi", text: "this mock is disconnected from the backend, so we can mutate layout freely without worrying about certs, websockets, or caddy." },
-					],
-				},
-				{
-					id: "security",
-					title: "secure startup",
-					subtitle: "mtls + webauthn docs",
-					updated: "8m",
-					status: "idle",
-					messages: [
-						{ from: "user", text: "is this flow documented?" },
-						{ from: "pi", text: "yes. the iphone profile install path is now explicit in the runbook and second-host guide." },
-					],
-				},
-			],
-		},
-		{
-			id: "prod-a",
-			label: "prod-a",
-			url: "https://prod-a.tailnet.example.ts.net:8443",
-			status: "online",
-			sessions: [
-				{
-					id: "infra",
-					title: "second box setup",
-					subtitle: "tailscale, caddy, certs",
-					updated: "21m",
-					status: "idle",
-					messages: [
-						{ from: "user", text: "walk me through adding another host." },
-						{ from: "pi", text: "install tailscale/caddy/bun, run secure init, issue a device cert, add host links on each box, then use the sidebar." },
-					],
-				},
-			],
-		},
-		{
-			id: "lab",
-			label: "lab mini",
-			url: "https://lab.tailnet.example.ts.net:8443",
-			status: "locked",
-			sessions: [
-				{
-					id: "experiments",
-					title: "prototype gestures",
-					subtitle: "swipes, sheets, quick actions",
-					updated: "1h",
-					status: "warn",
-					messages: [
-						{ from: "pi", text: "lab is mocked as locked, but still clickable for ui iteration." },
-					],
-				},
-			],
-		},
-	],
-};
+const now = Date.now();
 
-const state = {
-	hostId: localStorage.getItem("mock-host") || "local",
-	threadId: localStorage.getItem("mock-thread") || "ui-polish",
-	role: localStorage.getItem("mock-role") || "viewer",
-	model: localStorage.getItem("mock-model") || "sonnet",
-	thinking: localStorage.getItem("mock-thinking") || "medium",
-	filter: "active",
-};
+const fakeHosts = [
+	{
+		id: "local",
+		label: "local",
+		url: "https://local.tailnet.example.ts.net:8443",
+		repos: ["/workspace/pi-web", "/workspace/agent-tools"],
+		sessions: [
+			{
+				id: "a7f31c09-local-ui",
+				name: "mobile ui polish",
+				firstMessage: "make this feel like switching telegram chats",
+				cwd: "/workspace/pi-web",
+				modified: new Date(now - 40_000).toISOString(),
+				isRunning: true,
+				role: "viewer",
+				isStreaming: true,
+				model: { provider: "anthropic", id: "claude-sonnet-4" },
+				thinkingLevel: "medium",
+				stats: { tokens: { input: 18230, output: 2210, cacheRead: 120000, cacheWrite: 8000 }, cost: 0.147 },
+				contextUsage: { percent: 41, contextWindow: 200000 },
+				messages: [
+					{ role: "user", text: "switch between boxes like telegram chats. no page jumps." },
+					{ role: "assistant", thinking: "mapping host state to the same sidebar affordance without centralizing command routing", text: "done: the active host now changes in-page. api calls, session creation, and sse attach to the selected host." },
+					{ role: "tool", status: "success", call: "read public/app/main.js", out: "loaded host-aware api state\nloaded per-origin client ids\nverified sidebar switching hooks" },
+					{ role: "assistant", text: "this mock is now just the real ui shell with fake state. no network, no caddy, no tailscale, no thaumaturgy." },
+				],
+			},
+			{
+				id: "9fdc2012-security",
+				name: "iphone onboarding docs",
+				firstMessage: "document the ios p12 install flow",
+				cwd: "/workspace/pi-web",
+				modified: new Date(now - 8 * 60_000).toISOString(),
+				isRunning: false,
+				role: "controller",
+				isStreaming: false,
+				model: { provider: "anthropic", id: "claude-sonnet-4" },
+				thinkingLevel: "low",
+				stats: { tokens: { input: 6400, output: 980, cacheRead: 44000, cacheWrite: 0 }, cost: 0.052 },
+				contextUsage: { percent: 18, contextWindow: 200000 },
+				messages: [
+					{ role: "user", text: "the iphone says the required cert is not installed." },
+					{ role: "assistant", text: "ios only downloads the identity at first. finish installation in settings → profile downloaded, then reopen safari." },
+					{ role: "tool", status: "success", call: "edit RUNBOOK.md", out: "clarified profile downloaded → install → enter p12 password" },
+				],
+			},
+		],
+	},
+	{
+		id: "prod-a",
+		label: "prod-a",
+		url: "https://prod-a.tailnet.example.ts.net:8443",
+		repos: ["/srv/pi-web", "/srv/ops"],
+		sessions: [
+			{
+				id: "bf802cad-prod-a",
+				name: "second box setup",
+				firstMessage: "walk me through adding a second host",
+				cwd: "/srv/pi-web",
+				modified: new Date(now - 22 * 60_000).toISOString(),
+				isRunning: false,
+				role: "viewer",
+				isStreaming: false,
+				model: { provider: "anthropic", id: "claude-haiku-4" },
+				thinkingLevel: "off",
+				stats: { tokens: { input: 2100, output: 430, cacheRead: 0, cacheWrite: 0 }, cost: 0.011 },
+				contextUsage: { percent: 7, contextWindow: 200000 },
+				messages: [
+					{ role: "user", text: "add another tailscale host without a central gateway." },
+					{ role: "assistant", text: "each host runs its own caddy mtls front door and pi-web backend. the browser switches origin; commands still go directly to that host." },
+				],
+			},
+		],
+	},
+	{
+		id: "lab",
+		label: "lab-mini",
+		url: "https://lab.tailnet.example.ts.net:8443",
+		repos: ["/Users/example/lab"],
+		sessions: [
+			{
+				id: "c41de993-lab",
+				name: "tool card experiments",
+				firstMessage: "try denser tool cards on phone",
+				cwd: "/Users/example/lab",
+				modified: new Date(now - 95 * 60_000).toISOString(),
+				isRunning: true,
+				role: "viewer",
+				isStreaming: true,
+				model: { provider: "local", id: "mock" },
+				thinkingLevel: "high",
+				stats: { tokens: { input: 8800, output: 1900, cacheRead: 0, cacheWrite: 1200 }, cost: 0 },
+				contextUsage: { percent: 64, contextWindow: 128000 },
+				messages: [
+					{ role: "assistant", thinking: "checking mobile density", text: "this host is fake, but the selected state, footer, controls, and sidebar are the real layout." },
+					{ role: "tool", status: "pending", call: "bash bun run test:e2e", out: "running chromium\nrunning webkit-iphone\nwaiting for screenshots…" },
+				],
+			},
+		],
+	},
+];
+
+const models = [
+	{ provider: "anthropic", id: "claude-haiku-4", name: "fast" },
+	{ provider: "anthropic", id: "claude-sonnet-4", name: "default" },
+	{ provider: "anthropic", id: "claude-opus-4", name: "max" },
+	{ provider: "local", id: "mock", name: "offline" },
+];
 
 const $ = (id) => document.getElementById(id);
+const sessionsList = $("sessions-list");
+const msgs = $("msgs");
+const input = $("inp");
+const workingIndicator = $("working");
+const workingSpin = $("work-spin");
+const footerLine1 = $("footer-line-1");
+const footerLeft2 = $("footer-left-2");
+const footerRight2 = $("footer-right-2");
+const rolePill = $("role-pill");
+const btnModel = $("btn-model");
+const btnThinking = $("btn-thinking");
+const lblModel = $("lbl-model");
+const lblThinking = $("lbl-thinking");
+const sidebarLabel = $("sidebar-label");
+const btnSidebarLeft = $("btn-sidebar-left");
+const btnSidebarRight = $("btn-sidebar-right");
+const btnTakeover = $("btn-takeover");
+const btnAbort = $("btn-abort");
+const btnRelease = $("btn-release");
+const menuOverlay = $("menu-overlay");
+const menuScrim = $("menu-scrim");
+const menuPanel = $("menu-panel");
+const sidebar = document.querySelector(".sidebar");
+const sidebarOverlay = $("sidebar-overlay");
+const kbMenu = $("kb-menu");
+const kbEsc = $("kb-esc");
+const kbTakeover = $("kb-takeover");
+const kbRelease = $("kb-release");
+const kbEnter = $("kb-enter");
 
-const hostList = $("host-list");
-const threadList = $("thread-list");
-const messages = $("messages");
-const threadTitle = $("thread-title");
-const threadMeta = $("thread-meta");
-const activeHostSubtitle = $("active-host-subtitle");
-const sidebar = $("sidebar");
-const drawerScrim = $("drawer-scrim");
-const sheet = $("sheet");
-const sheetBackdrop = $("sheet-backdrop");
-const composerInput = $("composer-input");
-
-const activeHost = () => data.hosts.find((host) => host.id === state.hostId) || data.hosts[0];
-const activeThread = () => activeHost().sessions.find((thread) => thread.id === state.threadId) || activeHost().sessions[0];
-
-const persist = () => {
-	localStorage.setItem("mock-host", state.hostId);
-	localStorage.setItem("mock-thread", state.threadId);
-	localStorage.setItem("mock-role", state.role);
-	localStorage.setItem("mock-model", state.model);
-	localStorage.setItem("mock-thinking", state.thinking);
+const state = {
+	hostId: localStorage.getItem("pi-web-mock.host") || fakeHosts[0].id,
+	sessionId: localStorage.getItem("pi-web-mock.session") || fakeHosts[0].sessions[0].id,
+	mode: "active",
+	repoCwd: null,
 };
 
-const initials = (label) => label.split(/\s|-/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+let workingTimer = null;
+let workingFrame = 0;
+const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const statusBadge = (status) => {
-	const label = status === "working" ? "live" : status === "locked" ? "locked" : status === "warn" ? "check" : "idle";
-	const klass = status === "working" || status === "online" ? "" : status === "warn" || status === "locked" ? "warn" : "idle";
-	return `<span class="badge ${klass}">${label}</span>`;
+const activeHost = () => fakeHosts.find((host) => host.id === state.hostId) || fakeHosts[0];
+const activeSession = () => activeHost().sessions.find((session) => session.id === state.sessionId) || activeHost().sessions[0] || null;
+const save = () => {
+	localStorage.setItem("pi-web-mock.host", state.hostId);
+	localStorage.setItem("pi-web-mock.session", state.sessionId || "");
 };
 
-const openDrawer = () => {
+function escapeHtml(text) {
+	return String(text ?? "")
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#039;");
+}
+
+function formatRelativeTime(iso) {
+	const ms = Date.now() - Date.parse(iso);
+	if (!Number.isFinite(ms) || ms < 10_000) return "just now";
+	const s = Math.floor(ms / 1000);
+	if (s < 60) return `${s}s ago`;
+	const m = Math.floor(s / 60);
+	if (m < 60) return `${m}m ago`;
+	const h = Math.floor(m / 60);
+	if (h < 24) return `${h}h ago`;
+	return `${Math.floor(h / 24)}d ago`;
+}
+
+function formatTokens(n) {
+	const num = Number(n || 0);
+	if (!Number.isFinite(num) || num <= 0) return "0";
+	if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
+	if (num >= 10_000) return `${Math.round(num / 1_000)}k`;
+	if (num >= 1_000) return `${(num / 1_000).toFixed(1)}k`;
+	return String(Math.round(num));
+}
+
+function formatCost(cost) {
+	const num = Number(cost || 0);
+	return Number.isFinite(num) && num > 0 ? `$${num.toFixed(3)}` : null;
+}
+
+function metrics(session) {
+	if (!session) return "";
+	const parts = [];
+	const tokens = session.stats?.tokens || {};
+	if (tokens.input) parts.push(`↑${formatTokens(tokens.input)}`);
+	if (tokens.output) parts.push(`↓${formatTokens(tokens.output)}`);
+	if (tokens.cacheRead) parts.push(`R${formatTokens(tokens.cacheRead)}`);
+	if (tokens.cacheWrite) parts.push(`W${formatTokens(tokens.cacheWrite)}`);
+	const cost = formatCost(session.stats?.cost);
+	if (cost) parts.push(cost);
+	if (session.contextUsage?.contextWindow) parts.push(`${Math.round(session.contextUsage.percent)}%/${formatTokens(session.contextUsage.contextWindow)}`);
+	return parts.join(" ");
+}
+
+function setSidebarButton(button, icon, label) {
+	button.innerHTML = `${icon}<span class="txt">${label}</span>`;
+}
+
+const iconPlus = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+const iconFolder = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H3z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h8a2 2 0 0 1 2 2v2"/></svg>';
+const iconBack = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>';
+
+function openSidebar() {
 	sidebar.classList.add("open");
-	drawerScrim.classList.add("open");
-};
+	sidebarOverlay.classList.add("open");
+}
 
-const closeDrawer = () => {
+function closeSidebar() {
 	sidebar.classList.remove("open");
-	drawerScrim.classList.remove("open");
-};
+	sidebarOverlay.classList.remove("open");
+}
 
-const closeSheet = () => {
-	sheet.classList.remove("open");
-	sheetBackdrop.classList.remove("open");
-};
+function appendSectionLabel(label) {
+	const row = document.createElement("div");
+	row.className = "si";
+	row.style.cursor = "default";
+	const meta = document.createElement("div");
+	meta.className = "si-meta";
+	meta.textContent = label;
+	row.appendChild(meta);
+	sessionsList.appendChild(row);
+}
 
-const renderHosts = () => {
-	hostList.innerHTML = data.hosts.map((host) => `
-		<button class="host-card ${host.id === state.hostId ? "active" : ""}" data-host="${host.id}">
-			<div class="avatar">${initials(host.label)}</div>
-			<div>
-				<div class="title-row"><span class="card-title">${host.label}</span></div>
-				<div class="card-subtitle">${host.url.replace("https://", "")}</div>
-			</div>
-			${statusBadge(host.status)}
-		</button>
-	`).join("");
-};
-
-const visibleSessions = () => {
-	const sessions = activeHost().sessions;
-	return state.filter === "all" ? sessions : sessions.filter((session) => session.status !== "idle" || sessions.length === 1);
-};
-
-const renderThreads = () => {
-	const sessions = visibleSessions();
-	threadList.innerHTML = sessions.map((thread) => `
-		<button class="thread-card ${thread.id === state.threadId ? "active" : ""}" data-thread="${thread.id}">
-			<div class="avatar">${initials(thread.title)}</div>
-			<div>
-				<div class="title-row"><span class="card-title">${thread.title}</span><span class="card-subtitle">${thread.updated}</span></div>
-				<div class="card-subtitle">${thread.subtitle}</div>
-			</div>
-			${statusBadge(thread.status)}
-		</button>
-	`).join("");
-};
-
-const renderMessages = () => {
-	const thread = activeThread();
-	threadTitle.textContent = thread.title;
-	threadMeta.textContent = `${activeHost().label} · ${activeHost().url.replace("https://", "")} · ${thread.subtitle}`;
-	activeHostSubtitle.textContent = activeHost().label;
-	messages.innerHTML = thread.messages.map((message, index) => `
-		<article class="message ${message.from === "user" ? "user" : "pi"}">
-			<div class="avatar">${message.from === "user" ? "u" : "π"}</div>
-			<div class="bubble">
-				<div class="bubble-head"><span>${message.from === "user" ? "you" : "pi"}</span><span>${index + 1}/${thread.messages.length}</span></div>
-				<p>${message.text}</p>
-				${message.tool ? `
-					<div class="tool-card">
-						<button data-tool-toggle><span>${message.tool.title}</span><span>⌄</span></button>
-						<div class="tool-body">${message.tool.body}</div>
-					</div>
-				` : ""}
-			</div>
-		</article>
-	`).join("");
-	messages.scrollTop = messages.scrollHeight;
-};
-
-const renderChrome = () => {
-	$("model-label").textContent = state.model;
-	$("thinking-label").textContent = state.thinking;
-	$("role-button").textContent = state.role;
-	$("role-button").classList.toggle("controller", state.role === "controller");
-	$("filter-button").textContent = state.filter;
-};
-
-const render = () => {
-	renderHosts();
-	renderThreads();
-	renderMessages();
-	renderChrome();
-	persist();
-};
-
-const selectHost = (hostId) => {
-	state.hostId = hostId;
-	state.threadId = activeHost().sessions[0].id;
-	render();
-};
-
-const selectThread = (threadId) => {
-	state.threadId = threadId;
-	render();
-	closeDrawer();
-};
-
-const addMessage = (text) => {
-	const thread = activeThread();
-	thread.messages.push({ from: "user", text });
-	thread.messages.push({ from: "pi", text: `mock reply on ${activeHost().label}: “${text}”` });
-	thread.updated = "now";
-	thread.status = "working";
-	render();
-};
-
-const sendComposer = () => {
-	const text = composerInput.value.trim();
-	if (!text) return;
-	composerInput.value = "";
-	composerInput.style.height = "auto";
-	addMessage(text);
-};
-
-const openSheet = ({ title, options, current, onSelect }) => {
-	sheet.innerHTML = `
-		<div class="sheet-head">
-			<strong>${title}</strong>
-			<button class="text-button" data-close-sheet>close</button>
-		</div>
-		<div class="sheet-list">
-			${options.map((option) => `
-				<button class="sheet-option ${option === current ? "active" : ""}" data-option="${option}">
-					<span>${option}</span>
-					<span>${option === current ? "selected" : ""}</span>
-				</button>
-			`).join("")}
-		</div>
-	`;
-	sheet.querySelectorAll("[data-option]").forEach((button) => {
-		button.addEventListener("click", () => {
-			onSelect(button.dataset.option);
-			closeSheet();
+function appendHostRows() {
+	appendSectionLabel("Hosts");
+	for (const host of fakeHosts) {
+		const row = document.createElement("div");
+		row.className = `si${host.id === state.hostId ? " active" : ""}`;
+		row.dataset.hostId = host.id;
+		row.innerHTML = `<div class="si-name">${escapeHtml(host.label)}</div><div class="si-meta">${host.id === state.hostId ? "current host" : escapeHtml(host.url)}</div>`;
+		row.addEventListener("click", () => {
+			state.hostId = host.id;
+			state.sessionId = host.sessions[0]?.id || null;
+			state.mode = "active";
 			render();
 		});
+		sessionsList.appendChild(row);
+	}
+	appendSectionLabel("Active Sessions");
+}
+
+function appendSessionRows(sessions) {
+	for (const session of sessions) {
+		const row = document.createElement("div");
+		row.className = `si${session.id === state.sessionId ? " active" : ""}`;
+		row.dataset.sessionId = session.id;
+		const label = session.name || session.firstMessage || session.id.slice(0, 8);
+		row.innerHTML = `<div class="si-name" title="${escapeHtml(label)}">${escapeHtml(label)}</div><div class="si-meta">${formatRelativeTime(session.modified)} · ${escapeHtml(session.cwd)}${session.isRunning ? ' · <span class="si-run">running</span>' : ""}</div>`;
+		row.addEventListener("click", () => {
+			state.sessionId = session.id;
+			if (state.mode === "repoSessions") state.mode = "active";
+			render();
+			closeSidebar();
+		});
+		sessionsList.appendChild(row);
+	}
+}
+
+function appendRepoRows() {
+	for (const cwd of activeHost().repos) {
+		const row = document.createElement("div");
+		row.className = "si";
+		row.innerHTML = `<div class="si-name" title="${escapeHtml(cwd)}">${escapeHtml(cwd)}</div><div class="si-meta">tap to view sessions</div>`;
+		row.addEventListener("click", () => {
+			state.mode = "repoSessions";
+			state.repoCwd = cwd;
+			render();
+		});
+		sessionsList.appendChild(row);
+	}
+}
+
+function renderSidebar() {
+	sessionsList.innerHTML = "";
+	btnSidebarLeft.onclick = null;
+	btnSidebarRight.onclick = null;
+
+	if (state.mode === "repos") {
+		sidebarLabel.textContent = "Repos";
+		setSidebarButton(btnSidebarLeft, iconBack, "Back");
+		setSidebarButton(btnSidebarRight, iconPlus, "Add repo");
+		btnSidebarLeft.onclick = () => {
+			state.mode = "active";
+			render();
+		};
+		btnSidebarRight.onclick = () => addNotice("mock only: repo added", "info");
+		appendRepoRows();
+		return;
+	}
+
+	if (state.mode === "repoSessions") {
+		sidebarLabel.textContent = "Repo Sessions";
+		sidebarLabel.title = state.repoCwd || "";
+		setSidebarButton(btnSidebarLeft, iconBack, "Back");
+		setSidebarButton(btnSidebarRight, iconPlus, "New session");
+		btnSidebarLeft.onclick = () => {
+			state.mode = "repos";
+			render();
+		};
+		btnSidebarRight.onclick = newSession;
+		appendSessionRows(activeHost().sessions.filter((session) => session.cwd === state.repoCwd));
+		return;
+	}
+
+	sidebarLabel.textContent = "Active Sessions";
+	sidebarLabel.title = "";
+	setSidebarButton(btnSidebarLeft, iconPlus, "New session");
+	setSidebarButton(btnSidebarRight, iconFolder, "Repos");
+	btnSidebarLeft.onclick = newSession;
+	btnSidebarRight.onclick = () => {
+		state.mode = "repos";
+		render();
+	};
+	appendHostRows();
+	appendSessionRows(activeHost().sessions);
+}
+
+function renderMessages() {
+	msgs.innerHTML = "";
+	const session = activeSession();
+	if (!session) {
+		addNotice("No session selected.", "info", false);
+		return;
+	}
+	for (const message of session.messages) {
+		if (message.role === "user") {
+			const user = document.createElement("div");
+			user.className = "user-msg";
+			user.textContent = message.text;
+			msgs.appendChild(user);
+		} else if (message.role === "assistant") {
+			const block = document.createElement("div");
+			block.className = "assistant-block";
+			if (message.thinking) {
+				const thinking = document.createElement("div");
+				thinking.className = "thinking-text shown";
+				thinking.textContent = message.thinking;
+				block.appendChild(thinking);
+			}
+			const md = document.createElement("div");
+			md.className = "md";
+			md.textContent = message.text || "";
+			block.appendChild(md);
+			msgs.appendChild(block);
+		} else if (message.role === "tool") {
+			const box = document.createElement("div");
+			box.className = `tool-box ${message.status || "success"}`;
+			box.innerHTML = `<div class="tool-call">${escapeHtml(message.call)}</div><div class="tool-out">${escapeHtml(message.out)}</div>`;
+			box.addEventListener("click", () => box.classList.toggle("success"));
+			msgs.appendChild(box);
+		}
+	}
+	msgs.scrollTop = msgs.scrollHeight;
+}
+
+function addNotice(text, kind = "info", scroll = true) {
+	const block = document.createElement("div");
+	block.className = "assistant-block";
+	const notice = document.createElement("div");
+	notice.className = `notice-text ${kind}`;
+	notice.textContent = text;
+	block.appendChild(notice);
+	msgs.appendChild(block);
+	if (scroll) msgs.scrollTop = msgs.scrollHeight;
+}
+
+function renderFooter() {
+	const session = activeSession();
+	if (!session) {
+		footerLine1.textContent = `host: ${activeHost().label}`;
+		footerLeft2.textContent = "—";
+		footerRight2.textContent = activeHost().url;
+		return;
+	}
+	footerLine1.textContent = session.cwd;
+	const leftParts = [];
+	const metricText = metrics(session);
+	if (metricText) leftParts.push(metricText);
+	leftParts.push(session.id.slice(0, 8));
+	footerLeft2.textContent = leftParts.join(" • ");
+	footerRight2.textContent = `${session.model.provider}/${session.model.id} • ${session.thinkingLevel}`;
+}
+
+function renderControls() {
+	const session = activeSession();
+	const hasSession = Boolean(session);
+	const isController = hasSession && session.role === "controller";
+	const streaming = hasSession && session.isStreaming;
+	rolePill.textContent = hasSession ? session.role : "viewer";
+	rolePill.classList.remove("controller", "viewer");
+	rolePill.classList.add(isController ? "controller" : "viewer");
+	btnAbort.disabled = !hasSession || !isController;
+	btnTakeover.disabled = !hasSession || isController || streaming;
+	btnRelease.disabled = !hasSession || !isController;
+	input.disabled = !hasSession || !isController;
+	btnModel.disabled = !hasSession || !isController || streaming;
+	btnThinking.disabled = !hasSession || !isController || streaming;
+	kbEsc.disabled = btnAbort.disabled;
+	kbTakeover.disabled = btnTakeover.disabled;
+	kbRelease.disabled = btnRelease.disabled;
+	kbEnter.disabled = input.disabled;
+	input.placeholder = !hasSession ? "" : isController ? "Type a prompt (Enter to send, Shift+Enter for newline)" : streaming ? "Viewer mode — Take over after the run finishes" : "Viewer mode — Take over to type";
+	const model = hasSession ? `${session.model.provider}/${session.model.id}` : "—";
+	lblModel.textContent = model;
+	lblModel.title = model;
+	lblThinking.textContent = hasSession ? session.thinkingLevel : "—";
+	lblThinking.title = hasSession ? session.thinkingLevel : "—";
+	workingIndicator.classList.toggle("open", Boolean(streaming));
+}
+
+function tickWorking() {
+	if (!workingIndicator.classList.contains("open")) return;
+	workingSpin.textContent = frames[workingFrame % frames.length];
+	workingFrame += 1;
+}
+
+function fillBorders() {
+	const chat = document.querySelector(".chat");
+	const width = chat?.getBoundingClientRect().width || window.innerWidth;
+	const count = Math.floor(width / 8.1);
+	const dashes = "─".repeat(Math.max(10, count));
+	document.querySelectorAll(".editor-border").forEach((el) => {
+		el.textContent = dashes;
 	});
-	sheet.querySelector("[data-close-sheet]").addEventListener("click", closeSheet);
-	sheet.classList.add("open");
-	sheetBackdrop.classList.add("open");
-};
+}
 
-hostList.addEventListener("click", (event) => {
-	const card = event.target.closest("[data-host]");
-	if (!card) return;
-	selectHost(card.dataset.host);
-});
-
-threadList.addEventListener("click", (event) => {
-	const card = event.target.closest("[data-thread]");
-	if (!card) return;
-	selectThread(card.dataset.thread);
-});
-
-messages.addEventListener("click", (event) => {
-	const toggle = event.target.closest("[data-tool-toggle]");
-	if (!toggle) return;
-	toggle.closest(".tool-card").classList.toggle("open");
-});
-
-$("open-drawer").addEventListener("click", openDrawer);
-drawerScrim.addEventListener("click", closeDrawer);
-sheetBackdrop.addEventListener("click", closeSheet);
-$("send-button").addEventListener("click", sendComposer);
-$("takeover-button").addEventListener("click", () => {
-	state.role = "controller";
-	render();
-});
-$("release-button").addEventListener("click", () => {
-	state.role = "viewer";
-	render();
-});
-$("abort-button").addEventListener("click", () => addMessage("abort current run"));
-$("role-button").addEventListener("click", () => {
-	state.role = state.role === "viewer" ? "controller" : "viewer";
-	render();
-});
-$("filter-button").addEventListener("click", () => {
-	state.filter = state.filter === "active" ? "all" : "active";
-	render();
-});
-$("new-thread-button").addEventListener("click", () => {
+function ensureSelection() {
+	if (!fakeHosts.some((host) => host.id === state.hostId)) {
+		state.hostId = fakeHosts[0].id;
+	}
 	const host = activeHost();
-	const id = `mock-${Date.now()}`;
-	host.sessions.unshift({
+	if (!host.sessions.some((session) => session.id === state.sessionId)) {
+		state.sessionId = host.sessions[0]?.id || null;
+	}
+}
+
+function render() {
+	ensureSelection();
+	renderSidebar();
+	renderMessages();
+	renderFooter();
+	renderControls();
+	fillBorders();
+	save();
+	if (!workingTimer) workingTimer = setInterval(tickWorking, 80);
+}
+
+function newSession() {
+	const host = activeHost();
+	const id = `${Math.random().toString(16).slice(2, 10)}-mock`;
+	const session = {
 		id,
-		title: "new mock session",
-		subtitle: "empty clickable state",
-		updated: "now",
-		status: "working",
-		messages: [{ from: "pi", text: "new mock session created locally." }],
-	});
-	state.threadId = id;
+		name: "new mock session",
+		firstMessage: "new mock session",
+		cwd: host.repos[0] || "/workspace/pi-web",
+		modified: new Date().toISOString(),
+		isRunning: false,
+		role: "controller",
+		isStreaming: false,
+		model: { provider: "anthropic", id: "claude-sonnet-4" },
+		thinkingLevel: "medium",
+		stats: { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 },
+		contextUsage: { percent: 0, contextWindow: 200000 },
+		messages: [{ role: "assistant", text: "new mock session. this exists only in local browser state." }],
+	};
+	host.sessions.unshift(session);
+	state.sessionId = id;
+	state.mode = "active";
 	render();
-});
-$("model-button").addEventListener("click", () => openSheet({
-	title: "choose model",
-	options: ["haiku", "sonnet", "opus", "local"],
-	current: state.model,
-	onSelect: (value) => {
-		state.model = value;
-	},
-}));
-$("thinking-button").addEventListener("click", () => openSheet({
-	title: "thinking level",
-	options: ["none", "low", "medium", "high"],
-	current: state.thinking,
-	onSelect: (value) => {
-		state.thinking = value;
-	},
-}));
-$("quick-actions").addEventListener("click", (event) => {
-	const button = event.target.closest("[data-prompt]");
-	if (!button) return;
-	addMessage(button.dataset.prompt);
-});
+	closeSidebar();
+}
 
-composerInput.addEventListener("input", () => {
-	composerInput.style.height = "auto";
-	composerInput.style.height = `${Math.min(composerInput.scrollHeight, 140)}px`;
-});
+function sendPrompt() {
+	const session = activeSession();
+	const text = input.value.trim();
+	if (!session || !text) return;
+	input.value = "";
+	autoResize(input);
+	session.messages.push({ role: "user", text });
+	session.messages.push({ role: "assistant", thinking: "mock response only", text: `received on ${activeHost().label}: ${text}` });
+	session.modified = new Date().toISOString();
+	session.isRunning = true;
+	session.isStreaming = true;
+	render();
+}
 
-composerInput.addEventListener("keydown", (event) => {
-	if (event.key === "Enter" && !event.shiftKey && !/iphone|ipad|android/i.test(navigator.userAgent)) {
+function autoResize(el) {
+	el.style.height = "auto";
+	el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+}
+
+function closeMenu() {
+	menuOverlay.classList.remove("open");
+	menuPanel.innerHTML = "";
+}
+
+function positionMenu(anchor) {
+	const rect = anchor.getBoundingClientRect();
+	requestAnimationFrame(() => {
+		const panel = menuPanel.getBoundingClientRect();
+		const margin = 8;
+		let left = rect.left + rect.width / 2 - panel.width / 2;
+		let top = rect.bottom + 6;
+		left = Math.max(margin, Math.min(left, window.innerWidth - panel.width - margin));
+		top = Math.max(margin, Math.min(top, window.innerHeight - panel.height - margin));
+		menuPanel.style.left = `${left}px`;
+		menuPanel.style.top = `${top}px`;
+	});
+}
+
+function openModelMenu() {
+	const session = activeSession();
+	if (!session || btnModel.disabled) return;
+	menuOverlay.classList.add("open");
+	menuPanel.innerHTML = `
+		<div class="menu-hdr"><div class="menu-title">Model</div><button class="menu-mini" data-close>Close</button></div>
+		<div class="menu-body"><input class="menu-search" placeholder="Search models…"><div class="menu-list"></div></div>
+	`;
+	const list = menuPanel.querySelector(".menu-list");
+	const search = menuPanel.querySelector(".menu-search");
+	const draw = () => {
+		const q = search.value.toLowerCase();
+		list.innerHTML = "";
+		for (const model of models.filter((m) => `${m.provider}/${m.id} ${m.name}`.toLowerCase().includes(q))) {
+			const key = `${model.provider}/${model.id}`;
+			const item = document.createElement("div");
+			item.className = `menu-item${key === `${session.model.provider}/${session.model.id}` ? " active" : ""}`;
+			item.innerHTML = `<div class="primary">${escapeHtml(key)}</div><div class="secondary">${escapeHtml(model.name)}</div>`;
+			item.addEventListener("click", () => {
+				session.model = { provider: model.provider, id: model.id };
+				closeMenu();
+				render();
+			});
+			list.appendChild(item);
+		}
+	};
+	menuPanel.querySelector("[data-close]").addEventListener("click", closeMenu);
+	search.addEventListener("input", draw);
+	draw();
+	positionMenu(btnModel);
+	search.focus();
+}
+
+function openThinkingMenu() {
+	const session = activeSession();
+	if (!session || btnThinking.disabled) return;
+	const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+	menuOverlay.classList.add("open");
+	menuPanel.innerHTML = `
+		<div class="menu-hdr"><div class="menu-title">Thinking level</div><button class="menu-mini" data-close>Close</button></div>
+		<div class="menu-body"><div class="menu-list"></div></div>
+	`;
+	const list = menuPanel.querySelector(".menu-list");
+	for (const level of levels) {
+		const item = document.createElement("div");
+		item.className = `menu-item${level === session.thinkingLevel ? " active" : ""}`;
+		item.innerHTML = `<div class="primary">${level}</div>`;
+		item.addEventListener("click", () => {
+			session.thinkingLevel = level;
+			closeMenu();
+			render();
+		});
+		list.appendChild(item);
+	}
+	menuPanel.querySelector("[data-close]").addEventListener("click", closeMenu);
+	positionMenu(btnThinking);
+}
+
+function takeOver() {
+	const session = activeSession();
+	if (!session) return;
+	session.role = "controller";
+	session.isStreaming = false;
+	session.isRunning = false;
+	addNotice("mock: controller role acquired");
+	renderControls();
+	renderFooter();
+}
+
+function release() {
+	const session = activeSession();
+	if (!session) return;
+	session.role = "viewer";
+	session.messages.push({ role: "assistant", text: "released. safe to resume in native cli." });
+	render();
+}
+
+function abort() {
+	const session = activeSession();
+	if (!session) return;
+	session.isStreaming = false;
+	session.isRunning = false;
+	session.messages.push({ role: "assistant", text: "operation aborted", thinking: "mock abort path" });
+	render();
+}
+
+btnTakeover.addEventListener("click", takeOver);
+btnRelease.addEventListener("click", release);
+btnAbort.addEventListener("click", abort);
+btnModel.addEventListener("click", openModelMenu);
+btnThinking.addEventListener("click", openThinkingMenu);
+menuScrim.addEventListener("click", closeMenu);
+kbMenu.addEventListener("click", openSidebar);
+kbEsc.addEventListener("click", abort);
+kbTakeover.addEventListener("click", takeOver);
+kbRelease.addEventListener("click", release);
+kbEnter.addEventListener("click", sendPrompt);
+sidebarOverlay.addEventListener("click", closeSidebar);
+input.addEventListener("input", () => autoResize(input));
+input.addEventListener("keydown", (event) => {
+	if (event.key === "Enter" && !event.shiftKey) {
 		event.preventDefault();
-		sendComposer();
+		sendPrompt();
 	}
 });
+window.addEventListener("resize", fillBorders);
 
 render();

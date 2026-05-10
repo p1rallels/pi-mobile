@@ -9,6 +9,7 @@
 		"dev": "bun --hot src/server.ts",
 		"start": "bun src/server.ts",
 		"cli": "bun src/cli.ts",
+		"mock": "bun mock-ui/server.ts",
 		"test": "bun test",
 		"test:e2e": "playwright test"
 	},
