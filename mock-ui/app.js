@@ -300,14 +300,14 @@ function createHostRow(host) {
 }
 
 function appendHostRows() {
-	appendSectionLabel(`Hosts · ${fakeHosts.length}`);
+	appendSectionLabel("Hosts");
 	const hostScroll = document.createElement("div");
 	hostScroll.className = "mock-host-scroll";
 	for (const host of fakeHosts) {
 		hostScroll.appendChild(createHostRow(host));
 	}
 	sessionsList.appendChild(hostScroll);
-	appendSectionLabel(`Active Sessions · ${activeHost().label}`);
+	appendSectionLabel("Active Sessions");
 }
 
 function appendSessionRows(sessions) {

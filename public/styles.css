@@ -242,6 +242,21 @@
 	    }
 	    .sidebar-actions .new-btn { width: auto; flex: 1; }
 	    .new-btn:hover { background: #252530; color: #d4d4d4; }
+    .new-btn.positive {
+      background: #1e2a20;
+      border-color: #2a3a2a;
+      color: #b5bd68;
+    }
+    .new-btn.positive:hover {
+      background: #233624;
+      color: #d4d4d4;
+    }
+    .sidebar-actions .new-btn.wide {
+      flex: 1 1 100%;
+    }
+    .sidebar-actions .new-btn.hidden {
+      display: none;
+    }
     .sessions {
       flex: 1; overflow-y: auto; padding: 6px 6px;
       display: flex; flex-direction: column; gap: 1px;
@@ -258,6 +273,30 @@
     .si-meta { font-size: 10px; color: #505050; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .si.active .si-name { color: #b5bd68; }
     .si-run { color: #b5bd68; }
+    .section-title {
+      margin: 10px 8px 5px;
+      color: #505050;
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .section-title:first-child { margin-top: 2px; }
+    .host-scroll {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      max-height: 205px;
+      overflow-y: auto;
+      margin: 0 0 8px;
+      padding: 0 0 7px;
+      border-bottom: 1px solid #2a2a32;
+      scrollbar-width: thin;
+      scrollbar-color: #2a2a32 transparent;
+    }
+    .host-scroll .si {
+      flex: 0 0 auto;
+      min-height: 40px;
+    }
 
     /* ── Chat area ─────────────────────────────────────────── */
     .chat {

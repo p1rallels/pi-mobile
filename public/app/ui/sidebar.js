@@ -23,6 +23,8 @@ const ICON_BACK =
 function setSidebarButton(btn, icon, label) {
 	if (!btn) return;
 	btn.innerHTML = `${icon}<span class="txt">${label}</span>`;
+	btn.classList.remove("hidden", "wide");
+	btn.classList.toggle("positive", label.toLowerCase().includes("new") || label.toLowerCase().includes("add"));
 }
 
 function escapeHtml(text) {
@@ -123,12 +125,13 @@ export function createSidebar({
 			return;
 		}
 
-		sidebarLabel.textContent = "Active Sessions";
+		sidebarLabel.textContent = "Menu";
 		sidebarLabel.title = "";
-		setSidebarButton(btnSidebarLeft, ICON_PLUS, "New session");
-		setSidebarButton(btnSidebarRight, ICON_FOLDER, "Repos");
-		btnSidebarLeft.onclick = () => void promptNewSessionRepo();
-		btnSidebarRight.onclick = () => setMode("repos");
+		setSidebarButton(btnSidebarLeft, ICON_FOLDER, "Repos");
+		setSidebarButton(btnSidebarRight, "", "");
+		btnSidebarLeft.classList.add("wide");
+		btnSidebarRight.classList.add("hidden");
+		btnSidebarLeft.onclick = () => setMode("repos");
 	}
 
 	function highlightSessionRow(sessionId) {
@@ -139,13 +142,35 @@ export function createSidebar({
 
 	function appendSectionLabel(label) {
 		const row = document.createElement("div");
-		row.className = "si";
-		row.style.cursor = "default";
-		const name = document.createElement("div");
-		name.className = "si-meta";
-		name.textContent = label;
-		row.appendChild(name);
+		row.className = "section-title";
+		row.textContent = label;
 		sessionsList.appendChild(row);
+	}
+
+	function createHostRow(host, activeOrigin) {
+		const origin = hostOrigin(host);
+		if (!origin) return null;
+		const row = document.createElement("div");
+		row.className = `si${origin === activeOrigin ? " active" : ""}`;
+		row.dataset.hostId = typeof host.id === "string" ? host.id : origin;
+
+		const name = document.createElement("div");
+		name.className = "si-name";
+		const label = (typeof host.label === "string" && host.label.trim()) || (typeof host.id === "string" && host.id.trim()) || origin;
+		name.textContent = label;
+		name.title = origin;
+
+		const meta = document.createElement("div");
+		meta.className = "si-meta";
+		meta.textContent = origin === activeOrigin ? "current host" : origin;
+
+		row.appendChild(name);
+		row.appendChild(meta);
+		row.addEventListener("click", () => {
+			if (origin === activeOrigin) return;
+			void onSelectHost(host);
+		});
+		return row;
 	}
 
 	function renderHosts(hosts) {
@@ -154,31 +179,13 @@ export function createSidebar({
 		const enabled = hosts.filter((host) => host && typeof host === "object" && host.enabled !== false && typeof host.url === "string");
 		if (enabled.length === 0) return;
 		appendSectionLabel("Hosts");
+		const hostScroll = document.createElement("div");
+		hostScroll.className = "host-scroll";
 		for (const host of enabled) {
-			const origin = hostOrigin(host);
-			if (!origin) continue;
-			const row = document.createElement("div");
-			row.className = `si${origin === activeOrigin ? " active" : ""}`;
-			row.dataset.hostId = typeof host.id === "string" ? host.id : origin;
-
-			const name = document.createElement("div");
-			name.className = "si-name";
-			const label = (typeof host.label === "string" && host.label.trim()) || (typeof host.id === "string" && host.id.trim()) || origin;
-			name.textContent = label;
-			name.title = origin;
-
-			const meta = document.createElement("div");
-			meta.className = "si-meta";
-			meta.textContent = origin === activeOrigin ? "current host" : origin;
-
-			row.appendChild(name);
-			row.appendChild(meta);
-			row.addEventListener("click", () => {
-				if (origin === activeOrigin) return;
-				void onSelectHost(host);
-			});
-			sessionsList.appendChild(row);
+			const row = createHostRow(host, activeOrigin);
+			if (row) hostScroll.appendChild(row);
 		}
+		sessionsList.appendChild(hostScroll);
 		appendSectionLabel("Active Sessions");
 	}
 
@@ -261,45 +268,6 @@ export function createSidebar({
 		} catch (error) {
 			onNotice(error instanceof Error ? error.message : String(error), "error");
 		}
-	}
-
-	async function promptNewSessionRepo() {
-		let repos = [];
-		try {
-			const data = await api.getJson("/api/repos");
-			repos = Array.isArray(data.repos) ? data.repos : [];
-		} catch (error) {
-			onNotice(error instanceof Error ? error.message : String(error), "error");
-			return;
-		}
-
-		if (repos.length === 0) {
-			onNotice('No repos saved yet. Click "Repos" → "Add repo".', "info");
-			setMode("repos");
-			return;
-		}
-
-		if (repos.length === 1) {
-			await startNewSessionInRepo(repos[0]);
-			return;
-		}
-
-		const list = repos.slice(0, 20);
-		const lines = list.map((p, i) => `${i + 1}) ${p}`);
-		const picked = window.prompt(`New session: pick repo (number)\n\n${lines.join("\n")}`, "1");
-		if (picked === null) return;
-		const raw = picked.trim();
-		if (!raw) return;
-		if (!/^[0-9]+$/.test(raw)) {
-			onNotice("Enter a number from the list.", "error");
-			return;
-		}
-		const idx = Number.parseInt(raw, 10) - 1;
-		if (!Number.isFinite(idx) || idx < 0 || idx >= list.length) {
-			onNotice("Invalid selection.", "error");
-			return;
-		}
-		await startNewSessionInRepo(list[idx]);
 	}
 
 	async function startNewSessionInRepo(repoCwd) {
