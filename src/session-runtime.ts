@@ -6,7 +6,7 @@ import {
 	SessionManager,
 	type AgentSession,
 	type AgentSessionEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -110,6 +110,7 @@ function buildState(session: AgentSession, cwd: string): ApiSessionState {
 		sessionFile: session.sessionFile ?? null,
 		sessionName: session.sessionName,
 		isStreaming: session.isStreaming,
+		isCompacting: session.isCompacting,
 		model: safeModelSnapshot(session),
 		thinkingLevel: session.thinkingLevel,
 		steeringMode: session.steeringMode,
@@ -120,8 +121,11 @@ function buildState(session: AgentSession, cwd: string): ApiSessionState {
 	};
 }
 
-function buildPatch(session: AgentSession): ApiSessionPatch {
+function buildPatch(session: AgentSession, options: { includeMessages?: boolean } = {}): ApiSessionPatch {
 	return {
+		isStreaming: session.isStreaming,
+		isCompacting: session.isCompacting,
+		...(options.includeMessages ? { messages: session.messages } : {}),
 		model: safeModelSnapshot(session),
 		thinkingLevel: session.thinkingLevel,
 		sessionName: session.sessionName,
@@ -456,7 +460,16 @@ export class PiWebRuntime {
 
 		if (command.type === "abort") {
 			this.assertController(runtime, command.clientId);
+			runtime.session.abortCompaction();
 			await runtime.session.abort();
+			return;
+		}
+
+		if (command.type === "compact") {
+			this.assertController(runtime, command.clientId);
+			if (runtime.session.isCompacting) return;
+			const customInstructions = typeof command.customInstructions === "string" ? command.customInstructions.trim() : "";
+			void runtime.session.compact(customInstructions || undefined).catch(() => {});
 			return;
 		}
 
@@ -558,6 +571,7 @@ export class PiWebRuntime {
 		}
 
 		try {
+			runtime.session.abortCompaction();
 			await runtime.session.abort();
 		} catch {
 			// best effort
@@ -648,9 +662,12 @@ export class PiWebRuntime {
 				}
 			}
 
-			if (event.type === "agent_end" || event.type === "auto_compaction_end") {
+			if (event.type === "agent_end" || event.type === "compaction_start" || event.type === "compaction_end") {
 				runtime.tripwireAbortRequested = false;
-				this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session) });
+				this.broadcast(sessionId, {
+					type: "state_patch",
+					patch: buildPatch(session, { includeMessages: event.type === "compaction_end" && Boolean(event.result) }),
+				});
 			}
 		});
 		runtime.unsubscribe = unsubscribe;

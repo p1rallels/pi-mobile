@@ -1,5 +1,6 @@
 import { computeCliCommand } from "./cli.js";
 import { createChatView } from "./chat_view.js";
+import { parseCompactCommand } from "./commands.js";
 
 export function createSessionController({
 	msgsEl,
@@ -108,6 +109,11 @@ export function createSessionController({
 			if (!activeState) return;
 			if (event.patch && typeof event.patch === "object") {
 				Object.assign(activeState, event.patch);
+				if (Array.isArray(event.patch.messages)) {
+					chatView.clear();
+					chatView.renderHistory(event.patch.messages);
+					chatView.scrollToBottom();
+				}
 				onStateChange();
 			}
 			return;
@@ -169,6 +175,31 @@ export function createSessionController({
 			pendingPrompt = false;
 			onStateChange();
 			chatView.handleAgentEvent(event);
+			return;
+		}
+
+		if (event.type === "compaction_start") {
+			if (activeState) {
+				activeState.isCompacting = true;
+				activeState.isStreaming = false;
+			}
+			pendingPrompt = false;
+			onStateChange();
+			return;
+		}
+
+		if (event.type === "compaction_end") {
+			if (activeState) {
+				activeState.isCompacting = false;
+				activeState.isStreaming = false;
+			}
+			pendingPrompt = false;
+			onStateChange();
+			if (event.aborted) {
+				chatView.appendNotice("Error: compaction cancelled", "error");
+			} else if (!event.result) {
+				chatView.appendNotice(event.errorMessage || "Compaction failed", "error");
+			}
 			return;
 		}
 
@@ -282,8 +313,34 @@ export function createSessionController({
 		onStateChange();
 	}
 
+	async function compact(customInstructions) {
+		if (!activeSessionId) return;
+		if (activeState) {
+			activeState.isCompacting = true;
+			activeState.isStreaming = false;
+		}
+		pendingPrompt = false;
+		onStateChange();
+		try {
+			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
+				type: "compact",
+				clientId: getClientId(),
+				customInstructions,
+			});
+		} catch (error) {
+			if (activeState?.isCompacting) activeState.isCompacting = false;
+			onStateChange();
+			throw error;
+		}
+	}
+
 	async function sendPrompt(text) {
 		if (!activeSessionId) return;
+		const compactInstructions = parseCompactCommand(text);
+		if (compactInstructions !== null) {
+			await compact(compactInstructions);
+			return;
+		}
 		pendingPrompt = true;
 		onStateChange();
 		try {
@@ -304,15 +361,15 @@ export function createSessionController({
 		const hadPendingTools = chatView.hasPendingTools();
 		const hadAssistant = chatView.hasAssistant();
 		const hadStreaming = Boolean(activeState?.isStreaming);
+		const hadCompacting = Boolean(activeState?.isCompacting);
 		const shouldShowNotice = Boolean(hadStreaming || pendingPrompt || hadAssistant || hadPendingTools);
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, { type: "abort", clientId: getClientId() });
 		pendingPrompt = false;
 		onStateChange();
 
-		// Mirror TUI: pending tools become error on abort.
+		if (hadCompacting) return;
 		chatView.markPendingToolsAborted("Operation aborted");
 
-		// If there was nothing else to render (abort before streaming starts), show a notice.
 		if (shouldShowNotice && !hadPendingTools && !hadAssistant && !hadStreaming) {
 			chatView.appendNotice("Operation aborted", "error");
 		}

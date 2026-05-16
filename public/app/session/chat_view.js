@@ -8,6 +8,7 @@ import { createToolBoxManager } from "./tool_boxes.js";
 export function createChatView({ msgsEl, isPhoneLikeFn }) {
 	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking }
 	let appendedUserMessageKeys = new Set();
+	let expandedCompactionIds = new Set();
 
 	function scrollToBottom() {
 		msgsEl.scrollTop = msgsEl.scrollHeight;
@@ -23,6 +24,7 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		currentAssistant = null;
 		tools.clear();
 		appendedUserMessageKeys = new Set();
+		expandedCompactionIds = new Set();
 	}
 
 	function appendAssistantBlock() {
@@ -96,6 +98,71 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		scrollToBottom();
 	}
 
+	function formatTokenCount(n) {
+		const num = Number(n || 0);
+		return Number.isFinite(num) && num > 0 ? Math.round(num).toLocaleString() : "0";
+	}
+
+	function appendCompactionSummary(message) {
+		if (!message || typeof message !== "object") return;
+		const summary = typeof message.summary === "string" ? message.summary : "";
+		const tokensBefore = typeof message.tokensBefore === "number" ? message.tokensBefore : 0;
+		const timestamp = typeof message.timestamp === "number" ? message.timestamp : Date.now();
+		const id = `compaction:${timestamp}:${tokensBefore}:${summary.length}`;
+		const expanded = expandedCompactionIds.has(id);
+
+		const card = document.createElement("div");
+		card.className = "compact-card";
+		card.dataset.compactionId = id;
+
+		const label = document.createElement("div");
+		label.className = "compact-label";
+		label.textContent = "[compaction]";
+
+		const line = document.createElement("div");
+		line.className = "compact-summary";
+		line.appendChild(document.createTextNode(`Compacted from ${formatTokenCount(tokensBefore)} tokens `));
+		const expand = document.createElement("span");
+		expand.className = "exp-key";
+		expand.textContent = expanded ? "(tap to collapse)" : "(tap to expand)";
+		line.appendChild(expand);
+
+		card.appendChild(label);
+		card.appendChild(line);
+
+		const body = document.createElement("div");
+		body.className = "compact-expanded md";
+		body.style.display = expanded ? "" : "none";
+		renderMarkdown(body, summary);
+		card.appendChild(body);
+
+		card.addEventListener("click", () => {
+			if (expandedCompactionIds.has(id)) {
+				expandedCompactionIds.delete(id);
+			} else {
+				expandedCompactionIds.add(id);
+			}
+			const stick = isPhoneLikeFn() && isNearBottom(msgsEl);
+			renderAllCompactions();
+			if (stick) scrollToBottom();
+		});
+
+		msgsEl.appendChild(card);
+		scrollToBottom();
+	}
+
+	function renderAllCompactions() {
+		const cards = [...msgsEl.querySelectorAll(".compact-card")];
+		for (const card of cards) {
+			const id = card.dataset.compactionId;
+			const body = card.querySelector(".compact-expanded");
+			const key = card.querySelector(".exp-key");
+			const expanded = id && expandedCompactionIds.has(id);
+			if (key) key.textContent = expanded ? "(tap to collapse)" : "(tap to expand)";
+			if (body) body.style.display = expanded ? "" : "none";
+		}
+	}
+
 	const tools = createToolBoxManager({ msgsEl, scrollToBottom });
 
 	function renderHistory(messages) {
@@ -121,6 +188,8 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 					tools.setCall(call.id, call.name, call.arguments);
 				}
 				currentAssistant = null;
+			} else if (m.role === "compactionSummary") {
+				appendCompactionSummary(m);
 			} else if (m.role === "toolResult") {
 				const toolCallId = typeof m.toolCallId === "string" ? m.toolCallId : safeRandomUUID();
 				const toolName = typeof m.toolName === "string" ? m.toolName : "tool";
@@ -281,6 +350,7 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		clear,
 		scrollToBottom,
 		appendNotice,
+		appendCompactionSummary,
 		renderHistory,
 		renderReleased,
 		handleAgentEvent,

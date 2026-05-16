@@ -1,6 +1,6 @@
 # pi-web
 
-Web UI for the `pi` coding agent, built on the `@mariozechner/pi-coding-agent` SDK.
+Web UI for the `pi` coding agent, built on the `@earendil-works/pi-coding-agent` SDK.
 
 `pi-web` runs the agent on whatever machine hosts the server. You connect from a trusted browser on a laptop, phone, or tablet to control and view sessions.
 

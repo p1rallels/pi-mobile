@@ -10,6 +10,7 @@ const msgs = document.getElementById("msgs");
 const input = document.getElementById("inp");
 const workingIndicator = document.getElementById("working");
 const workingSpin = document.getElementById("work-spin");
+const workingText = document.querySelector(".work-text");
 
 const footerLine1 = document.getElementById("footer-line-1");
 const footerLeft2 = document.getElementById("footer-left-2");
@@ -246,8 +247,10 @@ function updateTopSelectors() {
 function updateWorkingIndicator() {
 	if (!workingIndicator) return;
 	const activeState = sessionCtrl.getActiveState();
-	const show = isPhoneLike() && (sessionCtrl.getPendingPrompt() || Boolean(activeState && activeState.isStreaming));
+	const compacting = Boolean(activeState && activeState.isCompacting);
+	const show = isPhoneLike() && (sessionCtrl.getPendingPrompt() || compacting || Boolean(activeState && activeState.isStreaming));
 	workingIndicator.classList.toggle("open", show);
+	if (workingText) workingText.textContent = compacting ? "Compacting context..." : "Working...";
 
 	const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 	const updateFrame = () => {
@@ -272,24 +275,29 @@ function updateControls() {
 
 	const hasSession = Boolean(sessionCtrl.getActiveSessionId());
 	const isController = hasSession && sessionCtrl.isController();
-	const streaming = Boolean(sessionCtrl.getActiveState() && sessionCtrl.getActiveState().isStreaming);
+	const activeState = sessionCtrl.getActiveState();
+	const compacting = Boolean(activeState && activeState.isCompacting);
+	const streaming = Boolean(activeState && activeState.isStreaming);
+	const busy = streaming || compacting;
 	const phone = isPhoneLike();
-	const canChangeSettings = hasSession && isController && !streaming;
+	const canChangeSettings = hasSession && isController && !busy;
 
 	btnAbort.disabled = !hasSession || !isController;
-	btnTakeover.disabled = !hasSession || isController || streaming;
+	btnTakeover.disabled = !hasSession || isController || busy;
 	btnRelease.disabled = !hasSession || !isController;
-	input.disabled = !hasSession || !isController;
+	input.disabled = !hasSession || !isController || compacting;
 	if (btnModel) btnModel.disabled = !canChangeSettings;
 	if (btnThinking) btnThinking.disabled = !canChangeSettings;
 
 	if (kbEsc) kbEsc.disabled = !hasSession || !isController;
-	if (kbTakeover) kbTakeover.disabled = !hasSession || isController || streaming;
+	if (kbTakeover) kbTakeover.disabled = !hasSession || isController || busy;
 	if (kbRelease) kbRelease.disabled = !hasSession || !isController;
-	if (kbEnter) kbEnter.disabled = !hasSession || !isController;
+	if (kbEnter) kbEnter.disabled = !hasSession || !isController || compacting;
 
 	if (!hasSession) {
 		input.placeholder = "";
+	} else if (compacting) {
+		input.placeholder = "Compacting context…";
 	} else if (isController) {
 		input.placeholder = phone
 			? "Type a prompt (Enter key to send, Return key for newline)"

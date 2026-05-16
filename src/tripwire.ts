@@ -1,4 +1,4 @@
-import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";

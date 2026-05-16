@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 export type ClientRole = "controller" | "viewer";
 
@@ -95,6 +95,7 @@ export interface ApiSessionState {
 	sessionFile: string | null;
 	sessionName?: string;
 	isStreaming: boolean;
+	isCompacting: boolean;
 	model: { provider: string; id: string; name?: string } | null;
 	thinkingLevel: string;
 	steeringMode: "all" | "one-at-a-time";
@@ -106,6 +107,7 @@ export interface ApiSessionState {
 
 export type ApiCommandRequest =
 	| { type: "prompt"; clientId: string; text: string; deliverAs?: "followUp" | "steer" }
+	| { type: "compact"; clientId: string; customInstructions?: string }
 	| { type: "abort"; clientId: string }
 	| { type: "set_model"; clientId: string; provider: string; modelId: string }
 	| { type: "set_thinking_level"; clientId: string; level: string }
@@ -114,6 +116,9 @@ export type ApiCommandRequest =
 	| { type: "set_session_name"; clientId: string; name: string };
 
 export interface ApiSessionPatch {
+	isStreaming?: boolean;
+	isCompacting?: boolean;
+	messages?: ApiSessionState["messages"];
 	model?: ApiSessionState["model"];
 	thinkingLevel?: string;
 	sessionName?: string;
