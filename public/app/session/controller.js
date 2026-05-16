@@ -329,8 +329,9 @@ export function createSessionController({
 			});
 		} catch (error) {
 			if (activeState?.isCompacting) activeState.isCompacting = false;
+			const message = error instanceof Error ? error.message : String(error);
+			chatView.appendNotice(message, "error");
 			onStateChange();
-			throw error;
 		}
 	}
 

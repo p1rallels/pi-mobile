@@ -42,4 +42,18 @@ describe("session runtime", () => {
 
 		await runtime.release(started.sessionId, { clientId: "client-1" });
 	});
+
+	test("routes compact slash prompts through manual compaction", async () => {
+		process.env.PI_CODING_AGENT_DIR = await makeAgentDir();
+		const runtime = new PiWebRuntime();
+		await runtime.addRepo(process.cwd());
+
+		const started = await runtime.startSession({ cwd: process.cwd(), clientId: "client-1" });
+		await expect(runtime.handleCommand(started.sessionId, { type: "prompt", clientId: "client-1", text: "/compact" })).rejects.toThrow(
+			"Nothing to compact (no messages yet)",
+		);
+		expect(runtime.getSessionState(started.sessionId).isCompacting).toBe(false);
+
+		await runtime.release(started.sessionId, { clientId: "client-1" });
+	});
 });

@@ -152,6 +152,13 @@ function normalizeCwd(input: string): string {
 	return resolve(input.trim());
 }
 
+function parseCompactCommandText(text: string): string | null {
+	const trimmed = text.trim();
+	if (trimmed === "/compact") return "";
+	if (trimmed.startsWith("/compact ")) return trimmed.slice(9).trim();
+	return null;
+}
+
 function serializeSessionSummary(entry: {
 	id: string;
 	path: string;
@@ -453,6 +460,15 @@ export class PiWebRuntime {
 		return { sessionId: runtime.session.sessionId };
 	}
 
+	private startManualCompaction(runtime: RunningSession, customInstructions: string | undefined): void {
+		if (runtime.session.isCompacting) return;
+		if (runtime.session.messages.length < 2) {
+			throw new Error("Nothing to compact (no messages yet)");
+		}
+		const trimmedInstructions = typeof customInstructions === "string" ? customInstructions.trim() : "";
+		void runtime.session.compact(trimmedInstructions || undefined).catch(() => {});
+	}
+
 	async handleCommand(sessionId: string, command: ApiCommandRequest): Promise<void> {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
@@ -468,9 +484,7 @@ export class PiWebRuntime {
 
 		if (command.type === "compact") {
 			this.assertController(runtime, command.clientId);
-			if (runtime.session.isCompacting) return;
-			const customInstructions = typeof command.customInstructions === "string" ? command.customInstructions.trim() : "";
-			void runtime.session.compact(customInstructions || undefined).catch(() => {});
+			this.startManualCompaction(runtime, command.customInstructions);
 			return;
 		}
 
@@ -478,6 +492,11 @@ export class PiWebRuntime {
 			this.assertController(runtime, command.clientId);
 			const text = command.text.trim();
 			if (text.length === 0) return;
+			const customInstructions = parseCompactCommandText(text);
+			if (customInstructions !== null) {
+				this.startManualCompaction(runtime, customInstructions);
+				return;
+			}
 			await runtime.session.prompt(text, runtime.session.isStreaming ? { streamingBehavior: command.deliverAs ?? "followUp" } : undefined);
 			return;
 		}
@@ -663,12 +682,20 @@ export class PiWebRuntime {
 				}
 			}
 
-			if (event.type === "agent_end" || event.type === "compaction_start" || event.type === "compaction_end") {
+			if (event.type === "agent_start" || event.type === "agent_end" || event.type === "compaction_start" || event.type === "compaction_end") {
 				runtime.tripwireAbortRequested = false;
-				this.broadcast(sessionId, {
-					type: "state_patch",
-					patch: buildPatch(session, { includeMessages: event.type === "compaction_end" && Boolean(event.result) }),
-				});
+				const patch = buildPatch(session, { includeMessages: event.type === "compaction_end" && Boolean(event.result) });
+				if (event.type === "agent_start") patch.isStreaming = true;
+				if (event.type === "agent_end") patch.isStreaming = false;
+				if (event.type === "compaction_start") {
+					patch.isCompacting = true;
+					patch.isStreaming = false;
+				}
+				if (event.type === "compaction_end") {
+					patch.isCompacting = false;
+					patch.isStreaming = false;
+				}
+				this.broadcast(sessionId, { type: "state_patch", patch });
 			}
 		});
 		runtime.unsubscribe = unsubscribe;
