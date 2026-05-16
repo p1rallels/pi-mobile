@@ -112,8 +112,9 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		const expanded = expandedCompactionIds.has(id);
 
 		const card = document.createElement("div");
-		card.className = "compact-card";
+		card.className = `compact-card${expanded ? " expanded" : ""}`;
 		card.dataset.compactionId = id;
+		card.compactionSummary = summary;
 
 		const label = document.createElement("div");
 		label.className = "compact-label";
@@ -130,11 +131,12 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		card.appendChild(label);
 		card.appendChild(line);
 
-		const body = document.createElement("div");
-		body.className = "compact-expanded md";
-		body.style.display = expanded ? "" : "none";
-		renderMarkdown(body, summary);
-		card.appendChild(body);
+		if (expanded) {
+			const body = document.createElement("div");
+			body.className = "compact-expanded";
+			body.textContent = summary;
+			card.appendChild(body);
+		}
 
 		card.addEventListener("click", () => {
 			if (expandedCompactionIds.has(id)) {
@@ -158,8 +160,16 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 			const body = card.querySelector(".compact-expanded");
 			const key = card.querySelector(".exp-key");
 			const expanded = id && expandedCompactionIds.has(id);
+			card.classList.toggle("expanded", Boolean(expanded));
 			if (key) key.textContent = expanded ? "(tap to collapse)" : "(tap to expand)";
-			if (body) body.style.display = expanded ? "" : "none";
+			if (expanded && !body) {
+				const nextBody = document.createElement("div");
+				nextBody.className = "compact-expanded";
+				nextBody.textContent = card.compactionSummary || "";
+				card.appendChild(nextBody);
+			} else if (!expanded && body) {
+				body.remove();
+			}
 		}
 	}
 
