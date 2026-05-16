@@ -114,7 +114,7 @@ export function createSessionController({
 				if (Array.isArray(event.patch.messages)) {
 					chatView.clear();
 					chatView.renderHistory(event.patch.messages);
-					if (pendingCompactionSummary && !event.patch.messages.some((m) => m?.role === "compactionSummary")) {
+					if (pendingCompactionSummary) {
 						chatView.appendCompactionSummary(pendingCompactionSummary);
 					}
 					pendingCompactionSummary = null;
