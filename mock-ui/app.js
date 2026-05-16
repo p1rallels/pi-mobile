@@ -166,6 +166,7 @@ const msgs = $("msgs");
 const input = $("inp");
 const workingIndicator = $("working");
 const workingSpin = $("work-spin");
+const workingText = document.querySelector(".work-text");
 const footerLine1 = $("footer-line-1");
 const footerLeft2 = $("footer-left-2");
 const footerRight2 = $("footer-right-2");
@@ -210,6 +211,7 @@ const state = {
 
 let workingTimer = null;
 let workingFrame = 0;
+let compactTimer = null;
 const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 const activeHost = () => fakeHosts.find((host) => host.id === state.hostId) || fakeHosts[0];
@@ -247,6 +249,11 @@ function formatTokens(n) {
 	if (num >= 10_000) return `${Math.round(num / 1_000)}k`;
 	if (num >= 1_000) return `${(num / 1_000).toFixed(1)}k`;
 	return String(Math.round(num));
+}
+
+function formatTokenCount(n) {
+	const num = Number(n || 0);
+	return Number.isFinite(num) && num > 0 ? Math.round(num).toLocaleString() : "0";
 }
 
 function formatCost(cost) {
@@ -419,34 +426,16 @@ function renderSidebar() {
 
 function createCompactCard(message) {
 	const card = document.createElement("div");
-	card.className = `compact-card ${message.status || "preview"}`;
-	const instructions = message.instructions ? escapeHtml(message.instructions) : "default compaction";
-	const stateLabel = message.status === "done" ? "compacted" : message.status === "cancelled" ? "cancelled" : "preview";
+	card.className = `compact-card${message.expanded ? " expanded" : ""}`;
+	card.dataset.compactId = message.id;
+	const tokenText = formatTokenCount(message.tokensBefore);
 	card.innerHTML = `
-		<div class="compact-head">
-			<div>
-				<div class="compact-eyebrow">slash command</div>
-				<div class="compact-title">/compact</div>
-			</div>
-			<div class="compact-state">${stateLabel}</div>
+		<div class="compact-label">[compaction]</div>
+		<div class="compact-summary">
+			Compacted from ${tokenText} tokens
+			<span class="exp-key">(${message.expanded ? "tap to collapse" : "tap to expand"})</span>
 		</div>
-		<div class="compact-subtitle">${instructions}</div>
-		<div class="compact-metrics">
-			<div><span>before</span><strong>${formatTokens(message.before)}</strong></div>
-			<div><span>after</span><strong>${formatTokens(message.after)}</strong></div>
-			<div><span>freed</span><strong>${formatTokens(message.dropped)}</strong></div>
-		</div>
-		<div class="compact-body">
-			<div>summarize older turns into a context handoff</div>
-			<div>keep ~${formatTokens(message.keptRecent)} recent tokens and tool pairs intact</div>
-			<div>continue this session; no new session is created</div>
-		</div>
-		${message.status === "preview" ? `
-			<div class="compact-actions">
-				<button type="button" data-compact-action="confirm" data-compact-id="${escapeHtml(message.id)}">compact now</button>
-				<button type="button" class="secondary" data-compact-action="cancel" data-compact-id="${escapeHtml(message.id)}">cancel</button>
-			</div>
-		` : ""}
+		${message.expanded ? `<div class="compact-expanded"><strong>Compacted from ${tokenText} tokens</strong>\n\n${escapeHtml(message.summary)}</div>` : ""}
 	`;
 	return card;
 }
@@ -484,8 +473,16 @@ function renderMessages() {
 			box.innerHTML = `<div class="tool-call">${escapeHtml(message.call)}</div><div class="tool-out">${escapeHtml(message.out)}</div>`;
 			box.addEventListener("click", () => box.classList.toggle("success"));
 			msgs.appendChild(box);
-		} else if (message.role === "compact") {
+		} else if (message.role === "compaction") {
 			msgs.appendChild(createCompactCard(message));
+		} else if (message.role === "notice") {
+			const block = document.createElement("div");
+			block.className = "assistant-block";
+			const notice = document.createElement("div");
+			notice.className = `notice-text ${message.kind || "info"}`;
+			notice.textContent = message.text || "";
+			block.appendChild(notice);
+			msgs.appendChild(block);
 		}
 	}
 	msgs.scrollTop = msgs.scrollHeight;
@@ -523,27 +520,29 @@ function renderControls() {
 	const session = activeSession();
 	const hasSession = Boolean(session);
 	const isController = hasSession && session.role === "controller";
-	const streaming = hasSession && session.isStreaming;
+	const compacting = hasSession && Boolean(session.compacting);
+	const streaming = hasSession && (session.isStreaming || compacting);
 	rolePill.textContent = hasSession ? session.role : "viewer";
 	rolePill.classList.remove("controller", "viewer");
 	rolePill.classList.add(isController ? "controller" : "viewer");
 	btnAbort.disabled = !hasSession || !isController;
 	btnTakeover.disabled = !hasSession || isController || streaming;
 	btnRelease.disabled = !hasSession || !isController;
-	input.disabled = !hasSession || !isController;
+	input.disabled = !hasSession || !isController || compacting;
 	btnModel.disabled = !hasSession || !isController || streaming;
 	btnThinking.disabled = !hasSession || !isController || streaming;
 	kbEsc.disabled = btnAbort.disabled;
 	kbTakeover.disabled = btnTakeover.disabled;
 	kbRelease.disabled = btnRelease.disabled;
 	kbEnter.disabled = input.disabled;
-	input.placeholder = !hasSession ? "" : isController ? "Type a prompt (Enter to send, Shift+Enter for newline)" : streaming ? "Viewer mode — Take over after the run finishes" : "Viewer mode — Take over to type";
+	input.placeholder = !hasSession ? "" : compacting ? "Compacting context…" : isController ? "Type a prompt (Enter to send, Shift+Enter for newline)" : streaming ? "Viewer mode — Take over after the run finishes" : "Viewer mode — Take over to type";
 	const model = hasSession ? `${session.model.provider}/${session.model.id}` : "—";
 	lblModel.textContent = model;
 	lblModel.title = model;
 	lblThinking.textContent = hasSession ? session.thinkingLevel : "—";
 	lblThinking.title = hasSession ? session.thinkingLevel : "—";
 	workingIndicator.classList.toggle("open", Boolean(streaming));
+	if (workingText) workingText.textContent = compacting ? "Compacting context..." : "Working...";
 	updateCommandHint();
 }
 
@@ -609,50 +608,59 @@ function newSession() {
 	closeSidebar();
 }
 
-function startCompactPreview(text) {
+function compactSummaryText({ instructions, before, after, keptRecent }) {
+	const focus = instructions ? `\n\ncustom instructions:\n${instructions}` : "";
+	return `summary:\n- preserved current goal: iterate on pi-web mobile ui and federated host switching.\n- retained security decisions around tailscale, caddy mtls, device certs, and webauthn freshness.\n- kept recent frontend choices: menu title, full-width repos action, host scroll cap, and per-host active sessions.\n\ncurrent state:\n- context compacted from ${formatTokenCount(before)} to about ${formatTokenCount(after)} tokens.\n- most recent ${formatTokenCount(keptRecent)} tokens remain verbatim.${focus}`;
+}
+
+function finishCompaction() {
 	const session = activeSession();
-	if (!session) return;
-	const instructions = text.replace(/^\/compact\b/i, "").trim();
-	const estimate = compactEstimate(session);
-	session.messages.push({ role: "user", text });
-	session.messages.push({
-		role: "compact",
-		id: `compact-${Date.now()}`,
-		status: "preview",
-		instructions,
-		...estimate,
-	});
-	session.modified = new Date().toISOString();
+	if (!session?.compacting) return;
+	const compacting = session.compacting;
+	session.compacting = null;
 	session.isRunning = false;
 	session.isStreaming = false;
-	render();
-}
-
-function findCompactMessage(compactId) {
-	const session = activeSession();
-	if (!session) return null;
-	return session.messages.find((message) => message.role === "compact" && message.id === compactId) || null;
-}
-
-function confirmCompact(compactId) {
-	const session = activeSession();
-	const compact = findCompactMessage(compactId);
-	if (!session || !compact) return;
-	compact.status = "done";
-	compact.completedAt = new Date().toISOString();
-	session.stats.tokens.input = Math.max(0, Math.round(compact.after * 0.72));
-	session.stats.tokens.output = Math.max(0, Math.round(compact.after * 0.18));
+	session.stats.tokens.input = Math.max(0, Math.round(compacting.after * 0.72));
+	session.stats.tokens.output = Math.max(0, Math.round(compacting.after * 0.18));
 	session.stats.tokens.cacheRead = 0;
-	session.stats.tokens.cacheWrite = Math.max(0, Math.round(compact.summary));
-	session.contextUsage.percent = Math.max(1, Math.round((compact.after / compact.contextWindow) * 100));
+	session.stats.tokens.cacheWrite = Math.max(0, Math.round(compacting.summary));
+	session.contextUsage.percent = Math.max(1, Math.round((compacting.after / compacting.contextWindow) * 100));
+	session.messages.push({
+		role: "compaction",
+		id: compacting.id,
+		tokensBefore: compacting.before,
+		summary: compactSummaryText(compacting),
+		expanded: false,
+	});
 	session.modified = new Date().toISOString();
+	compactTimer = null;
 	render();
 }
 
-function cancelCompact(compactId) {
-	const compact = findCompactMessage(compactId);
-	if (!compact) return;
-	compact.status = "cancelled";
+function startCompact(text) {
+	const session = activeSession();
+	if (!session || session.compacting) return;
+	const instructions = text.replace(/^\/compact\b/i, "").trim();
+	const estimate = compactEstimate(session);
+	session.compacting = {
+		id: `compact-${Date.now()}`,
+		instructions,
+		...estimate,
+	};
+	session.modified = new Date().toISOString();
+	session.isRunning = true;
+	session.isStreaming = false;
+	if (compactTimer) clearTimeout(compactTimer);
+	compactTimer = setTimeout(finishCompaction, 1600);
+	render();
+}
+
+function toggleCompaction(compactId) {
+	const session = activeSession();
+	if (!session) return;
+	const message = session.messages.find((entry) => entry.role === "compaction" && entry.id === compactId);
+	if (!message) return;
+	message.expanded = !message.expanded;
 	render();
 }
 
@@ -664,7 +672,7 @@ function sendPrompt() {
 	autoResize(input);
 	updateCommandHint();
 	if (/^\/compact\b/i.test(text)) {
-		startCompactPreview(text);
+		startCompact(text);
 		return;
 	}
 	session.messages.push({ role: "user", text });
@@ -785,6 +793,16 @@ function release() {
 function abort() {
 	const session = activeSession();
 	if (!session) return;
+	if (session.compacting) {
+		if (compactTimer) clearTimeout(compactTimer);
+		compactTimer = null;
+		session.compacting = null;
+		session.isStreaming = false;
+		session.isRunning = false;
+		session.messages.push({ role: "notice", kind: "error", text: "Error: compaction cancelled" });
+		render();
+		return;
+	}
 	session.isStreaming = false;
 	session.isRunning = false;
 	session.messages.push({ role: "assistant", text: "operation aborted", thinking: "mock abort path" });
@@ -792,10 +810,9 @@ function abort() {
 }
 
 msgs.addEventListener("click", (event) => {
-	const button = event.target.closest("[data-compact-action]");
-	if (!button) return;
-	if (button.dataset.compactAction === "confirm") confirmCompact(button.dataset.compactId);
-	if (button.dataset.compactAction === "cancel") cancelCompact(button.dataset.compactId);
+	const card = event.target.closest("[data-compact-id]");
+	if (!card) return;
+	toggleCompaction(card.dataset.compactId);
 });
 commandHint.addEventListener("click", (event) => {
 	const button = event.target.closest("[data-command]");
