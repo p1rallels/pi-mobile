@@ -429,14 +429,7 @@ function createCompactCard(message) {
 	card.className = `compact-card${message.expanded ? " expanded" : ""}`;
 	card.dataset.compactId = message.id;
 	const tokenText = formatTokenCount(message.tokensBefore);
-	card.innerHTML = `
-		<div class="compact-label">[compaction]</div>
-		<div class="compact-summary">
-			Compacted from ${tokenText} tokens
-			<span class="exp-key">(${message.expanded ? "tap to collapse" : "tap to expand"})</span>
-		</div>
-		${message.expanded ? `<div class="compact-expanded"><strong>Compacted from ${tokenText} tokens</strong>\n\n${escapeHtml(message.summary)}</div>` : ""}
-	`;
+	card.innerHTML = `<div class="compact-line"><span class="compact-label">[compaction]</span><span class="compact-summary">Compacted from ${tokenText} tokens <span class="exp-key">(${message.expanded ? "tap to collapse" : "tap to expand"})</span></span></div>${message.expanded ? `<div class="compact-expanded"><strong>Compacted from ${tokenText} tokens</strong>\n\n${escapeHtml(message.summary)}</div>` : ""}`;
 	return card;
 }
 
