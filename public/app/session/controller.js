@@ -19,6 +19,7 @@ export function createSessionController({
 	let eventSource = null;
 	let lastCliCommand = null;
 	let shownTripwireAlertIds = new Set();
+	let pendingCompactionSummary = null;
 
 	let pendingPrompt = false;
 
@@ -79,6 +80,7 @@ export function createSessionController({
 		controllerClientId = null;
 		role = "viewer";
 		lastCliCommand = null;
+		pendingCompactionSummary = null;
 		pendingPrompt = false;
 		resetTripwireAlerts();
 		chatView.clear();
@@ -112,6 +114,10 @@ export function createSessionController({
 				if (Array.isArray(event.patch.messages)) {
 					chatView.clear();
 					chatView.renderHistory(event.patch.messages);
+					if (pendingCompactionSummary && !event.patch.messages.some((m) => m?.role === "compactionSummary")) {
+						chatView.appendCompactionSummary(pendingCompactionSummary);
+					}
+					pendingCompactionSummary = null;
 					chatView.scrollToBottom();
 				}
 				onStateChange();
@@ -135,6 +141,7 @@ export function createSessionController({
 			controllerClientId = null;
 			role = "viewer";
 			resetTripwireAlerts();
+			pendingCompactionSummary = null;
 
 			chatView.renderReleased({ cliCommand: cmd });
 			onStateChange();
@@ -195,9 +202,17 @@ export function createSessionController({
 			}
 			pendingPrompt = false;
 			onStateChange();
-			if (event.aborted) {
+			if (event.result && typeof event.result === "object") {
+				pendingCompactionSummary = {
+					role: "compactionSummary",
+					summary: event.result.summary,
+					tokensBefore: event.result.tokensBefore,
+					timestamp: Date.now(),
+				};
+				chatView.appendCompactionSummary(pendingCompactionSummary);
+			} else if (event.aborted) {
 				chatView.appendNotice("Error: compaction cancelled", "error");
-			} else if (!event.result) {
+			} else {
 				chatView.appendNotice(event.errorMessage || "Compaction failed", "error");
 			}
 			return;
@@ -249,6 +264,7 @@ export function createSessionController({
 		activeState = null;
 		controllerClientId = null;
 		role = "viewer";
+		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 
 		chatView.clear();
@@ -293,6 +309,7 @@ export function createSessionController({
 	}
 
 	async function selectSession(session) {
+		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		if (session.isRunning) {
 			activeSessionId = session.id;
@@ -387,6 +404,7 @@ export function createSessionController({
 	}
 
 	function openSessionId(sessionId) {
+		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		activeSessionId = sessionId;
 		connectEvents(activeSessionId);
