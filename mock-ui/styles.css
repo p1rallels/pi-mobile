@@ -459,10 +459,6 @@
       white-space: pre-wrap;
       word-break: break-word;
     }
-    .compact-expanded strong {
-      color: #d4d4d4;
-    }
-
     .command-hint {
       display: none;
       flex-shrink: 0;
