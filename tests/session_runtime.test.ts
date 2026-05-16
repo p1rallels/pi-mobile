@@ -56,4 +56,22 @@ describe("session runtime", () => {
 
 		await runtime.release(started.sessionId, { clientId: "client-1" });
 	});
+
+	test("does not compact only-kept recent context", async () => {
+		process.env.PI_CODING_AGENT_DIR = await makeAgentDir();
+		const runtime = new PiWebRuntime();
+		await runtime.addRepo(process.cwd());
+
+		const started = await runtime.startSession({ cwd: process.cwd(), clientId: "client-1" });
+		const state = runtime.getSessionState(started.sessionId);
+		state.messages.push(
+			{ role: "user", content: [{ type: "text", text: "short prompt" }], timestamp: Date.now() },
+			{ role: "assistant", content: [{ type: "text", text: "short answer" }], timestamp: Date.now(), provider: "test", model: "test", stopReason: "end_turn" },
+		);
+		await expect(runtime.handleCommand(started.sessionId, { type: "compact", clientId: "client-1" })).rejects.toThrow(
+			"Nothing to compact yet",
+		);
+
+		await runtime.release(started.sessionId, { clientId: "client-1" });
+	});
 });

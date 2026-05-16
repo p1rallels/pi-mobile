@@ -2,6 +2,7 @@ import {
 	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
+	estimateTokens,
 	getAgentDir,
 	ModelRegistry,
 	SessionManager,
@@ -157,6 +158,10 @@ function parseCompactCommandText(text: string): string | null {
 	if (trimmed === "/compact") return "";
 	if (trimmed.startsWith("/compact ")) return trimmed.slice(9).trim();
 	return null;
+}
+
+function estimateSessionTokens(messages: AgentSession["messages"]): number {
+	return messages.reduce((total, message) => total + estimateTokens(message), 0);
 }
 
 function serializeSessionSummary(entry: {
@@ -464,6 +469,11 @@ export class PiWebRuntime {
 		if (runtime.session.isCompacting) return;
 		if (runtime.session.messages.length < 2) {
 			throw new Error("Nothing to compact (no messages yet)");
+		}
+		const settings = runtime.session.settingsManager.getCompactionSettings();
+		const estimatedTokens = estimateSessionTokens(runtime.session.messages);
+		if (estimatedTokens <= settings.keepRecentTokens) {
+			throw new Error("Nothing to compact yet (recent context is still within the keep window).");
 		}
 		const trimmedInstructions = typeof customInstructions === "string" ? customInstructions.trim() : "";
 		void runtime.session.compact(trimmedInstructions || undefined).catch(() => {});
