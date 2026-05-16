@@ -428,39 +428,32 @@
     .expandable.open { display: block; }
 
     .compact-card {
-      margin-top: .65em;
-      padding: 6px 16px;
+      margin-top: 1em;
+      padding: 10px 16px;
       background: #2b2233;
       border-top: 1px solid #46304f;
       border-bottom: 1px solid #46304f;
       color: #d4d4d4;
       cursor: pointer;
-      font-size: 12px;
-      line-height: 1.25;
+      font-size: inherit;
+      line-height: 1.5;
     }
     .compact-card:hover {
       background: #30253a;
     }
-    .compact-line {
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      min-width: 0;
-      white-space: nowrap;
-    }
     .compact-label {
       color: #c792ea;
       font-weight: 700;
-      flex: 0 0 auto;
+      white-space: nowrap;
     }
     .compact-summary {
       color: #d4d4d4;
-      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .compact-expanded {
-      margin-top: 6px;
+      margin-top: 8px;
       color: #b9a7c8;
       line-height: 1.35;
       white-space: pre-wrap;
