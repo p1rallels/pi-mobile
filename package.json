@@ -14,7 +14,7 @@
 		"test:e2e": "playwright test"
 	},
 	"dependencies": {
-		"@mariozechner/pi-coding-agent": "0.65.0",
+		"@mariozechner/pi-coding-agent": "^0.73.1",
 		"@simplewebauthn/browser": "13.2.2",
 		"@simplewebauthn/server": "13.2.3"
 	},
