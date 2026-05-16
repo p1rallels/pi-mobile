@@ -216,14 +216,14 @@ export function createSidebar({
 
 			row.addEventListener("click", () => {
 				highlightSessionRow(s.id);
-				if (view === "repoSessions") {
-					void (async () => {
+				void (async () => {
+					try {
 						await onSelectSession(s);
-						setMode("active");
-					})();
-				} else {
-					void onSelectSession(s);
-				}
+						if (view === "repoSessions") setMode("active");
+					} catch (error) {
+						onNotice(error instanceof Error ? error.message : String(error), "error");
+					}
+				})();
 			});
 
 			sessionsList.appendChild(row);
@@ -274,10 +274,15 @@ export function createSidebar({
 		if (!repoCwd || typeof repoCwd !== "string") return;
 		const cwd = repoCwd.trim();
 		if (!cwd) return;
-		const result = await api.postJson("/api/sessions", { clientId: getClientId(), cwd });
-		onSessionIdSelected(result.sessionId);
-		setOpen(false);
-		setMode("active");
+		try {
+			const result = await api.postJson("/api/sessions", { clientId: getClientId(), cwd });
+			if (!result?.sessionId) throw new Error("Session did not start.");
+			onSessionIdSelected(result.sessionId);
+			setOpen(false);
+			setMode("active");
+		} catch (error) {
+			onNotice(error instanceof Error ? error.message : String(error), "error");
+		}
 	}
 
 	async function refresh() {

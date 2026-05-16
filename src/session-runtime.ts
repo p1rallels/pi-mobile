@@ -2,6 +2,7 @@ import {
 	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
+	getAgentDir,
 	ModelRegistry,
 	SessionManager,
 	type AgentSession,
@@ -10,7 +11,6 @@ import {
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { TripwireService } from "./tripwire.ts";
 import type {
@@ -178,10 +178,11 @@ function serializeSessionSummary(entry: {
 export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
-	private authStorage = AuthStorage.create();
-	private modelRegistry = ModelRegistry.create(this.authStorage);
-	private repoStorePath = join(homedir(), ".pi", "agent", "pi-web", "repos.json");
-	private internalStateRoot = join(homedir(), ".pi", "agent");
+	private agentDir = getAgentDir();
+	private authStorage = AuthStorage.create(join(this.agentDir, "auth.json"));
+	private modelRegistry = ModelRegistry.create(this.authStorage, join(this.agentDir, "models.json"));
+	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
+	private internalStateRoot = this.agentDir;
 	private tripwireService = new TripwireService();
 	private maxRunningSessions: number;
 	private maxClientsPerSession: number;
@@ -209,7 +210,7 @@ export class PiWebRuntime {
 	}
 
 	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<AgentSession> {
-		const resourceLoader = new DefaultResourceLoader({ cwd, noExtensions: true });
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, noExtensions: true });
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
 			cwd,
