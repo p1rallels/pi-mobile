@@ -49,6 +49,7 @@ brew install cloudflared
 - takeover/release/abort buttons
 - quick prompt chips
 - composer send
+- `/compact` command preview/confirm/cancel flow
 - expandable tool cards
 
 state is local only and stored in `localStorage` so refreshes keep your last mock selection. keep `index.html` and `styles.css` visually aligned with `../public/` when changing the real app chrome.

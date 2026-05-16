@@ -427,6 +427,151 @@
     .expandable { display: none; }
     .expandable.open { display: block; }
 
+    .compact-card {
+      margin-top: 1em;
+      padding: 12px 16px;
+      background: #18212b;
+      border-top: 1px solid #2a3840;
+      border-bottom: 1px solid #2a3840;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .compact-card.done {
+      background: #1e2a20;
+      border-color: #2a3a2a;
+    }
+    .compact-card.cancelled {
+      background: #2a1e1e;
+      border-color: #3a2a2a;
+    }
+    .compact-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .compact-eyebrow {
+      color: #666666;
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .compact-title {
+      color: #d4d4d4;
+      font-weight: 700;
+    }
+    .compact-state {
+      color: #8abeb7;
+      border: 1px solid #2a3840;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      text-transform: lowercase;
+      white-space: nowrap;
+    }
+    .compact-card.done .compact-state { color: #b5bd68; border-color: #2a3a2a; }
+    .compact-card.cancelled .compact-state { color: #cc6666; border-color: #3a2a2a; }
+    .compact-subtitle {
+      color: #808080;
+      font-style: italic;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .compact-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .compact-metrics div {
+      border: 1px solid #2a2a32;
+      border-radius: 8px;
+      background: rgba(18, 18, 26, .56);
+      padding: 7px 8px;
+      min-width: 0;
+    }
+    .compact-metrics span {
+      display: block;
+      color: #666666;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .compact-metrics strong {
+      color: #d4d4d4;
+      font-size: 13px;
+    }
+    .compact-body {
+      color: #808080;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .compact-body div::before {
+      content: "• ";
+      color: #8abeb7;
+    }
+    .compact-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .compact-actions button {
+      border: 1px solid #2a3a2a;
+      border-radius: 8px;
+      background: #1e2a20;
+      color: #b5bd68;
+      font: inherit;
+      font-size: 12px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    .compact-actions button.secondary {
+      border-color: #2a2a32;
+      background: #1e1e28;
+      color: #808080;
+    }
+    .compact-actions button:hover {
+      background: #233624;
+      color: #d4d4d4;
+    }
+    .compact-actions button.secondary:hover {
+      background: #252530;
+    }
+
+    .command-hint {
+      display: none;
+      flex-shrink: 0;
+      padding: 0 16px 6px;
+    }
+    .command-hint.open {
+      display: block;
+    }
+    .command-hint button {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      border: 1px solid #2a3840;
+      border-radius: 8px;
+      background: #18212b;
+      color: #808080;
+      font: inherit;
+      padding: 7px 9px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .command-name {
+      color: #8abeb7;
+      font-weight: 700;
+    }
+    .command-desc {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     /* ── Editor (input area) ─────────────────────────────────── */
     .editor-wrap { flex-shrink: 0; }
     .editor-border {
