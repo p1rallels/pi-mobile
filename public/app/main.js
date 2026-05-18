@@ -7,6 +7,7 @@ import { createSidebar } from "./ui/sidebar.js";
 
 const sessionsList = document.getElementById("sessions-list");
 const msgs = document.getElementById("msgs");
+const queuedPanel = document.getElementById("queued-panel");
 const input = document.getElementById("inp");
 const workingIndicator = document.getElementById("working");
 const workingSpin = document.getElementById("work-spin");
@@ -193,10 +194,11 @@ function buildSessionMetrics(state) {
 	const cw = usage && typeof usage.contextWindow === "number" ? usage.contextWindow : 0;
 	if (cw > 0) {
 		const percent = typeof usage.percent === "number" ? usage.percent : null;
+		const auto = state.autoCompactionEnabled ? " (auto)" : "";
 		if (percent === null) {
-			parts.push(`?/${formatTokens(cw)}`);
+			parts.push(`?/${formatTokens(cw)}${auto}`);
 		} else {
-			parts.push(`${Math.round(percent)}%/${formatTokens(cw)}`);
+			parts.push(`${Math.round(percent)}%/${formatTokens(cw)}${auto}`);
 		}
 	}
 
@@ -300,9 +302,9 @@ function updateControls() {
 		input.placeholder = "Compacting context…";
 	} else if (isController) {
 		input.placeholder = phone
-			? "Type a prompt (Enter key to send, Return key for newline)"
+			? "Type a prompt (Enter steers, /queue waits)"
 			: streaming
-				? "Streaming… (Esc to abort, Enter to queue follow-up)"
+				? "Streaming… (Enter steers, /queue waits)"
 				: "Type a prompt (Enter to send, Shift+Enter for newline)";
 	} else {
 		input.placeholder = streaming ? "Viewer mode — Take over after the run finishes" : "Viewer mode — Take over to type";
@@ -339,6 +341,7 @@ function sendPromptFromInput() {
 
 const sessionCtrl = createSessionController({
 	msgsEl: msgs,
+	queuedEl: queuedPanel,
 	api,
 	getClientId: () => clientId,
 	isPhoneLikeFn: isPhoneLike,
@@ -422,6 +425,14 @@ window.addEventListener("keydown", (e) => {
 fillBorders();
 window.addEventListener("resize", fillBorders);
 window.addEventListener("resize", () => sidebarCtrl.setOpen(false));
+window.addEventListener("pageshow", () => void sessionCtrl.syncState());
+window.addEventListener("focus", () => void sessionCtrl.syncState());
+document.addEventListener("visibilitychange", () => {
+	if (document.visibilityState === "visible") void sessionCtrl.syncState();
+});
+setInterval(() => {
+	if (document.visibilityState === "visible" && sessionCtrl.getActiveState()?.isCompacting) void sessionCtrl.syncState();
+}, 1500);
 
 updateFooter();
 updateControls();

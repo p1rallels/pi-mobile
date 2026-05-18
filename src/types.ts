@@ -89,6 +89,11 @@ export interface ApiSessionStats {
 	cost: number;
 }
 
+export interface ApiQueuedMessages {
+	steering: string[];
+	followUp: string[];
+}
+
 export interface ApiSessionState {
 	sessionId: string;
 	cwd: string;
@@ -100,6 +105,8 @@ export interface ApiSessionState {
 	thinkingLevel: string;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
+	autoCompactionEnabled: boolean;
+	queuedMessages: ApiQueuedMessages;
 	stats: ApiSessionStats | null;
 	contextUsage: ApiContextUsage | null;
 	messages: AgentMessage[];
@@ -113,6 +120,7 @@ export type ApiCommandRequest =
 	| { type: "set_thinking_level"; clientId: string; level: string }
 	| { type: "set_steering_mode"; clientId: string; mode: "all" | "one-at-a-time" }
 	| { type: "set_follow_up_mode"; clientId: string; mode: "all" | "one-at-a-time" }
+	| { type: "set_auto_compaction"; clientId: string; enabled: boolean }
 	| { type: "set_session_name"; clientId: string; name: string };
 
 export interface ApiSessionPatch {
@@ -124,6 +132,8 @@ export interface ApiSessionPatch {
 	sessionName?: string;
 	steeringMode?: ApiSessionState["steeringMode"];
 	followUpMode?: ApiSessionState["followUpMode"];
+	autoCompactionEnabled?: ApiSessionState["autoCompactionEnabled"];
+	queuedMessages?: ApiSessionState["queuedMessages"];
 	stats?: ApiSessionState["stats"];
 	contextUsage?: ApiSessionState["contextUsage"];
 }

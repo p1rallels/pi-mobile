@@ -118,6 +118,16 @@ export function createMenu({
 		});
 	}
 
+	async function setAutoCompaction(enabled) {
+		const activeSessionId = getActiveSessionId();
+		if (!activeSessionId) return;
+		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
+			type: "set_auto_compaction",
+			clientId: getClientId(),
+			enabled,
+		});
+	}
+
 	async function openModelMenu() {
 		if (!btnModel || btnModel.disabled) return;
 		openMenu(btnModel, (panel) => {
@@ -223,7 +233,7 @@ export function createMenu({
 			hdr.className = "menu-hdr";
 			const title = document.createElement("div");
 			title.className = "menu-title";
-			title.textContent = "Thinking level";
+			title.textContent = "Thinking & context";
 			const closeBtn = document.createElement("button");
 			closeBtn.className = "menu-mini";
 			closeBtn.textContent = "Close";
@@ -238,6 +248,28 @@ export function createMenu({
 			list.className = "menu-list";
 
 			const activeState = getActiveState();
+			const autoCompactionEnabled = activeState?.autoCompactionEnabled !== false;
+			const autoItem = document.createElement("div");
+			autoItem.className = "menu-item";
+			if (autoCompactionEnabled) autoItem.classList.add("active");
+			const autoPrimary = document.createElement("div");
+			autoPrimary.className = "primary";
+			autoPrimary.textContent = "Auto-compact";
+			const autoSecondary = document.createElement("div");
+			autoSecondary.className = "secondary";
+			autoSecondary.textContent = autoCompactionEnabled ? "enabled — compact context near the limit" : "disabled";
+			autoItem.appendChild(autoPrimary);
+			autoItem.appendChild(autoSecondary);
+			autoItem.addEventListener("click", async () => {
+				try {
+					await setAutoCompaction(!autoCompactionEnabled);
+					close();
+				} catch (error) {
+					onNotice(error instanceof Error ? error.message : String(error), "error");
+				}
+			});
+			list.appendChild(autoItem);
+
 			const current = activeState?.thinkingLevel ? String(activeState.thinkingLevel) : "off";
 			const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
 			for (const level of levels) {

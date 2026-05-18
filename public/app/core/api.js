@@ -36,7 +36,7 @@ export function createApi({ baseUrl = window.location.origin } = {}) {
 	}
 
 	async function getJson(path) {
-		const res = await fetch(resolveUrl(path), { headers: headers(), credentials: "include" });
+		const res = await fetch(resolveUrl(path), { headers: headers(), credentials: "include", cache: "no-store" });
 		return handleJsonResponse(res);
 	}
 

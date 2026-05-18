@@ -5,10 +5,36 @@ import { renderMarkdown } from "../render/markdown.js";
 import { extractTextContent, parseAssistantContent } from "./content.js";
 import { createToolBoxManager } from "./tool_boxes.js";
 
-export function createChatView({ msgsEl, isPhoneLikeFn }) {
+function messageTimestamp(message) {
+	return message && typeof message.timestamp === "number" ? message.timestamp : null;
+}
+
+export function orderMessagesForDisplay(messages) {
+	if (!Array.isArray(messages)) return [];
+	const indexed = messages.map((message, index) => ({ message, index }));
+	const compactions = indexed.filter(({ message }) => message && typeof message === "object" && message.role === "compactionSummary");
+	if (compactions.length === 0) return messages;
+
+	const ordered = indexed.filter(({ message }) => !message || typeof message !== "object" || message.role !== "compactionSummary").map(({ message }) => message);
+	for (const { message } of compactions.sort((a, b) => a.index - b.index)) {
+		const ts = messageTimestamp(message);
+		const insertAt =
+			ts === null
+				? ordered.length
+				: ordered.findIndex((candidate) => {
+						const candidateTs = messageTimestamp(candidate);
+						return candidateTs !== null && candidateTs > ts;
+					});
+		ordered.splice(insertAt === -1 ? ordered.length : insertAt, 0, message);
+	}
+	return ordered;
+}
+
+export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking }
 	let appendedUserMessageKeys = new Set();
 	let expandedCompactionIds = new Set();
+	let appendedCompactionIds = new Set();
 
 	function scrollToBottom() {
 		msgsEl.scrollTop = msgsEl.scrollHeight;
@@ -25,6 +51,42 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		tools.clear();
 		appendedUserMessageKeys = new Set();
 		expandedCompactionIds = new Set();
+		appendedCompactionIds = new Set();
+		clearQueuedMessages();
+	}
+
+	function clearQueuedMessages() {
+		if (!queuedEl) return;
+		queuedEl.innerHTML = "";
+		queuedEl.classList.remove("open");
+	}
+
+	function renderQueuedMessages(queuedMessages = {}) {
+		if (!queuedEl) return;
+		clearQueuedMessages();
+		const steering = Array.isArray(queuedMessages.steering) ? queuedMessages.steering : [];
+		const followUp = Array.isArray(queuedMessages.followUp) ? queuedMessages.followUp : [];
+		if (steering.length === 0 && followUp.length === 0) return;
+
+		const addLine = (kind, text) => {
+			const line = document.createElement("div");
+			line.className = "queued-line";
+			const label = document.createElement("span");
+			label.className = `queued-kind${kind === "Follow-up" ? " follow-up" : ""}`;
+			label.textContent = `${kind}: `;
+			line.appendChild(label);
+			line.appendChild(document.createTextNode(text));
+			queuedEl.appendChild(line);
+		};
+
+		for (const message of steering) addLine("Steering", message);
+		for (const message of followUp) addLine("Follow-up", message);
+
+		const hint = document.createElement("div");
+		hint.className = "queued-line queued-hint";
+		hint.textContent = "↳ queued messages show here until delivered";
+		queuedEl.appendChild(hint);
+		queuedEl.classList.add("open");
 	}
 
 	function appendAssistantBlock() {
@@ -109,6 +171,8 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		const tokensBefore = typeof message.tokensBefore === "number" ? message.tokensBefore : 0;
 		const timestamp = typeof message.timestamp === "number" ? message.timestamp : Date.now();
 		const id = `compaction:${timestamp}:${tokensBefore}:${summary.length}`;
+		if (appendedCompactionIds.has(id)) return;
+		appendedCompactionIds.add(id);
 		const expanded = expandedCompactionIds.has(id);
 
 		const card = document.createElement("div");
@@ -176,7 +240,7 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 	const tools = createToolBoxManager({ msgsEl, scrollToBottom });
 
 	function renderHistory(messages) {
-		for (const m of messages) {
+		for (const m of orderMessagesForDisplay(messages)) {
 			if (!m || typeof m !== "object") continue;
 			if (m.role === "user") {
 				const text = extractTextContent(m.content);
@@ -361,6 +425,7 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 		scrollToBottom,
 		appendNotice,
 		appendCompactionSummary,
+		renderQueuedMessages,
 		renderHistory,
 		renderReleased,
 		handleAgentEvent,

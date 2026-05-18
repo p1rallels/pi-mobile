@@ -5,6 +5,7 @@ import {
 	getAgentDir,
 	ModelRegistry,
 	SessionManager,
+	SettingsManager,
 	type AgentSession,
 	type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -103,6 +104,17 @@ function safeStatsSnapshot(session: AgentSession): ApiSessionState["stats"] {
 	}
 }
 
+function safeQueuedMessagesSnapshot(session: AgentSession): ApiSessionState["queuedMessages"] {
+	try {
+		return {
+			steering: [...session.getSteeringMessages()],
+			followUp: [...session.getFollowUpMessages()],
+		};
+	} catch {
+		return { steering: [], followUp: [] };
+	}
+}
+
 function buildState(session: AgentSession, cwd: string): ApiSessionState {
 	return {
 		sessionId: session.sessionId,
@@ -115,6 +127,8 @@ function buildState(session: AgentSession, cwd: string): ApiSessionState {
 		thinkingLevel: session.thinkingLevel,
 		steeringMode: session.steeringMode,
 		followUpMode: session.followUpMode,
+		autoCompactionEnabled: session.autoCompactionEnabled,
+		queuedMessages: safeQueuedMessagesSnapshot(session),
 		stats: safeStatsSnapshot(session),
 		contextUsage: safeContextUsageSnapshot(session),
 		messages: session.messages,
@@ -131,6 +145,8 @@ function buildPatch(session: AgentSession, options: { includeMessages?: boolean 
 		sessionName: session.sessionName,
 		steeringMode: session.steeringMode,
 		followUpMode: session.followUpMode,
+		autoCompactionEnabled: session.autoCompactionEnabled,
+		queuedMessages: safeQueuedMessagesSnapshot(session),
 		stats: safeStatsSnapshot(session),
 		contextUsage: safeContextUsageSnapshot(session),
 	};
@@ -156,6 +172,13 @@ function parseCompactCommandText(text: string): string | null {
 	const trimmed = text.trim();
 	if (trimmed === "/compact") return "";
 	if (trimmed.startsWith("/compact ")) return trimmed.slice(9).trim();
+	return null;
+}
+
+function parseQueueCommandText(text: string): string | null {
+	const trimmed = text.trim();
+	if (trimmed === "/queue") return "";
+	if (trimmed.startsWith("/queue ")) return trimmed.slice(7).trim();
 	return null;
 }
 
@@ -217,14 +240,21 @@ export class PiWebRuntime {
 	}
 
 	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<AgentSession> {
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, noExtensions: true });
+		const settingsManager = SettingsManager.create(cwd, this.agentDir);
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, settingsManager });
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
 			cwd,
 			sessionManager,
 			authStorage: this.authStorage,
 			modelRegistry: this.modelRegistry,
+			settingsManager,
 			resourceLoader,
+		});
+		await session.bindExtensions({
+			onError: (error) => {
+				console.error(`[pi-web extension] ${error.extensionPath} ${error.event}: ${error.error}`);
+			},
 		});
 		return session;
 	}
@@ -497,7 +527,11 @@ export class PiWebRuntime {
 				this.startManualCompaction(runtime, customInstructions);
 				return;
 			}
-			await runtime.session.prompt(text, runtime.session.isStreaming ? { streamingBehavior: command.deliverAs ?? "followUp" } : undefined);
+			const queuedText = parseQueueCommandText(text);
+			const promptText = (queuedText ?? text).trim();
+			if (promptText.length === 0) return;
+			const streamingBehavior = queuedText !== null ? "followUp" : (command.deliverAs ?? "steer");
+			await runtime.session.prompt(promptText, runtime.session.isStreaming ? { streamingBehavior } : undefined);
 			return;
 		}
 
@@ -549,6 +583,13 @@ export class PiWebRuntime {
 			const mode = command.mode;
 			if (mode !== "all" && mode !== "one-at-a-time") throw new Error(`invalid_follow_up_mode: ${String(mode)}`);
 			runtime.session.setFollowUpMode(mode);
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			return;
+		}
+
+		if (command.type === "set_auto_compaction") {
+			this.assertController(runtime, command.clientId);
+			runtime.session.setAutoCompactionEnabled(Boolean(command.enabled));
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
 			return;
 		}

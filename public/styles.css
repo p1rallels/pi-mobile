@@ -482,6 +482,26 @@
       word-break: break-word;
     }
 
+    .queued-panel {
+      display: none;
+      flex-shrink: 0;
+      padding: 7px 16px;
+      border-top: 1px solid #2a2a32;
+      background: #18181e;
+      color: #808080;
+    }
+    .queued-panel.open { display: block; }
+    .queued-line {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .queued-kind {
+      color: #8abeb7;
+      font-weight: 700;
+    }
+    .queued-kind.follow-up { color: #b5bd68; }
+    .queued-hint { color: #666666; }
+
     /* ── Editor (input area) ─────────────────────────────────── */
     .editor-wrap { flex-shrink: 0; }
     .editor-border {

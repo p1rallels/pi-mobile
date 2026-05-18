@@ -1157,7 +1157,7 @@ if (secureMode) {
 	console.log(`Secure mode enabled: client certificate fingerprints must be allowed in ${deviceRegistryPath}.`);
 	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
 }
-console.log("SDK extension auto-loading is disabled.");
+console.log("SDK extension auto-loading is enabled.");
 if (isTailnetHost(host) && !secureMode) {
 	console.log("Direct Tailscale binding enabled by explicit opt-in. Prefer secure mode behind Caddy mTLS.");
 	console.log("First remote Face ID enrollment requires secure mode with mTLS, or enrollment from a trusted local browser.");

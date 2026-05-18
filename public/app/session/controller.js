@@ -1,9 +1,10 @@
 import { computeCliCommand } from "./cli.js";
 import { createChatView } from "./chat_view.js";
-import { parseCompactCommand } from "./commands.js";
+import { parseCompactCommand, parseQueueCommand } from "./commands.js";
 
 export function createSessionController({
 	msgsEl,
+	queuedEl,
 	api,
 	getClientId,
 	isPhoneLikeFn,
@@ -20,10 +21,12 @@ export function createSessionController({
 	let lastCliCommand = null;
 	let shownTripwireAlertIds = new Set();
 	let pendingCompactionSummary = null;
+	let syncInFlight = false;
+	let followUpSyncTimer = null;
 
 	let pendingPrompt = false;
 
-	const chatView = createChatView({ msgsEl, isPhoneLikeFn });
+	const chatView = createChatView({ msgsEl, queuedEl, isPhoneLikeFn });
 
 	function closeEvents() {
 		if (eventSource) {
@@ -44,8 +47,72 @@ export function createSessionController({
 		};
 	}
 
+	function clearFollowUpSync() {
+		if (!followUpSyncTimer) return;
+		clearTimeout(followUpSyncTimer);
+		followUpSyncTimer = null;
+	}
+
+	function scheduleFollowUpSync(delayMs = 1500) {
+		if (followUpSyncTimer || !activeSessionId || activeSessionId === "replay") return;
+		followUpSyncTimer = setTimeout(() => {
+			followUpSyncTimer = null;
+			if (document.visibilityState === "hidden") return;
+			void syncState();
+		}, delayMs);
+	}
+
 	function resetTripwireAlerts() {
 		shownTripwireAlertIds = new Set();
+	}
+
+	function normalizeQueuedMessages(queuedMessages) {
+		return {
+			steering: Array.isArray(queuedMessages?.steering) ? queuedMessages.steering.filter((message) => typeof message === "string") : [],
+			followUp: Array.isArray(queuedMessages?.followUp) ? queuedMessages.followUp.filter((message) => typeof message === "string") : [],
+		};
+	}
+
+	function compactionMatches(message, pending) {
+		return (
+			message &&
+			pending &&
+			message.role === "compactionSummary" &&
+			message.summary === pending.summary &&
+			message.tokensBefore === pending.tokensBefore
+		);
+	}
+
+	function applyQueuedMessages(queuedMessages) {
+		const normalized = normalizeQueuedMessages(queuedMessages);
+		if (activeState) activeState.queuedMessages = normalized;
+		chatView.renderQueuedMessages(normalized);
+	}
+
+	function messageFingerprint(message) {
+		if (!message || typeof message !== "object") return "";
+		const role = typeof message.role === "string" ? message.role : "";
+		const timestamp = typeof message.timestamp === "number" ? message.timestamp : "";
+		const summary = typeof message.summary === "string" ? message.summary.length : "";
+		const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
+		return `${role}:${timestamp}:${summary}:${stopReason}`;
+	}
+
+	function messagesChanged(previousMessages, nextMessages) {
+		if (!Array.isArray(previousMessages) || !Array.isArray(nextMessages)) return true;
+		if (previousMessages.length !== nextMessages.length) return true;
+		return messageFingerprint(previousMessages[previousMessages.length - 1]) !== messageFingerprint(nextMessages[nextMessages.length - 1]);
+	}
+
+	function renderStateMessages(messages) {
+		chatView.clear();
+		chatView.renderHistory(messages || []);
+		if (pendingCompactionSummary && !(messages || []).some((message) => compactionMatches(message, pendingCompactionSummary))) {
+			chatView.appendCompactionSummary(pendingCompactionSummary);
+		}
+		pendingCompactionSummary = null;
+		applyQueuedMessages(activeState?.queuedMessages);
+		chatView.scrollToBottom();
 	}
 
 	function appendTripwireAlert(alert) {
@@ -75,6 +142,7 @@ export function createSessionController({
 
 	function reset() {
 		closeEvents();
+		clearFollowUpSync();
 		activeSessionId = null;
 		activeState = null;
 		controllerClientId = null;
@@ -97,8 +165,7 @@ export function createSessionController({
 			role = event.role;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
 
-			chatView.clear();
-			chatView.renderHistory(activeState.messages || []);
+			renderStateMessages(activeState.messages || []);
 			onStateChange();
 			if (activeSessionId) {
 				void loadTripwireAlerts(activeSessionId);
@@ -112,13 +179,9 @@ export function createSessionController({
 			if (event.patch && typeof event.patch === "object") {
 				Object.assign(activeState, event.patch);
 				if (Array.isArray(event.patch.messages)) {
-					chatView.clear();
-					chatView.renderHistory(event.patch.messages);
-					if (pendingCompactionSummary) {
-						chatView.appendCompactionSummary(pendingCompactionSummary);
-					}
-					pendingCompactionSummary = null;
-					chatView.scrollToBottom();
+					renderStateMessages(event.patch.messages);
+				} else if (event.patch.queuedMessages) {
+					applyQueuedMessages(event.patch.queuedMessages);
 				}
 				onStateChange();
 			}
@@ -136,12 +199,14 @@ export function createSessionController({
 			onCloseMenu();
 			const cmd = lastCliCommand;
 			closeEvents();
+			clearFollowUpSync();
 			activeSessionId = null;
 			activeState = null;
 			controllerClientId = null;
 			role = "viewer";
 			resetTripwireAlerts();
 			pendingCompactionSummary = null;
+			chatView.renderQueuedMessages({ steering: [], followUp: [] });
 
 			chatView.renderReleased({ cliCommand: cmd });
 			onStateChange();
@@ -162,6 +227,13 @@ export function createSessionController({
 
 	function handleAgentEvent(event) {
 		if (!event || typeof event.type !== "string") return;
+
+		if (event.type === "queue_update") {
+			pendingPrompt = false;
+			applyQueuedMessages({ steering: event.steering, followUp: event.followUp });
+			onStateChange();
+			return;
+		}
 
 		if (event.type === "turn_start") {
 			pendingPrompt = false;
@@ -191,11 +263,13 @@ export function createSessionController({
 				activeState.isStreaming = false;
 			}
 			pendingPrompt = false;
+			scheduleFollowUpSync();
 			onStateChange();
 			return;
 		}
 
 		if (event.type === "compaction_end") {
+			clearFollowUpSync();
 			if (activeState) {
 				activeState.isCompacting = false;
 				activeState.isStreaming = false;
@@ -308,7 +382,35 @@ export function createSessionController({
 		}
 	}
 
+	async function syncState() {
+		if (!activeSessionId || activeSessionId === "replay" || syncInFlight) return;
+		syncInFlight = true;
+		try {
+			const previousState = activeState;
+			const state = await api.getJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/state`);
+			activeState = state;
+			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
+			const shouldRenderMessages =
+				!activeState.isStreaming &&
+				!activeState.isCompacting &&
+				(Boolean(previousState?.isCompacting) || messagesChanged(previousState?.messages, activeState.messages));
+			if (shouldRenderMessages) {
+				renderStateMessages(activeState.messages || []);
+			} else {
+				applyQueuedMessages(activeState.queuedMessages);
+			}
+			onStateChange();
+			if (activeState?.isCompacting) scheduleFollowUpSync();
+		} catch (error) {
+			console.error("Failed to sync session state", error);
+			if (activeState?.isCompacting) scheduleFollowUpSync(3000);
+		} finally {
+			syncInFlight = false;
+		}
+	}
+
 	async function selectSession(session) {
+		clearFollowUpSync();
 		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		if (session.isRunning) {
@@ -337,6 +439,7 @@ export function createSessionController({
 			activeState.isStreaming = false;
 		}
 		pendingPrompt = false;
+		scheduleFollowUpSync();
 		onStateChange();
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
@@ -345,6 +448,7 @@ export function createSessionController({
 				customInstructions,
 			});
 		} catch (error) {
+			clearFollowUpSync();
 			if (activeState?.isCompacting) activeState.isCompacting = false;
 			const message = error instanceof Error ? error.message : String(error);
 			chatView.appendNotice(message, "error");
@@ -359,13 +463,17 @@ export function createSessionController({
 			await compact(compactInstructions);
 			return;
 		}
+		const queuedText = parseQueueCommand(text);
+		const promptText = queuedText !== null ? queuedText : text;
+		if (!String(promptText || "").trim()) return;
 		pendingPrompt = true;
 		onStateChange();
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
 				type: "prompt",
 				clientId: getClientId(),
-				text,
+				text: promptText,
+				deliverAs: queuedText !== null ? "followUp" : "steer",
 			});
 		} catch (error) {
 			pendingPrompt = false;
@@ -404,6 +512,7 @@ export function createSessionController({
 	}
 
 	function openSessionId(sessionId) {
+		clearFollowUpSync();
 		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		activeSessionId = sessionId;
@@ -421,6 +530,7 @@ export function createSessionController({
 		appendNotice: chatView.appendNotice,
 		reset,
 		runReplay,
+		syncState,
 		selectSession,
 		sendPrompt,
 		abortRun,
