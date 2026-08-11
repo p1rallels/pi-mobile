@@ -14,7 +14,7 @@ Web UI for the `pi` coding agent, built on the `@earendil-works/pi-coding-agent`
 - Face ID / Touch ID / WebAuthn freshness checks for remote control actions
 - Tripwire alerts for repo escape, secret access, persistence, destructive commands, and suspicious network patterns
 
-SDK upstream: https://github.com/badlogic/pi-mono
+SDK upstream: https://github.com/earendil-works/pi
 
 ## Quick start: local dev
 
@@ -24,6 +24,16 @@ bun run dev -- --port 4317
 ```
 
 Open `http://localhost:4317`.
+
+## Pi updates
+
+The Pi SDK is pinned to an exact version so upstream breaking changes only land through deliberate upgrades. Refresh dynamic provider model catalogs independently of the SDK version:
+
+```bash
+bun run cli -- update --models
+```
+
+Installed copies can use `pi-web update --models`. This updates the shared Pi catalog cache in ~/.pi/agent/models-store.json, matching `pi update --models`. If a provider needs longer than Pi's 15-second default, pass `--timeout <seconds>` (maximum 300).
 
 ## Secure remote setup
 

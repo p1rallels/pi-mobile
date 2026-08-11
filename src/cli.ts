@@ -4,6 +4,7 @@ import { ensureClientCa, issueDeviceCertificate } from "./certificates.ts";
 import { writeCaddyfile } from "./caddy-config.ts";
 import { hasDoctorErrors, runDoctor, type DoctorCheck } from "./doctor.ts";
 import { loadHostRegistry, removeHost, upsertHost, type HostRecord } from "./host-registry.ts";
+import { refreshModelCatalogs } from "./model-catalog.ts";
 import { createSecureConfig, defaultPiWebConfig, ensurePiWebDirs, loadPiWebConfig, resolvePiWebPaths, savePiWebConfig, type PiWebConfig } from "./security-config.ts";
 
 interface ParsedArgs {
@@ -17,6 +18,7 @@ function usage(): string {
 Usage:
   pi-web start
   pi-web doctor
+  pi-web update --models [--timeout <seconds>]
   pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>] [--server-cert <path>] [--server-key <path>] [--device <name>] [--platform <platform>]
   pi-web device issue <name> [--platform ios|android|macos|windows|linux|other] [--days <days>]
   pi-web device list
@@ -170,6 +172,18 @@ async function commandDoctor(): Promise<void> {
 	const checks = await runDoctor(paths, config);
 	printChecks(checks);
 	if (hasDoctorErrors(checks)) process.exit(1);
+}
+
+async function commandUpdate(args: ParsedArgs): Promise<void> {
+	const supportedFlags = new Set(["models", "timeout"]);
+	if (args.positionals.length !== 1 || args.flags.get("models") !== true || [...args.flags.keys()].some((flag) => !supportedFlags.has(flag))) {
+		throw new Error("Usage: pi-web update --models [--timeout <seconds>]");
+	}
+	if (args.flags.get("timeout") === true) throw new Error("Missing value for --timeout");
+	const timeoutSeconds = flagInt(args.flags, "timeout", 15);
+	if (timeoutSeconds < 1 || timeoutSeconds > 300) throw new Error("Invalid --timeout: expected 1 to 300 seconds");
+	await refreshModelCatalogs({ timeoutMs: timeoutSeconds * 1_000 });
+	console.log("model catalogs refreshed");
 }
 
 async function commandDeviceIssue(args: ParsedArgs): Promise<void> {
@@ -339,6 +353,7 @@ async function main(): Promise<void> {
 	}
 	if (cmd === "start") return commandStart();
 	if (cmd === "doctor") return commandDoctor();
+	if (cmd === "update") return commandUpdate(args);
 	if (cmd === "secure" && subcmd === "init") return commandSecureInit(args);
 	if (cmd === "device" && subcmd === "issue") return commandDeviceIssue(args);
 	if (cmd === "device" && subcmd === "list") return commandDeviceList();
