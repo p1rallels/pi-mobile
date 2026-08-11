@@ -271,7 +271,7 @@ export function createMenu({
 			list.appendChild(autoItem);
 
 			const current = activeState?.thinkingLevel ? String(activeState.thinkingLevel) : "off";
-			const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+			const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 			for (const level of levels) {
 				const item = document.createElement("div");
 				item.className = "menu-item";

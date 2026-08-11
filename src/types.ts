@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 export type ClientRole = "controller" | "viewer";
 
@@ -109,7 +109,7 @@ export interface ApiSessionState {
 	queuedMessages: ApiQueuedMessages;
 	stats: ApiSessionStats | null;
 	contextUsage: ApiContextUsage | null;
-	messages: AgentMessage[];
+	messages: AgentSession["messages"];
 }
 
 export type ApiCommandRequest =

@@ -1,9 +1,8 @@
 import {
-	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
-	ModelRegistry,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	type AgentSession,
@@ -49,6 +48,14 @@ interface RunningSession {
 interface PiWebRuntimeOptions {
 	maxRunningSessions?: number;
 	maxClientsPerSession?: number;
+}
+
+type SessionThinkingLevel = Parameters<AgentSession["setThinkingLevel"]>[0];
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly SessionThinkingLevel[];
+
+function isThinkingLevel(value: string): value is SessionThinkingLevel {
+	return THINKING_LEVELS.some((level) => level === value);
 }
 
 function extractTextContent(content: unknown): string {
@@ -209,8 +216,10 @@ export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
 	private agentDir = getAgentDir();
-	private authStorage = AuthStorage.create(join(this.agentDir, "auth.json"));
-	private modelRegistry = ModelRegistry.create(this.authStorage, join(this.agentDir, "models.json"));
+	private modelRuntimePromise = ModelRuntime.create({
+		authPath: join(this.agentDir, "auth.json"),
+		modelsPath: join(this.agentDir, "models.json"),
+	});
 	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
 	private internalStateRoot = this.agentDir;
 	private tripwireService = new TripwireService();
@@ -239,15 +248,21 @@ export class PiWebRuntime {
 		await writePrivateJsonFile(this.repoStorePath, repos);
 	}
 
+	private async refreshModelRuntime(): Promise<ModelRuntime> {
+		const modelRuntime = await this.modelRuntimePromise;
+		await modelRuntime.refresh({ allowNetwork: false });
+		return modelRuntime;
+	}
+
 	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<AgentSession> {
 		const settingsManager = SettingsManager.create(cwd, this.agentDir);
 		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, settingsManager });
+		const modelRuntime = await this.refreshModelRuntime();
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
 			cwd,
 			sessionManager,
-			authStorage: this.authStorage,
-			modelRegistry: this.modelRegistry,
+			modelRuntime,
 			settingsManager,
 			resourceLoader,
 		});
@@ -387,20 +402,8 @@ export class PiWebRuntime {
 	}
 
 	async listModels(): Promise<ApiModelInfo[]> {
-		// Keep auth/models fresh in case keys/models.json changed outside this process (e.g. via native CLI).
-		try {
-			this.authStorage.reload();
-		} catch {
-			// best effort
-		}
-		try {
-			this.modelRegistry.refresh();
-		} catch {
-			// best effort
-		}
-
-		const available = this.modelRegistry.getAvailable();
-		return available.map((model) => ({
+		const modelRuntime = await this.refreshModelRuntime();
+		return modelRuntime.getAvailableSnapshot().map((model) => ({
 			provider: model.provider,
 			id: model.id,
 			name: model.name,
@@ -540,19 +543,8 @@ export class PiWebRuntime {
 			const provider = command.provider.trim();
 			const modelId = command.modelId.trim();
 			if (!provider || !modelId) throw new Error("invalid_model");
-			try {
-				this.authStorage.reload();
-			} catch {
-				// best effort
-			}
-			try {
-				this.modelRegistry.refresh();
-			} catch {
-				// best effort
-			}
-
-			const available = this.modelRegistry.getAvailable();
-			const model = available.find((m) => m.provider === provider && m.id === modelId);
+			const modelRuntime = await this.refreshModelRuntime();
+			const model = modelRuntime.getAvailableSnapshot().find((m) => m.provider === provider && m.id === modelId);
 			if (!model) throw new Error(`model_not_available: ${provider}/${modelId}`);
 			await runtime.session.setModel(model);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
@@ -562,9 +554,8 @@ export class PiWebRuntime {
 		if (command.type === "set_thinking_level") {
 			this.assertController(runtime, command.clientId);
 			const level = command.level.trim();
-			const allowed = ["off", "minimal", "low", "medium", "high", "xhigh"];
-			if (!allowed.includes(level)) throw new Error(`invalid_thinking_level: ${level}`);
-			runtime.session.setThinkingLevel(level as (typeof allowed)[number]);
+			if (!isThinkingLevel(level)) throw new Error(`invalid_thinking_level: ${level}`);
+			runtime.session.setThinkingLevel(level);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
 			return;
 		}
