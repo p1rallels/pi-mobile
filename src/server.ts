@@ -890,10 +890,14 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		}
 
 		if (req.method === "GET" && url.pathname === "/api/sessions") {
-			const sessions = await runtime.listSessions();
-			const cwdFilter = url.searchParams.get("cwd")?.trim();
-			const filtered = cwdFilter ? sessions.filter((session) => session.cwd === cwdFilter) : sessions;
-			const body: ApiListSessionsResponse = { sessions: filtered };
+			const cwd = url.searchParams.get("cwd")?.trim() || undefined;
+			const limit = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+			const offset = Number.parseInt(url.searchParams.get("offset") ?? "", 10);
+			const body: ApiListSessionsResponse = await runtime.listSessions({
+				cwd,
+				limit: Number.isFinite(limit) ? Math.min(limit, 500) : 200,
+				offset: Number.isFinite(offset) ? offset : 0,
+			});
 			return json(body, 200);
 		}
 

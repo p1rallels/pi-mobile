@@ -61,6 +61,7 @@ export interface ApiSessionSummary {
 
 export interface ApiListSessionsResponse {
 	sessions: ApiSessionSummary[];
+	hasMore: boolean;
 }
 
 export interface ApiCreateSessionRequest {

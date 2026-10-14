@@ -13,6 +13,7 @@ import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
+import { createSessionIndex, type SessionSummary } from "./session-index.ts";
 import { transcriptPage, type TranscriptPage } from "./transcript.ts";
 import { TripwireService } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
@@ -112,12 +113,19 @@ function extractTextContent(content: unknown): string {
 		.join("");
 }
 
-function computeFirstMessage(messages: AgentSession["messages"]): string {
-	for (const message of messages) {
-		if (!message || typeof message !== "object") continue;
-		if ((message as { role?: unknown }).role !== "user") continue;
-		const text = extractTextContent((message as { content?: unknown }).content);
-		if (text.trim().length > 0) return text;
+const FIRST_MESSAGE_CHARS = 280;
+
+function trimFirstMessage(text: string): string {
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	return collapsed.length > FIRST_MESSAGE_CHARS ? `${collapsed.slice(0, FIRST_MESSAGE_CHARS - 1)}…` : collapsed;
+}
+
+/** First user text in raw history; the model projection loses it after a compaction. */
+function computeFirstMessage(session: AgentSession): string {
+	for (const entry of session.sessionManager.getEntries()) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const text = extractTextContent(entry.message.content);
+		if (text.trim().length > 0) return trimFirstMessage(text);
 	}
 	return "(no messages)";
 }
@@ -275,26 +283,17 @@ function promptUntilAccepted(
 	});
 }
 
-function serializeSessionSummary(entry: {
-	id: string;
-	path: string;
-	cwd: string;
-	name?: string;
-	created: Date;
-	modified: Date;
-	messageCount: number;
-	firstMessage?: string;
-}): ApiSessionSummary {
+function serializeSessionSummary(entry: SessionSummary, isRunning: boolean): ApiSessionSummary {
 	return {
 		id: entry.id,
 		path: entry.path,
 		cwd: entry.cwd,
 		name: entry.name,
-		firstMessage: entry.firstMessage ?? "(no messages)",
-		created: entry.created.toISOString(),
-		modified: entry.modified.toISOString(),
+		firstMessage: entry.firstMessage || "(no messages)",
+		created: entry.created,
+		modified: entry.modified,
 		messageCount: entry.messageCount,
-		isRunning: false,
+		isRunning,
 	};
 }
 
@@ -304,6 +303,7 @@ export class PiWebRuntime {
 	private resumingByPath = new Map<string, Promise<RunningSession>>();
 	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
+	private sessionIndex = createSessionIndex(join(this.agentDir, "sessions"));
 	private modelRuntimePromise: Promise<ModelRuntime>;
 	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
 	private internalStateRoot = this.agentDir;
@@ -400,7 +400,7 @@ export class PiWebRuntime {
 				path: runtime.sessionFile && existsSync(runtime.sessionFile) ? runtime.sessionFile : null,
 				cwd: runtime.cwd,
 				name: runtime.session.sessionName,
-				firstMessage: computeFirstMessage(runtime.session.messages),
+				firstMessage: computeFirstMessage(runtime.session),
 				created: toIso(runtime.createdAtMs),
 				modified: toIso(runtime.modifiedAtMs),
 				messageCount: runtime.session.messages.length,
@@ -411,17 +411,16 @@ export class PiWebRuntime {
 		return sessions;
 	}
 
-	async listSessions(): Promise<ApiSessionSummary[]> {
-		const saved = await SessionManager.listAll().catch(() => []);
+	async listSessions(options: { cwd?: string; limit?: number; offset?: number } = {}): Promise<{ sessions: ApiSessionSummary[]; hasMore: boolean }> {
+		const saved = await this.sessionIndex.list({ cwd: options.cwd }).catch(() => []);
 		const byId = new Map<string, ApiSessionSummary>();
 
 		for (const entry of saved) {
-			const summary = serializeSessionSummary(entry);
-			summary.isRunning = this.runningByPath.has(resolve(entry.path));
-			byId.set(summary.id, summary);
+			byId.set(entry.id, serializeSessionSummary(entry, this.runningByPath.has(resolve(entry.path))));
 		}
 
 		for (const [sessionId, runtime] of this.runningById.entries()) {
+			if (options.cwd !== undefined && runtime.cwd !== options.cwd) continue;
 			// If the saved list already contains this session id, just mark it running and move on.
 			const existing = byId.get(sessionId);
 			if (existing) {
@@ -440,7 +439,7 @@ export class PiWebRuntime {
 				path: path && existsSync(path) ? path : null,
 				cwd: runtime.cwd,
 				name: runtime.session.sessionName,
-				firstMessage: computeFirstMessage(runtime.session.messages),
+				firstMessage: computeFirstMessage(runtime.session),
 				created: toIso(createdAt),
 				modified: toIso(modifiedAt),
 				messageCount: runtime.session.messages.length,
@@ -448,9 +447,10 @@ export class PiWebRuntime {
 			});
 		}
 
-		const sessions = [...byId.values()];
-		sessions.sort((a, b) => b.modified.localeCompare(a.modified));
-		return sessions;
+		const sessions = [...byId.values()].sort((a, b) => b.modified.localeCompare(a.modified));
+		const offset = Math.max(0, Math.floor(options.offset ?? 0));
+		const limit = Math.max(1, Math.floor(options.limit ?? sessions.length));
+		return { sessions: sessions.slice(offset, offset + limit), hasMore: offset + limit < sessions.length };
 	}
 
 

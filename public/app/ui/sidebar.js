@@ -74,16 +74,20 @@ export function createSidebar({
 	getActiveHost = () => null,
 	onSelectHost = () => {},
 }) {
+	const REPO_PAGE_SIZE = 100;
 	let isOpen = false;
 	let mode = "active"; // active | repos | repoSessions
 	let selectedRepoCwd = null;
+	let repoLimit = REPO_PAGE_SIZE;
 
 	function setOpen(open) {
 		if (!sidebar) return;
+		const opening = Boolean(open) && !isOpen;
 		isOpen = Boolean(open);
 		if (isOpen) {
 			sidebar.classList.add("open");
 			if (sidebarOverlay) sidebarOverlay.classList.add("open");
+			if (opening) void refresh();
 		} else {
 			sidebar.classList.remove("open");
 			if (sidebarOverlay) sidebarOverlay.classList.remove("open");
@@ -97,6 +101,7 @@ export function createSidebar({
 	function setMode(nextMode, repoCwd = null) {
 		mode = nextMode;
 		selectedRepoCwd = repoCwd;
+		repoLimit = REPO_PAGE_SIZE;
 		updateHeader();
 		void refresh();
 	}
@@ -230,6 +235,20 @@ export function createSidebar({
 		}
 	}
 
+	function appendShowMore() {
+		const row = document.createElement("div");
+		row.className = "si si-more";
+		const name = document.createElement("div");
+		name.className = "si-name";
+		name.textContent = "show older sessions";
+		row.appendChild(name);
+		row.addEventListener("click", () => {
+			repoLimit += REPO_PAGE_SIZE;
+			void refresh();
+		});
+		sessionsList.appendChild(row);
+	}
+
 	function renderRepos(repos) {
 		sessionsList.innerHTML = "";
 		for (const cwd of repos) {
@@ -299,11 +318,12 @@ export function createSidebar({
 					renderSessions([]);
 					return;
 				}
-				const qs = new URLSearchParams({ cwd: selectedRepoCwd });
+				const qs = new URLSearchParams({ cwd: selectedRepoCwd, limit: String(repoLimit) });
 				const data = await api.getJson(`/api/sessions?${qs.toString()}`);
 				const raw = Array.isArray(data.sessions) ? data.sessions : [];
 				const filtered = raw.filter(shouldShowSessionInLists);
 				renderSessions(filtered, "repoSessions");
+				if (data.hasMore) appendShowMore();
 				return;
 			}
 
@@ -332,6 +352,7 @@ export function createSidebar({
 	updateHeader();
 
 	return {
+		isOpen: () => isOpen,
 		setOpen,
 		toggleOpen,
 		setMode,

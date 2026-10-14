@@ -78,4 +78,28 @@ describe("session lifecycle", () => {
 
 		await runtime.release(second, { clientId });
 	});
+
+	test("lists a repo's sessions from the index with running flags and paging", async () => {
+		const { runtime, sessionId, clientId, events, faux } = await persistedSession();
+		faux.appendResponses([fauxAssistantMessage("second reply")]);
+		const { sessionId: second } = await runtime.startSession({ cwd: process.cwd(), clientId });
+		await runtime.handleCommand(second, { type: "prompt", clientId, text: "second session" });
+		await waitFor(() => agentEventTypes(events).filter((type) => type === "agent_settled").length >= 1);
+		await waitFor(() => runtime.getSessionState(second).messages.length === 2);
+		await runtime.release(sessionId, { clientId });
+
+		const all = await runtime.listSessions({ cwd: process.cwd() });
+		expect(all.sessions.map((session) => [session.id, session.isRunning, session.firstMessage])).toEqual([
+			[second, true, "second session"],
+			[sessionId, false, "hi"],
+		]);
+		expect(all.hasMore).toBe(false);
+
+		const firstPage = await runtime.listSessions({ cwd: process.cwd(), limit: 1 });
+		expect(firstPage.sessions.map((session) => session.id)).toEqual([second]);
+		expect(firstPage.hasMore).toBe(true);
+		expect((await runtime.listSessions({ cwd: "/somewhere/else" })).sessions).toEqual([]);
+
+		await runtime.release(second, { clientId });
+	});
 });

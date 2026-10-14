@@ -471,5 +471,9 @@ if (replayName) {
 } else {
 	await loadHosts();
 	void sidebarCtrl.refresh();
-	setInterval(() => void sidebarCtrl.refresh(), 5_000);
+	setInterval(() => {
+		if (document.visibilityState !== "visible") return;
+		if (isPhoneLike() && !sidebarCtrl.isOpen()) return;
+		void sidebarCtrl.refresh();
+	}, 5_000);
 }
