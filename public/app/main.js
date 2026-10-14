@@ -413,16 +413,22 @@ menuCtrl = createMenu({
 	getActiveState: () => sessionCtrl.getActiveState(),
 });
 
-btnAbort.addEventListener("click", () => void sessionCtrl.abortRun());
-btnTakeover.addEventListener("click", () => void sessionCtrl.takeOver());
-btnRelease.addEventListener("click", () => void sessionCtrl.release());
+function runAction(action) {
+	void action().catch((error) => {
+		sessionCtrl.appendNotice(error instanceof Error ? error.message : String(error), "error");
+	});
+}
+
+btnAbort.addEventListener("click", () => runAction(sessionCtrl.abortRun));
+btnTakeover.addEventListener("click", () => runAction(sessionCtrl.takeOver));
+btnRelease.addEventListener("click", () => runAction(sessionCtrl.release));
 if (btnModel) btnModel.addEventListener("click", () => void menuCtrl.openModelMenu());
 if (btnThinking) btnThinking.addEventListener("click", () => menuCtrl.openThinkingMenu());
 
 if (kbMenu) kbMenu.addEventListener("click", () => sidebarCtrl.toggleOpen());
-if (kbEsc) kbEsc.addEventListener("click", () => void sessionCtrl.abortRun());
-if (kbTakeover) kbTakeover.addEventListener("click", () => void sessionCtrl.takeOver());
-if (kbRelease) kbRelease.addEventListener("click", () => void sessionCtrl.release());
+if (kbEsc) kbEsc.addEventListener("click", () => runAction(sessionCtrl.abortRun));
+if (kbTakeover) kbTakeover.addEventListener("click", () => runAction(sessionCtrl.takeOver));
+if (kbRelease) kbRelease.addEventListener("click", () => runAction(sessionCtrl.release));
 if (kbEnter) kbEnter.addEventListener("click", () => void sendPromptFromInput());
 
 if (sidebarOverlay) sidebarOverlay.addEventListener("click", () => sidebarCtrl.setOpen(false));
@@ -443,7 +449,7 @@ window.addEventListener("keydown", (e) => {
 			menuCtrl.close();
 			return;
 		}
-		void sessionCtrl.abortRun();
+		runAction(sessionCtrl.abortRun);
 	}
 });
 
