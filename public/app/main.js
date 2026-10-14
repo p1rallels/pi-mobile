@@ -7,6 +7,7 @@ import { createSidebar } from "./ui/sidebar.js";
 
 const sessionsList = document.getElementById("sessions-list");
 const msgs = document.getElementById("msgs");
+const jumpLatest = document.getElementById("jump-latest");
 const queuedPanel = document.getElementById("queued-panel");
 const input = document.getElementById("inp");
 const workingIndicator = document.getElementById("working");
@@ -342,9 +343,9 @@ function sendPromptFromInput() {
 const sessionCtrl = createSessionController({
 	msgsEl: msgs,
 	queuedEl: queuedPanel,
+	pillEl: jumpLatest,
 	api,
 	getClientId: () => clientId,
-	isPhoneLikeFn: isPhoneLike,
 	onStateChange: () => {
 		updateFooter();
 		updateControls();

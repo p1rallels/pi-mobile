@@ -380,6 +380,24 @@
     /* bottom-anchor short transcripts; collapses to 0 once history overflows so the top stays scrollable */
     .msgs::before { content: ""; flex: 1 0 0; }
 
+    .jump-anchor { position: relative; height: 0; flex-shrink: 0; }
+    .jump-latest {
+      position: absolute;
+      right: 16px;
+      bottom: 10px;
+      z-index: 5;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid #2a2a32;
+      background: #1e1e28;
+      color: #8abeb7;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .jump-latest:hover { background: #252530; }
+    .jump-latest[hidden] { display: none; }
+
     /* every block owns its top gap — no external spacer divs needed */
     .user-msg, .tool-box, .bash-block, .assistant-block { margin-top: 1em; }
 

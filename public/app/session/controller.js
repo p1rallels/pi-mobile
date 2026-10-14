@@ -5,9 +5,9 @@ import { parseCompactCommand, parseQueueCommand } from "./commands.js";
 export function createSessionController({
 	msgsEl,
 	queuedEl,
+	pillEl,
 	api,
 	getClientId,
-	isPhoneLikeFn,
 	onStateChange,
 	onCloseMenu,
 	onSidebarClose,
@@ -25,8 +25,9 @@ export function createSessionController({
 	let followUpSyncTimer = null;
 
 	let pendingPrompt = false;
+	let renderedSessionId = null;
 
-	const chatView = createChatView({ msgsEl, queuedEl, isPhoneLikeFn });
+	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
 
 	function closeEvents() {
 		if (eventSource) {
@@ -104,7 +105,8 @@ export function createSessionController({
 		return messageFingerprint(previousMessages[previousMessages.length - 1]) !== messageFingerprint(nextMessages[nextMessages.length - 1]);
 	}
 
-	function renderStateMessages(messages) {
+	function renderStateMessages(messages, { keepPosition = false } = {}) {
+		const restoreTop = keepPosition && !chatView.isPinned() ? chatView.getScrollTop() : null;
 		chatView.clear();
 		chatView.renderHistory(messages || []);
 		if (pendingCompactionSummary && !(messages || []).some((message) => compactionMatches(message, pendingCompactionSummary))) {
@@ -112,7 +114,12 @@ export function createSessionController({
 		}
 		pendingCompactionSummary = null;
 		applyQueuedMessages(activeState?.queuedMessages);
-		chatView.scrollToBottom();
+		chatView.flush();
+		if (restoreTop === null) {
+			chatView.pin();
+		} else {
+			chatView.restoreScroll(restoreTop);
+		}
 	}
 
 	function appendTripwireAlert(alert) {
@@ -150,6 +157,7 @@ export function createSessionController({
 		lastCliCommand = null;
 		pendingCompactionSummary = null;
 		pendingPrompt = false;
+		renderedSessionId = null;
 		resetTripwireAlerts();
 		chatView.clear();
 		chatView.appendNotice("No session selected.");
@@ -165,12 +173,13 @@ export function createSessionController({
 			role = event.role;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
 
-			renderStateMessages(activeState.messages || []);
+			const sameSession = renderedSessionId !== null && renderedSessionId === activeState.sessionId;
+			renderedSessionId = activeState.sessionId;
+			renderStateMessages(activeState.messages || [], { keepPosition: sameSession });
 			onStateChange();
 			if (activeSessionId) {
 				void loadTripwireAlerts(activeSessionId);
 			}
-			chatView.scrollToBottom();
 			return;
 		}
 
@@ -179,7 +188,7 @@ export function createSessionController({
 			if (event.patch && typeof event.patch === "object") {
 				Object.assign(activeState, event.patch);
 				if (Array.isArray(event.patch.messages)) {
-					renderStateMessages(event.patch.messages);
+					renderStateMessages(event.patch.messages, { keepPosition: true });
 				} else if (event.patch.queuedMessages) {
 					applyQueuedMessages(event.patch.queuedMessages);
 				}
@@ -204,6 +213,7 @@ export function createSessionController({
 			activeState = null;
 			controllerClientId = null;
 			role = "viewer";
+			renderedSessionId = null;
 			resetTripwireAlerts();
 			pendingCompactionSummary = null;
 			chatView.renderQueuedMessages({ steering: [], followUp: [] });
@@ -328,6 +338,21 @@ export function createSessionController({
 		}
 	}
 
+	function waitForReplayContinue() {
+		chatView.flush();
+		document.documentElement.dataset.replayPaused = "1";
+		return new Promise((resolve) => {
+			window.addEventListener(
+				"pi-replay-continue",
+				() => {
+					delete document.documentElement.dataset.replayPaused;
+					resolve();
+				},
+				{ once: true },
+			);
+		});
+	}
+
 	async function runReplay(name) {
 		const safeName = name.trim();
 		if (!safeName) return;
@@ -363,6 +388,10 @@ export function createSessionController({
 			}
 
 			for (const ev of events) {
+				if (ev && typeof ev === "object" && ev.type === "replay_pause") {
+					await waitForReplayContinue();
+					continue;
+				}
 				if (ev && typeof ev === "object" && ev.type === "init") {
 					handleSse({
 						...ev,
@@ -378,6 +407,7 @@ export function createSessionController({
 			chatView.clear();
 			chatView.appendNotice(`Replay failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 		} finally {
+			chatView.flush();
 			document.documentElement.dataset.replayDone = "1";
 		}
 	}
@@ -395,7 +425,7 @@ export function createSessionController({
 				!activeState.isCompacting &&
 				(Boolean(previousState?.isCompacting) || messagesChanged(previousState?.messages, activeState.messages));
 			if (shouldRenderMessages) {
-				renderStateMessages(activeState.messages || []);
+				renderStateMessages(activeState.messages || [], { keepPosition: true });
 			} else {
 				applyQueuedMessages(activeState.queuedMessages);
 			}
@@ -467,6 +497,7 @@ export function createSessionController({
 		const promptText = queuedText !== null ? queuedText : text;
 		if (!String(promptText || "").trim()) return;
 		pendingPrompt = true;
+		chatView.pin();
 		onStateChange();
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {

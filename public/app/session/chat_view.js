@@ -3,6 +3,7 @@ import { safeStringify } from "../core/stringify.js";
 import { toolResultToText } from "../core/tool_format.js";
 import { renderMarkdown } from "../render/markdown.js";
 import { extractTextContent, parseAssistantContent } from "./content.js";
+import { createScrollFollower } from "./scroll_follow.js";
 import { createToolBoxManager } from "./tool_boxes.js";
 
 function messageTimestamp(message) {
@@ -30,24 +31,67 @@ export function orderMessagesForDisplay(messages) {
 	return ordered;
 }
 
-export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
-	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking }
+function appendStreamedText(el, raw, shownLength) {
+	const pending = raw.slice(shownLength);
+	if (!pending) return shownLength;
+	const last = el.lastChild;
+	if (last && last.nodeType === Node.TEXT_NODE) {
+		last.appendData(pending);
+	} else {
+		el.appendChild(document.createTextNode(pending));
+	}
+	return raw.length;
+}
+
+export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
+	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking, shownText, shownThinking }
 	let appendedUserMessageKeys = new Set();
 	let expandedCompactionIds = new Set();
 	let appendedCompactionIds = new Set();
+	const streamingBlocks = new Set();
+	let frameRequested = false;
 
-	function scrollToBottom() {
-		msgsEl.scrollTop = msgsEl.scrollHeight;
+	const follower = createScrollFollower({ scrollEl: msgsEl, pillEl });
+
+	function writeStreamingBlock(block) {
+		if (block.rawThinking.length > block.shownThinking) {
+			block.thinking.style.display = "";
+			block.thinking.classList.add("shown");
+			block.shownThinking = appendStreamedText(block.thinking, block.rawThinking, block.shownThinking);
+		}
+		if (block.rawText.length > block.shownText) {
+			block.shownText = appendStreamedText(block.text, block.rawText, block.shownText);
+		}
 	}
 
-	function isNearBottom(el, thresholdPx = 80) {
-		const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
-		return remaining <= thresholdPx;
+	function flush() {
+		frameRequested = false;
+		for (const block of streamingBlocks) writeStreamingBlock(block);
+		streamingBlocks.clear();
+		follower.sync();
+	}
+
+	function scheduleFrame() {
+		if (frameRequested) return;
+		frameRequested = true;
+		requestAnimationFrame(flush);
+	}
+
+	function markStreaming(block) {
+		streamingBlocks.add(block);
+		scheduleFrame();
+	}
+
+	function finalizeStreaming(block) {
+		streamingBlocks.delete(block);
+		block.shownText = block.rawText.length;
+		block.shownThinking = block.rawThinking.length;
 	}
 
 	function clear() {
 		msgsEl.innerHTML = "";
 		currentAssistant = null;
+		streamingBlocks.clear();
 		tools.clear();
 		appendedUserMessageKeys = new Set();
 		expandedCompactionIds = new Set();
@@ -105,7 +149,7 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 		block.appendChild(text);
 		msgsEl.appendChild(block);
 
-		currentAssistant = { block, text, thinking, rawText: "", rawThinking: "" };
+		currentAssistant = { block, text, thinking, rawText: "", rawThinking: "", shownText: 0, shownThinking: 0 };
 		return currentAssistant;
 	}
 
@@ -124,7 +168,7 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 		} else {
 			msgsEl.appendChild(el);
 		}
-		scrollToBottom();
+		scheduleFrame();
 	}
 
 	function userMessageKey(msg, text) {
@@ -157,7 +201,7 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 		el.textContent = text;
 		block.appendChild(el);
 		msgsEl.appendChild(block);
-		scrollToBottom();
+		scheduleFrame();
 	}
 
 	function formatTokenCount(n) {
@@ -208,13 +252,12 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 			} else {
 				expandedCompactionIds.add(id);
 			}
-			const stick = isPhoneLikeFn() && isNearBottom(msgsEl);
 			renderAllCompactions();
-			if (stick) scrollToBottom();
+			scheduleFrame();
 		});
 
 		msgsEl.appendChild(card);
-		scrollToBottom();
+		scheduleFrame();
 	}
 
 	function renderAllCompactions() {
@@ -237,7 +280,7 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 		}
 	}
 
-	const tools = createToolBoxManager({ msgsEl, scrollToBottom });
+	const tools = createToolBoxManager({ msgsEl, onContentChange: scheduleFrame });
 
 	function renderHistory(messages) {
 		for (const m of orderMessagesForDisplay(messages)) {
@@ -303,7 +346,7 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 		}
 
 		msgsEl.appendChild(block);
-		scrollToBottom();
+		follower.pin();
 	}
 
 	function handleAgentEvent(event) {
@@ -334,19 +377,16 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 			const update = event.assistantMessageEvent;
 			if (!update || typeof update.type !== "string") return;
 
-			const block = ensureAssistantBlock();
-			if ((update.type === "thinking_delta" || update.type === "reasoning_delta") && typeof update.delta === "string") {
+			if (typeof update.delta !== "string") return;
+			if (update.type === "thinking_delta" || update.type === "reasoning_delta") {
+				const block = ensureAssistantBlock();
 				block.rawThinking += update.delta;
-				block.thinking.style.display = "";
-				block.thinking.classList.add("shown");
-				block.thinking.textContent = block.rawThinking;
-			} else if (update.type === "text_delta" && typeof update.delta === "string") {
+				markStreaming(block);
+			} else if (update.type === "text_delta") {
+				const block = ensureAssistantBlock();
 				block.rawText += update.delta;
-				block.text.textContent = block.rawText;
-			} else {
-				return;
+				markStreaming(block);
 			}
-			scrollToBottom();
 			return;
 		}
 
@@ -357,7 +397,14 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 			if (msg.role === "assistant") {
 				const block = currentAssistant;
 				if (block) {
+					finalizeStreaming(block);
+					if (block.rawThinking) {
+						block.thinking.style.display = "";
+						block.thinking.classList.add("shown");
+						block.thinking.textContent = block.rawThinking;
+					}
 					renderMarkdown(block.text, block.rawText);
+					scheduleFrame();
 				}
 
 				const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : "";
@@ -402,27 +449,27 @@ export function createChatView({ msgsEl, queuedEl, isPhoneLikeFn }) {
 
 		if (event.type === "tool_execution_update") {
 			if (!tools.has(event.toolCallId)) return;
-			const stick = isPhoneLikeFn() && isNearBottom(msgsEl);
 			tools.setText(event.toolCallId, event.toolName, toolResultToText(event.partialResult));
-			if (stick) scrollToBottom();
 			return;
 		}
 
 		if (event.type === "tool_execution_end") {
-			const stick = isPhoneLikeFn() && isNearBottom(msgsEl);
 			if (!tools.has(event.toolCallId)) {
 				tools.ensure(event.toolCallId, event.toolName, event.isError ? "error" : "success");
 			}
 			tools.setStatus(event.toolCallId, event.isError ? "error" : "success");
 			tools.setText(event.toolCallId, event.toolName, toolResultToText(event.result));
-			if (stick) scrollToBottom();
 			return;
 		}
 	}
 
 	return {
 		clear,
-		scrollToBottom,
+		flush,
+		pin: follower.pin,
+		restoreScroll: follower.restore,
+		isPinned: follower.isPinned,
+		getScrollTop: follower.getScrollTop,
 		appendNotice,
 		appendCompactionSummary,
 		renderQueuedMessages,

@@ -1,6 +1,6 @@
 import { toolCallToText, toolPreviewLines } from "../core/tool_format.js";
 
-export function createToolBoxManager({ msgsEl, scrollToBottom }) {
+export function createToolBoxManager({ msgsEl, onContentChange = () => {} }) {
 	let toolBoxes = new Map(); // toolCallId -> { box, call, out, toolName, previewLines, expanded, callText, fullText }
 
 	function clear() {
@@ -35,7 +35,7 @@ export function createToolBoxManager({ msgsEl, scrollToBottom }) {
 			fullText: "",
 		};
 		toolBoxes.set(toolCallId, entry);
-		scrollToBottom();
+		onContentChange();
 		return entry;
 	}
 
@@ -122,6 +122,7 @@ export function createToolBoxManager({ msgsEl, scrollToBottom }) {
 		entry.previewLines = toolPreviewLines(toolName);
 		entry.callText = toolCallToText(toolName, args);
 		entry.call.textContent = entry.callText;
+		onContentChange();
 	}
 
 	function setText(toolCallId, toolName, text) {
@@ -130,6 +131,7 @@ export function createToolBoxManager({ msgsEl, scrollToBottom }) {
 		entry.previewLines = toolPreviewLines(toolName);
 		entry.fullText = String(text ?? "");
 		renderToolBoxText(toolCallId);
+		onContentChange();
 	}
 
 	function setStatus(toolCallId, status) {
