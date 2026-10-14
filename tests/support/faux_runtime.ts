@@ -12,6 +12,7 @@ export interface FauxSession {
 	clientId: string;
 	events: SseEvent[];
 	faux: FauxProviderHandle;
+	modelRuntime: ModelRuntime;
 	agentDir: string;
 }
 
@@ -38,21 +39,26 @@ export async function cleanupAgentDirs(): Promise<void> {
 	await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 }
 
-export async function startFauxSession(responses: FauxResponseStep[] = [], runtimeOptions: Omit<ConstructorParameters<typeof PiWebRuntime>[0] & object, "modelRuntime"> = {}): Promise<FauxSession> {
-	const agentDir = await makeAgentDir();
+type RuntimeOptions = Omit<NonNullable<ConstructorParameters<typeof PiWebRuntime>[0]>, "modelRuntime">;
+
+export async function startFauxSession(
+	responses: FauxResponseStep[] = [],
+	options: { settings?: Record<string, unknown>; runtime?: RuntimeOptions } = {},
+): Promise<FauxSession> {
+	const agentDir = await makeAgentDir(options.settings);
 	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
 	const faux = fauxProvider();
 	modelRuntime.registerNativeProvider(faux.provider);
 	await modelRuntime.setRuntimeApiKey(faux.provider.id, "test-key");
 	faux.setResponses(responses);
 
-	const runtime = new PiWebRuntime({ ...runtimeOptions, modelRuntime });
+	const runtime = new PiWebRuntime({ ...options.runtime, modelRuntime });
 	await runtime.addRepo(process.cwd());
 	const clientId = "client-1";
 	const { sessionId } = await runtime.startSession({ cwd: process.cwd(), clientId });
 	const events: SseEvent[] = [];
 	runtime.addClient(sessionId, { clientId, send: (event) => events.push(event), close() {} });
-	return { runtime, sessionId, clientId, events, faux, agentDir };
+	return { runtime, sessionId, clientId, events, faux, modelRuntime, agentDir };
 }
 
 export async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {

@@ -10,6 +10,7 @@ import type {
 	ApiActiveSessionsResponse,
 	ApiAddRepoRequest,
 	ApiCommandRequest,
+	ApiCommandResponse,
 	ApiCreateSessionRequest,
 	ApiErrorResponse,
 	ApiListHostsResponse,
@@ -1086,8 +1087,8 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 					return errorResponse(`Prompt too large (max ${String(MAX_PROMPT_CHARS)} chars).`, 400);
 				}
 				const command = { ...raw, clientId: client.clientId } as ApiCommandRequest;
-				await runtime.handleCommand(sessionId, command);
-				return ok();
+				const body: ApiCommandResponse = await runtime.handleCommand(sessionId, command);
+				return json(body, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "session_not_running") return errorResponse("Session not running", 404);

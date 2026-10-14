@@ -7,6 +7,7 @@ import {
 	SettingsManager,
 	type AgentSession,
 	type AgentSessionEvent,
+	type PromptOptions,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -16,7 +17,9 @@ import { TripwireService } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
 import type {
 	ApiCommandRequest,
+	ApiCommandResponse,
 	ApiCreateSessionRequest,
+	ApiPromptDisposition,
 	ApiModelInfo,
 	ApiSessionState,
 	ApiSessionSummary,
@@ -203,6 +206,41 @@ function parseQueueCommandText(text: string): string | null {
 	if (trimmed === "/queue") return "";
 	if (trimmed.startsWith("/queue ")) return trimmed.slice(7).trim();
 	return null;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Resolves once pi accepted the prompt (started, queued or handled by an extension command) instead
+ * of when the whole run finishes. Failures after acceptance go to onLateError.
+ */
+function promptUntilAccepted(
+	session: AgentSession,
+	text: string,
+	options: Omit<PromptOptions, "preflightResult">,
+	onLateError: (error: unknown) => void,
+): Promise<ApiPromptDisposition> {
+	return new Promise((resolve, reject) => {
+		let accepted = false;
+		const accept = (disposition: ApiPromptDisposition) => {
+			if (accepted) return;
+			accepted = true;
+			resolve(disposition);
+		};
+		session.prompt(text, { ...options, preflightResult: accept }).then(
+			// prompts submitted while agent_settled listeners run are deferred until they finish
+			() => accept("queued"),
+			(error: unknown) => {
+				if (accepted) {
+					onLateError(error);
+				} else {
+					reject(error);
+				}
+			},
+		);
+	});
 }
 
 function serializeSessionSummary(entry: {
@@ -518,7 +556,7 @@ export class PiWebRuntime {
 		void runtime.session.compact(trimmedInstructions || undefined).catch(() => {});
 	}
 
-	async handleCommand(sessionId: string, command: ApiCommandRequest): Promise<void> {
+	async handleCommand(sessionId: string, command: ApiCommandRequest): Promise<ApiCommandResponse> {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
 			throw new Error("session_not_running");
@@ -528,30 +566,32 @@ export class PiWebRuntime {
 			this.assertController(runtime, command.clientId);
 			runtime.session.abortCompaction();
 			await runtime.session.abort();
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "compact") {
 			this.assertController(runtime, command.clientId);
 			this.startManualCompaction(runtime, command.customInstructions);
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "prompt") {
 			this.assertController(runtime, command.clientId);
 			const text = command.text.trim();
-			if (text.length === 0) return;
+			if (text.length === 0) return { ok: true, disposition: "handled" };
 			const customInstructions = parseCompactCommandText(text);
 			if (customInstructions !== null) {
 				this.startManualCompaction(runtime, customInstructions);
-				return;
+				return { ok: true, disposition: "handled" };
 			}
 			const queuedText = parseQueueCommandText(text);
 			const promptText = (queuedText ?? text).trim();
-			if (promptText.length === 0) return;
+			if (promptText.length === 0) return { ok: true, disposition: "handled" };
 			const streamingBehavior = queuedText !== null ? "followUp" : (command.deliverAs ?? "steer");
-			await runtime.session.prompt(promptText, runtime.session.isStreaming ? { streamingBehavior } : undefined);
-			return;
+			const disposition = await promptUntilAccepted(runtime.session, promptText, { streamingBehavior }, (error) => {
+				this.broadcast(sessionId, { type: "command_error", command: "prompt", message: errorMessage(error) });
+			});
+			return { ok: true, disposition };
 		}
 
 		if (command.type === "set_model") {
@@ -564,7 +604,7 @@ export class PiWebRuntime {
 			if (!model) throw new Error(`model_not_available: ${provider}/${modelId}`);
 			await runtime.session.setModel(model);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "set_thinking_level") {
@@ -573,7 +613,7 @@ export class PiWebRuntime {
 			if (!isThinkingLevel(level)) throw new Error(`invalid_thinking_level: ${level}`);
 			runtime.session.setThinkingLevel(level);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "set_steering_mode") {
@@ -582,7 +622,7 @@ export class PiWebRuntime {
 			if (mode !== "all" && mode !== "one-at-a-time") throw new Error(`invalid_steering_mode: ${String(mode)}`);
 			runtime.session.setSteeringMode(mode);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "set_follow_up_mode") {
@@ -591,14 +631,14 @@ export class PiWebRuntime {
 			if (mode !== "all" && mode !== "one-at-a-time") throw new Error(`invalid_follow_up_mode: ${String(mode)}`);
 			runtime.session.setFollowUpMode(mode);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "set_auto_compaction") {
 			this.assertController(runtime, command.clientId);
 			runtime.session.setAutoCompactionEnabled(Boolean(command.enabled));
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
-			return;
+			return { ok: true };
 		}
 
 		if (command.type === "set_session_name") {
@@ -607,7 +647,7 @@ export class PiWebRuntime {
 			if (!name) throw new Error("invalid_session_name");
 			runtime.session.setSessionName(name);
 			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
-			return;
+			return { ok: true };
 		}
 
 		throw new Error(`unknown_command: ${String((command as { type?: unknown }).type)}`);

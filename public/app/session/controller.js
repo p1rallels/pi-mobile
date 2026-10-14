@@ -241,6 +241,13 @@ export function createSessionController({
 			return;
 		}
 
+		if (event.type === "command_error") {
+			pendingPrompt = false;
+			chatView.appendNotice(`Error: ${event.message || "command failed"}`, "error");
+			onStateChange();
+			return;
+		}
+
 		if (event.type === "agent_event") {
 			handleAgentEvent(event.event);
 			return;
@@ -554,8 +561,9 @@ export function createSessionController({
 		pendingPrompt = true;
 		chatView.pin();
 		onStateChange();
+		let result;
 		try {
-			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
+			result = await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
 				type: "prompt",
 				clientId: getClientId(),
 				text: promptText,
@@ -565,6 +573,10 @@ export function createSessionController({
 			pendingPrompt = false;
 			onStateChange();
 			throw error;
+		}
+		if (result && typeof result.disposition === "string" && result.disposition !== "started") {
+			pendingPrompt = false;
+			onStateChange();
 		}
 	}
 

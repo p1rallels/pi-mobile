@@ -113,6 +113,13 @@ export interface ApiSessionState {
 	messages: AgentSession["messages"];
 }
 
+export type ApiPromptDisposition = "started" | "queued" | "handled";
+
+export interface ApiCommandResponse {
+	ok: true;
+	disposition?: ApiPromptDisposition;
+}
+
 export type ApiCommandRequest =
 	| { type: "prompt"; clientId: string; text: string; deliverAs?: "followUp" | "steer" }
 	| { type: "compact"; clientId: string; customInstructions?: string }
@@ -188,5 +195,6 @@ export type SseEvent =
 	| { type: "agent_event"; event: JsonAgentSessionEvent }
 	| { type: "tripwire_alert"; alert: ApiTripwireAlert }
 	| { type: "state_patch"; patch: ApiSessionPatch }
+	| { type: "command_error"; command: ApiCommandRequest["type"]; message: string }
 	| { type: "controller_changed"; controllerClientId: string | null }
 	| { type: "released"; byClientId: string };

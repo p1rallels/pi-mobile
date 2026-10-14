@@ -336,13 +336,24 @@ function fillBorders() {
 	});
 }
 
-function sendPromptFromInput() {
+function restoreComposerText(text) {
+	input.value = input.value.trim() ? `${text}\n${input.value}` : text;
+	autoResize(input);
+}
+
+async function sendPromptFromInput() {
 	if (input.disabled) return;
 	const text = input.value;
+	if (!text.trim()) return;
 	input.value = "";
 	autoResize(input);
-	void sessionCtrl.sendPrompt(text);
 	input.focus();
+	try {
+		await sessionCtrl.sendPrompt(text);
+	} catch (error) {
+		restoreComposerText(text);
+		sessionCtrl.appendNotice(`Not sent: ${error instanceof Error ? error.message : String(error)}`, "error");
+	}
 }
 
 const sessionCtrl = createSessionController({
@@ -404,7 +415,7 @@ if (kbMenu) kbMenu.addEventListener("click", () => sidebarCtrl.toggleOpen());
 if (kbEsc) kbEsc.addEventListener("click", () => void sessionCtrl.abortRun());
 if (kbTakeover) kbTakeover.addEventListener("click", () => void sessionCtrl.takeOver());
 if (kbRelease) kbRelease.addEventListener("click", () => void sessionCtrl.release());
-if (kbEnter) kbEnter.addEventListener("click", () => sendPromptFromInput());
+if (kbEnter) kbEnter.addEventListener("click", () => void sendPromptFromInput());
 
 if (sidebarOverlay) sidebarOverlay.addEventListener("click", () => sidebarCtrl.setOpen(false));
 
@@ -413,7 +424,7 @@ input.addEventListener("keydown", (e) => {
 	if (isPhoneLike()) return;
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
-		sendPromptFromInput();
+		void sendPromptFromInput();
 	}
 });
 
