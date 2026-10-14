@@ -6,6 +6,7 @@ import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { FaceIdService } from "./faceid.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
+import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
 import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
 import type {
 	ApiActiveSessionsResponse,
@@ -50,12 +51,6 @@ interface CookieOptions {
 	path?: string;
 }
 
-interface SessionStore<T> {
-	create(value: T, ttlMs: number): string;
-	get(token: string | null | undefined): T | null;
-	delete(token: string | null | undefined): void;
-}
-
 interface RateLimitResult {
 	retryAfterSeconds: number;
 }
@@ -64,13 +59,15 @@ const CLIENT_COOKIE = "pi_web_client";
 const FACEID_COOKIE = "pi_web_faceid";
 
 const CLIENT_TTL_MS = 1000 * 60 * 60 * 24 * 30;
-const FACEID_TTL_MS = 1000 * 60 * 60 * 4;
-const FACEID_FRESH_TTL_MS = 1000 * 60 * 10;
+const FACEID_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_SESSION_MINUTES, 240, "PI_WEB_FACEID_SESSION_MINUTES");
+/** Starting sessions, adding repos and releasing need a recent Face ID check. */
+const FACEID_FRESH_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_FRESH_MINUTES, 10, "PI_WEB_FACEID_FRESH_MINUTES");
+/** Prompts, aborts, settings and take over need a check within this window. */
+const FACEID_COMMAND_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_COMMAND_MINUTES, 60, "PI_WEB_FACEID_COMMAND_MINUTES");
 
 const DEFAULT_JSON_BODY_LIMIT = 256 * 1024;
 const COMMAND_JSON_BODY_LIMIT = 64 * 1024;
 const MAX_PROMPT_CHARS = 32_000;
-const SESSION_STORE_MAX_ENTRIES = 4_096;
 
 function parsePositiveInt(raw: string | undefined, fallback: number, name: string): number {
 	if (!raw) return fallback;
@@ -79,51 +76,6 @@ function parsePositiveInt(raw: string | undefined, fallback: number, name: strin
 		throw new Error(`Invalid ${name}: ${String(raw)}`);
 	}
 	return value;
-}
-
-function createSessionStore<T>(maxEntries = SESSION_STORE_MAX_ENTRIES): SessionStore<T> {
-	const sessions = new Map<string, { value: T; expiresAt: number }>();
-
-	function prune(now = Date.now()): void {
-		for (const [token, entry] of sessions.entries()) {
-			if (entry.expiresAt <= now) {
-				sessions.delete(token);
-			}
-		}
-	}
-
-	function enforceCapacity(): void {
-		while (sessions.size > maxEntries) {
-			const oldest = sessions.keys().next().value;
-			if (!oldest) return;
-			sessions.delete(oldest);
-		}
-	}
-
-	return {
-		create(value: T, ttlMs: number): string {
-			prune();
-			const token = randomUUID();
-			sessions.set(token, { value, expiresAt: Date.now() + ttlMs });
-			enforceCapacity();
-			return token;
-		},
-		get(token: string | null | undefined): T | null {
-			if (!token) return null;
-			prune();
-			const entry = sessions.get(token);
-			if (!entry) return null;
-			if (entry.expiresAt <= Date.now()) {
-				sessions.delete(token);
-				return null;
-			}
-			return entry.value;
-		},
-		delete(token: string | null | undefined): void {
-			if (!token) return;
-			sessions.delete(token);
-		},
-	};
 }
 
 function createRateLimiter(windowMs: number, maxHits: number) {
@@ -331,6 +283,9 @@ Env:
   PI_WEB_MAX_RUNNING_SESSIONS
   PI_WEB_MAX_CLIENTS_PER_SESSION
   PI_WEB_IDLE_SESSION_MINUTES (dispose unwatched idle sessions after this long, default 15)
+  PI_WEB_FACEID_SESSION_MINUTES (Face ID session length, default 240)
+  PI_WEB_FACEID_COMMAND_MINUTES (Face ID age allowed for prompts and take over, default 60)
+  PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, default 10)
   PI_WEB_SECURE_MODE=1
   PI_WEB_DEVICE_REGISTRY
   PI_WEB_HOST_REGISTRY
@@ -598,20 +553,66 @@ function parseSessionRoute(pathname: string): { sessionId: string; action: strin
 	return { sessionId: parts[2], action: parts[3] };
 }
 
-function isFaceIdControlRoute(method: string, pathname: string): boolean {
-	if (method !== "POST") return false;
-	if (pathname === "/api/repos" || pathname === "/api/sessions") return true;
+/** How recent the Face ID check must be for a route, or null when any live Face ID session will do. */
+function faceIdFreshnessFor(method: string, pathname: string): number | null {
+	if (method !== "POST") return null;
+	if (pathname === "/api/repos" || pathname === "/api/sessions") return FACEID_FRESH_TTL_MS;
 	const sessionRoute = parseSessionRoute(pathname);
-	if (!sessionRoute) return false;
-	return sessionRoute.action === "command" || sessionRoute.action === "takeover" || sessionRoute.action === "release";
+	if (!sessionRoute) return null;
+	if (sessionRoute.action === "release") return FACEID_FRESH_TTL_MS;
+	if (sessionRoute.action === "command" || sessionRoute.action === "takeover") return FACEID_COMMAND_TTL_MS;
+	return null;
+}
+
+/** In secure mode cookies are bound to the mTLS device that received them. */
+const requestDevices = new WeakMap<Request, string | null>();
+
+function payloadMatchesRequest(req: Request, payload: Record<string, unknown>): boolean {
+	const device = requestDevices.get(req) ?? null;
+	return typeof payload.exp === "number" && payload.exp > Date.now() && (payload.dev ?? null) === device;
 }
 
 function resolveClientCookie(req: Request): { clientId: string } | null {
-	return clientSessions.get(parseCookies(req).get(CLIENT_COOKIE));
+	const payload = cookieSigner.verify(parseCookies(req).get(CLIENT_COOKIE));
+	if (!payload || payload.kind !== "client" || typeof payload.clientId !== "string" || !payloadMatchesRequest(req, payload)) return null;
+	return { clientId: payload.clientId };
 }
 
-function resolveFaceIdCookie(req: Request): { rpId: string; clientId: string; verifiedAt: number } | null {
-	return faceIdSessions.get(parseCookies(req).get(FACEID_COOKIE));
+function resolveFaceIdCookie(req: Request): { rpId: string; clientId: string; verifiedAt: number; jti: string; exp: number } | null {
+	const payload = cookieSigner.verify(parseCookies(req).get(FACEID_COOKIE));
+	if (!payload || payload.kind !== "faceid" || !payloadMatchesRequest(req, payload)) return null;
+	const { rpId, clientId, verifiedAt, jti, exp } = payload;
+	if (typeof rpId !== "string" || typeof clientId !== "string" || typeof verifiedAt !== "number" || typeof jti !== "string" || typeof exp !== "number") return null;
+	if (revokedFaceIdTokens.has(jti)) return null;
+	return { rpId, clientId, verifiedAt, jti, exp };
+}
+
+function issueClientCookie(req: Request, clientId: string, secure: boolean): string {
+	const token = cookieSigner.sign({ kind: "client", clientId, exp: Date.now() + CLIENT_TTL_MS, dev: requestDevices.get(req) ?? null });
+	return buildSetCookie(CLIENT_COOKIE, token, { maxAge: CLIENT_TTL_MS / 1000, httpOnly: true, secure });
+}
+
+function issueFaceIdCookie(req: Request, clientId: string, rpId: string, secure: boolean): string {
+	const verifiedAt = Date.now();
+	const token = cookieSigner.sign({
+		kind: "faceid",
+		clientId,
+		rpId,
+		verifiedAt,
+		exp: verifiedAt + FACEID_TTL_MS,
+		jti: randomUUID(),
+		dev: requestDevices.get(req) ?? null,
+	});
+	return buildSetCookie(FACEID_COOKIE, token, { maxAge: FACEID_TTL_MS / 1000, httpOnly: true, secure });
+}
+
+function revokeFaceIdCookie(req: Request): void {
+	const now = Date.now();
+	for (const [jti, exp] of revokedFaceIdTokens) {
+		if (exp <= now) revokedFaceIdTokens.delete(jti);
+	}
+	const session = resolveFaceIdCookie(req);
+	if (session) revokedFaceIdTokens.set(session.jti, session.exp);
 }
 
 function canRegisterFaceId(url: URL, credentialCount: number): boolean {
@@ -654,7 +655,8 @@ function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 	if (!session || session.rpId !== url.hostname || session.clientId !== client.clientId) {
 		return errorResponse("Face ID verification required.", 401);
 	}
-	if (isFaceIdControlRoute(req.method, url.pathname) && Date.now() - session.verifiedAt > FACEID_FRESH_TTL_MS) {
+	const freshness = faceIdFreshnessFor(req.method, url.pathname);
+	if (freshness !== null && Date.now() - session.verifiedAt > freshness) {
 		return errorResponse("Fresh Face ID verification required.", 401);
 	}
 	return null;
@@ -766,8 +768,8 @@ const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession, idl
 runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
 const faceId = new FaceIdService();
-const clientSessions = createSessionStore<{ clientId: string }>();
-const faceIdSessions = createSessionStore<{ rpId: string; clientId: string; verifiedAt: number }>();
+const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));
+const revokedFaceIdTokens = new Map<string, number>();
 
 const publicDir = join(import.meta.dir, "..", "public");
 const publicRoot = resolve(publicDir) + sep;
@@ -851,6 +853,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				headerName: clientCertHeader,
 			});
 			if (!deviceAuth.ok) return errorResponse(deviceAuth.message, deviceAuth.status);
+			requestDevices.set(req, deviceAuth.device?.fingerprintSha256 ?? null);
 		}
 
 		if (req.method === "OPTIONS" && isApiPath(url.pathname)) {
@@ -881,25 +884,12 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		if (req.method === "POST" && url.pathname === "/api/client") {
 			const limited = clientSessionLimiter.check(`client:${requesterId}`);
 			if (limited) return rateLimitResponse(limited);
-			const existing = resolveClientCookie(req);
-			if (existing) {
-				return json({ clientId: existing.clientId }, 200);
-			}
-			const clientId = randomUUID();
-			const sessionToken = clientSessions.create({ clientId }, CLIENT_TTL_MS);
-			return createCookieResponse(
-				{ clientId },
-				200,
-				buildSetCookie(CLIENT_COOKIE, sessionToken, {
-					maxAge: CLIENT_TTL_MS / 1000,
-					httpOnly: true,
-					secure,
-				}),
-			);
+			const clientId = resolveClientCookie(req)?.clientId ?? randomUUID();
+			return createCookieResponse({ clientId }, 200, issueClientCookie(req, clientId, secure));
 		}
 
 		if (req.method === "POST" && url.pathname === "/api/faceid/logout") {
-			faceIdSessions.delete(parseCookies(req).get(FACEID_COOKIE));
+			revokeFaceIdCookie(req);
 			return ok({ "set-cookie": clearCookie(FACEID_COOKIE, secure) });
 		}
 
@@ -946,6 +936,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 					...status,
 					canRegister: canRegisterFaceId(url, status.credentialCount),
 					freshForSeconds: Math.floor(FACEID_FRESH_TTL_MS / 1000),
+					commandFreshForSeconds: Math.floor(FACEID_COMMAND_TTL_MS / 1000),
 					sessionForSeconds: Math.floor(FACEID_TTL_MS / 1000),
 				};
 				return json(body, 200);
@@ -1015,19 +1006,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				if (result.kind !== "authenticate") {
 					return json(result, 200);
 				}
-				const sessionToken = faceIdSessions.create(
-					{ rpId: url.hostname, clientId: client.clientId, verifiedAt: Date.now() },
-					FACEID_TTL_MS,
-				);
-				return createCookieResponse(
-					result,
-					200,
-					buildSetCookie(FACEID_COOKIE, sessionToken, {
-						maxAge: FACEID_TTL_MS / 1000,
-						httpOnly: true,
-						secure,
-					}),
-				);
+				return createCookieResponse(result, 200, issueFaceIdCookie(req, client.clientId, url.hostname, secure));
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return errorResponse(message, 400);
@@ -1230,7 +1209,9 @@ if (trustProxy) {
 	console.log("Trusted proxy mode enabled: honoring X-Forwarded-Proto and forwarded client IP headers.");
 }
 console.log(`Response security headers enabled${enableHsts ? " (including HSTS)." : "."}`);
-console.log(`Face ID remote session window: ${String(Math.floor(FACEID_TTL_MS / 60000))}m total, ${String(Math.floor(FACEID_FRESH_TTL_MS / 60000))}m freshness for control actions.`);
+console.log(
+	`Face ID remote session window: ${String(FACEID_TTL_MS / 60_000)}m total, ${String(FACEID_COMMAND_TTL_MS / 60_000)}m for prompts and take over, ${String(FACEID_FRESH_TTL_MS / 60_000)}m for new sessions, repos and release.`,
+);
 console.log(
 	`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session, idle sessions disposed after ${String(idleSessionMinutes)}m.`,
 );

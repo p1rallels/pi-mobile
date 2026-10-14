@@ -171,12 +171,15 @@ Each device should have its own certificate. Do not share one `.p12` across phon
 
 When accessing from a non-loopback host, the server requires successful WebAuthn authentication before most API routes unlock.
 
-Remote unlock has two windows:
+Remote unlock has three windows:
 
-- a broader unlock session for read access
-- a short freshness window for control actions like starting sessions, sending prompts, takeovers, releases, and repo edits
+- an unlock session for read access (4 hours, `PI_WEB_FACEID_SESSION_MINUTES`)
+- prompts, aborts, settings and take over need a check within the last 60 minutes (`PI_WEB_FACEID_COMMAND_MINUTES`)
+- starting sessions, adding repos and releasing need a check within the last 10 minutes (`PI_WEB_FACEID_FRESH_MINUTES`)
 
-If a control action says fresh Face ID / Touch ID is required, the browser should prompt again.
+If a control action says fresh Face ID / Touch ID is required, the browser prompts again, and a prompt that was refused goes back into the composer.
+
+Browser and Face ID sessions are HMAC-signed cookies keyed by `~/.pi-web/cookie-key`, so restarting pi-web keeps devices signed in. In secure mode each cookie only works with the device certificate it was issued to. Delete the key and restart to sign every device out.
 
 First remote WebAuthn enrollment requires either:
 
