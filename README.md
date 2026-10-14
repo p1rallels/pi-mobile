@@ -81,7 +81,8 @@ Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intent
 
 ## Session semantics
 
-- **Abort** stops the current run but keeps the session runtime alive. Never deletes JSONL.
+- **Abort** stops the current run but keeps the session runtime alive. Never deletes JSONL. Any connected device can abort.
+- One device controls a session (prompts, settings, release); the others watch. **Take over** works at any time, even mid-run, and if the controlling device disconnects for 10 seconds, control moves to another connected device.
 - **Release** aborts and disposes the web runtime so you can safely resume the same JSONL in the native CLI.
 - Idle sessions nobody is viewing are disposed after 15 minutes (`PI_WEB_IDLE_SESSION_MINUTES`). Their JSONL is already saved, and an open tab re-attaches them on its own unless the session was released or its file changed elsewhere since.
 - New sessions can only start from the current working directory or repos you explicitly save in the UI.

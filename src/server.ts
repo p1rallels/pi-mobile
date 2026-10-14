@@ -1172,7 +1172,6 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "session_not_running") return errorResponse("Session not running", 404);
-				if (message === "cannot_takeover_while_streaming") return errorResponse("Cannot take over while streaming", 409);
 				return errorResponse(message, 400);
 			}
 		}

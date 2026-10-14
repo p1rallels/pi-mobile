@@ -47,6 +47,7 @@ interface RunningSession {
 	modifiedAtMs: number;
 	lastSeenAtMs: number;
 	controllerClientId: string | null;
+	controllerHandoffTimer: ReturnType<typeof setTimeout> | null;
 	clients: Map<string, SessionClient>;
 	unsubscribe: (() => void) | null;
 	tripwireAllowedRoots: Set<string>;
@@ -57,6 +58,7 @@ interface PiWebRuntimeOptions {
 	maxRunningSessions?: number;
 	maxClientsPerSession?: number;
 	idleSessionTtlMs?: number;
+	controllerGraceMs?: number;
 	modelRuntime?: ModelRuntime;
 }
 
@@ -67,6 +69,7 @@ interface DetachedSession {
 }
 
 const DEFAULT_IDLE_SESSION_TTL_MS = 15 * 60_000;
+const DEFAULT_CONTROLLER_GRACE_MS = 10_000;
 
 function fileFingerprint(path: string): { size: number; mtimeMs: number } | null {
 	try {
@@ -311,11 +314,13 @@ export class PiWebRuntime {
 	private maxRunningSessions: number;
 	private maxClientsPerSession: number;
 	private idleSessionTtlMs: number;
+	private controllerGraceMs: number;
 
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.maxRunningSessions = options.maxRunningSessions ?? 24;
 		this.maxClientsPerSession = options.maxClientsPerSession ?? 8;
 		this.idleSessionTtlMs = options.idleSessionTtlMs ?? DEFAULT_IDLE_SESSION_TTL_MS;
+		this.controllerGraceMs = options.controllerGraceMs ?? DEFAULT_CONTROLLER_GRACE_MS;
 		this.modelRuntimePromise = options.modelRuntime
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
@@ -543,6 +548,8 @@ export class PiWebRuntime {
 		}
 		runtime.clients.set(client.connectionId, client);
 		runtime.lastSeenAtMs = Date.now();
+		if (client.clientId === runtime.controllerClientId) this.cancelControllerHandoff(runtime);
+		this.claimControllerIfVacant(runtime, client.clientId);
 		return this.getSessionRole(sessionId, client.clientId);
 	}
 
@@ -551,6 +558,38 @@ export class PiWebRuntime {
 		if (!runtime) return;
 		runtime.clients.delete(connectionId);
 		runtime.lastSeenAtMs = Date.now();
+		if (!this.isControllerConnected(runtime)) this.scheduleControllerHandoff(runtime);
+	}
+
+	private isControllerConnected(runtime: RunningSession): boolean {
+		return [...runtime.clients.values()].some((client) => client.clientId === runtime.controllerClientId);
+	}
+
+	private cancelControllerHandoff(runtime: RunningSession): void {
+		if (runtime.controllerHandoffTimer) clearTimeout(runtime.controllerHandoffTimer);
+		runtime.controllerHandoffTimer = null;
+	}
+
+	/**
+	 * A controller whose device dropped (phone locked, network gone) would otherwise strand the run:
+	 * after a short grace period control moves to the most recent other viewer, or is left vacant.
+	 */
+	private scheduleControllerHandoff(runtime: RunningSession): void {
+		if (runtime.controllerHandoffTimer || runtime.controllerClientId === null) return;
+		runtime.controllerHandoffTimer = setTimeout(() => {
+			runtime.controllerHandoffTimer = null;
+			if (this.runningById.get(runtime.session.sessionId) !== runtime || this.isControllerConnected(runtime)) return;
+			const next = [...runtime.clients.values()].at(-1)?.clientId ?? null;
+			this.setController(runtime, next);
+		}, this.controllerGraceMs);
+		runtime.controllerHandoffTimer.unref?.();
+	}
+
+	private setController(runtime: RunningSession, clientId: string | null): void {
+		this.cancelControllerHandoff(runtime);
+		if (runtime.controllerClientId === clientId) return;
+		runtime.controllerClientId = clientId;
+		this.broadcast(runtime.session.sessionId, { type: "controller_changed", controllerClientId: clientId });
 	}
 
 	async startSession(request: ApiCreateSessionRequest): Promise<{ sessionId: string }> {
@@ -643,8 +682,7 @@ export class PiWebRuntime {
 
 	private claimControllerIfVacant(runtime: RunningSession, clientId: string): void {
 		if (runtime.controllerClientId !== null) return;
-		runtime.controllerClientId = clientId;
-		this.broadcast(runtime.session.sessionId, { type: "controller_changed", controllerClientId: clientId });
+		this.setController(runtime, clientId);
 	}
 
 	private lastActivityAtMs(runtime: RunningSession): number {
@@ -694,6 +732,7 @@ export class PiWebRuntime {
 
 	private disposeRuntime(runtime: RunningSession): void {
 		const sessionId = runtime.session.sessionId;
+		this.cancelControllerHandoff(runtime);
 		for (const client of runtime.clients.values()) {
 			client.close();
 		}
@@ -730,7 +769,7 @@ export class PiWebRuntime {
 		}
 
 		if (command.type === "abort") {
-			this.assertController(runtime, command.clientId);
+			// stopping a run is always allowed: every viewer is the same user behind mTLS + WebAuthn
 			runtime.session.abortCompaction();
 			await runtime.session.abort();
 			return { ok: true };
@@ -825,11 +864,7 @@ export class PiWebRuntime {
 		if (!runtime) {
 			throw new Error("session_not_running");
 		}
-		if (runtime.session.isStreaming) {
-			throw new Error("cannot_takeover_while_streaming");
-		}
-		runtime.controllerClientId = request.clientId;
-		this.broadcast(sessionId, { type: "controller_changed", controllerClientId: request.clientId });
+		this.setController(runtime, request.clientId);
 	}
 
 	async release(sessionId: string, request: { clientId: string }): Promise<void> {
@@ -881,6 +916,7 @@ export class PiWebRuntime {
 			modifiedAtMs: createdAtMs,
 			lastSeenAtMs: createdAtMs,
 			controllerClientId,
+			controllerHandoffTimer: null,
 			clients: new Map(),
 			unsubscribe: null,
 			tripwireAllowedRoots,
@@ -934,6 +970,7 @@ export class PiWebRuntime {
 	}
 
 	private assertController(runtime: RunningSession, clientId: string): void {
+		this.claimControllerIfVacant(runtime, clientId);
 		if (runtime.controllerClientId !== clientId) {
 			throw new Error("not_controller");
 		}

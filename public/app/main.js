@@ -297,15 +297,15 @@ function updateControls() {
 	const phone = isPhoneLike();
 	const canChangeSettings = hasSession && isController && !busy;
 
-	btnAbort.disabled = !hasSession || !isController;
-	btnTakeover.disabled = !hasSession || isController || busy;
+	btnAbort.disabled = !hasSession;
+	btnTakeover.disabled = !hasSession || isController;
 	btnRelease.disabled = !hasSession || !isController;
 	input.disabled = !hasSession || !isController || compacting;
 	if (btnModel) btnModel.disabled = !canChangeSettings;
 	if (btnThinking) btnThinking.disabled = !canChangeSettings;
 
-	if (kbEsc) kbEsc.disabled = !hasSession || !isController;
-	if (kbTakeover) kbTakeover.disabled = !hasSession || isController || busy;
+	if (kbEsc) kbEsc.disabled = !hasSession;
+	if (kbTakeover) kbTakeover.disabled = !hasSession || isController;
 	if (kbRelease) kbRelease.disabled = !hasSession || !isController;
 	if (kbEnter) kbEnter.disabled = !hasSession || !isController || compacting;
 
@@ -320,7 +320,7 @@ function updateControls() {
 				? "Streaming… (Enter steers, /queue waits)"
 				: "Type a prompt (Enter to send, Shift+Enter for newline)";
 	} else {
-		input.placeholder = streaming ? "Viewer mode — Take over after the run finishes" : "Viewer mode — Take over to type";
+		input.placeholder = "Viewer mode — Take over to type";
 	}
 
 	updateTopSelectors();
