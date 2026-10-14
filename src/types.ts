@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 export type ClientRole = "controller" | "viewer";
 
@@ -183,7 +183,7 @@ export type SseEvent =
 			controllerClientId: string | null;
 			role: ClientRole;
 	  }
-	| { type: "agent_event"; event: AgentSessionEvent }
+	| { type: "agent_event"; event: JsonAgentSessionEvent }
 	| { type: "tripwire_alert"; alert: ApiTripwireAlert }
 	| { type: "state_patch"; patch: ApiSessionPatch }
 	| { type: "controller_changed"; controllerClientId: string | null }

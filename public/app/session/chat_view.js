@@ -377,6 +377,19 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			const update = event.assistantMessageEvent;
 			if (!update || typeof update.type !== "string") return;
 
+			if (update.type === "toolcall_start") {
+				if (typeof update.id === "string" && update.id && typeof update.toolName === "string" && update.toolName) {
+					tools.setCall(update.id, update.toolName, {});
+				}
+				return;
+			}
+			if (update.type === "toolcall_end") {
+				const call = update.toolCall;
+				if (call && typeof call.id === "string" && typeof call.name === "string") {
+					tools.setCall(call.id, call.name, call.arguments);
+				}
+				return;
+			}
 			if (typeof update.delta !== "string") return;
 			if (update.type === "thinking_delta" || update.type === "reasoning_delta") {
 				const block = ensureAssistantBlock();
@@ -395,9 +408,12 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			if (!msg) return;
 			if (msg.role === "user") maybeAppendUserMessage(msg);
 			if (msg.role === "assistant") {
-				const block = currentAssistant;
+				const final = parseAssistantContent(msg.content);
+				const block = currentAssistant || (final.text || final.thinking ? appendAssistantBlock() : null);
 				if (block) {
 					finalizeStreaming(block);
+					block.rawText = final.text || block.rawText;
+					block.rawThinking = final.thinking || block.rawThinking;
 					if (block.rawThinking) {
 						block.thinking.style.display = "";
 						block.thinking.classList.add("shown");

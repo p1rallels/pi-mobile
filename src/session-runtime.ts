@@ -13,6 +13,7 @@ import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { TripwireService } from "./tripwire.ts";
+import { toWireEvent } from "./wire-events.ts";
 import type {
 	ApiCommandRequest,
 	ApiCreateSessionRequest,
@@ -698,7 +699,7 @@ export class PiWebRuntime {
 				},
 				event,
 			);
-			this.broadcast(sessionId, { type: "agent_event", event });
+			this.broadcast(sessionId, { type: "agent_event", event: toWireEvent(event) });
 
 			if (inspection.alerts.length > 0) {
 				for (const alert of inspection.alerts) {
