@@ -480,6 +480,13 @@
     .tool-call  { color: #d4d4d4; font-weight: 700; }
     .tool-call:empty { display: none; }
     .tool-out   { color: #808080; }
+    .tool-meta  { color: #666666; font-weight: 400; }
+    .skill-chip { color: #8abeb7; cursor: pointer; }
+    .skill-body { margin-top: 0.5em; color: #808080; }
+    .tool-nested { display: flex; flex-direction: column; gap: 2px; color: #808080; }
+    .tool-nested-call.error { color: #cc6666; }
+    .tool-images { display: flex; flex-wrap: wrap; gap: 8px; }
+    .tool-img { max-width: 100%; max-height: 320px; border: 1px solid #2a2a32; border-radius: 4px; }
     .tool-trunc { color: #666666; }
     .exp-key { color: #666666; cursor: pointer; }
     .exp-key:hover { color: #808080; }

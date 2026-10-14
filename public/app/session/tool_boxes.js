@@ -1,4 +1,6 @@
-import { toolCallToText, toolPreviewLines } from "../core/tool_format.js";
+import { formatDuration, toolCallToText, toolPreviewLines } from "../core/tool_format.js";
+
+const NESTED_STATUS = { pending: "…", success: "✓", error: "✗" };
 
 export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 	let toolBoxes = new Map(); // toolCallId -> { box, call, out, toolName, previewLines, expanded, callText, fullText }
@@ -28,6 +30,9 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 			box,
 			call,
 			out,
+			meta: null,
+			nested: null,
+			images: null,
 			toolName,
 			previewLines: toolPreviewLines(toolName),
 			expanded: false,
@@ -122,6 +127,66 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 		entry.previewLines = toolPreviewLines(toolName);
 		entry.callText = toolCallToText(toolName, args);
 		entry.call.textContent = entry.callText;
+		if (entry.meta) entry.call.appendChild(entry.meta);
+		onContentChange();
+	}
+
+	function setDuration(toolCallId, durationMs) {
+		const entry = toolBoxes.get(toolCallId);
+		const text = formatDuration(durationMs);
+		if (!entry || !text) return;
+		if (!entry.meta) {
+			entry.meta = document.createElement("span");
+			entry.meta.className = "tool-meta";
+		}
+		entry.meta.textContent = ` · ${text}`;
+		entry.call.appendChild(entry.meta);
+	}
+
+	/** Calls a tool made itself (codemode scripts, MCP helpers) as compact lines inside the caller's box. */
+	function setNested(parentId, call) {
+		const parent = toolBoxes.get(parentId);
+		if (!parent) return false;
+		if (!parent.nested) {
+			parent.nested = { list: document.createElement("div"), rows: new Map() };
+			parent.nested.list.className = "tool-nested";
+			parent.box.insertBefore(parent.nested.list, parent.out);
+		}
+		let row = parent.nested.rows.get(call.id);
+		if (!row) {
+			row = document.createElement("div");
+			row.className = "tool-nested-call";
+			parent.nested.rows.set(call.id, row);
+			parent.nested.list.appendChild(row);
+		}
+		if (call.args !== undefined || !row.dataset.callText) row.dataset.callText = toolCallToText(call.name, call.args ?? {});
+		const status = call.status ?? "pending";
+		const duration = formatDuration(call.durationMs);
+		const error = call.error ? ` ${call.error}` : "";
+		row.className = `tool-nested-call ${status}`;
+		row.textContent = `↳ ${NESTED_STATUS[status] ?? ""} ${row.dataset.callText}${duration ? ` · ${duration}` : ""}${error}`;
+		onContentChange();
+		return true;
+	}
+
+	function setImages(toolCallId, images) {
+		const entry = toolBoxes.get(toolCallId);
+		if (!entry) return;
+		if (entry.images) entry.images.remove();
+		entry.images = null;
+		const valid = (images || []).filter((image) => image && typeof image.data === "string" && /^image\/(png|jpeg|gif|webp)$/.test(image.mimeType));
+		if (valid.length === 0) return;
+		entry.images = document.createElement("div");
+		entry.images.className = "tool-images";
+		for (const image of valid) {
+			const img = document.createElement("img");
+			img.className = "tool-img";
+			img.alt = image.mimeType;
+			img.loading = "lazy";
+			img.src = `data:${image.mimeType};base64,${image.data}`;
+			entry.images.appendChild(img);
+		}
+		entry.box.appendChild(entry.images);
 		onContentChange();
 	}
 
@@ -161,6 +226,9 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 		ensure,
 		has: (toolCallId) => toolBoxes.has(toolCallId),
 		setCall,
+		setDuration,
+		setNested,
+		setImages,
 		setText,
 		setStatus,
 		hasPendingTools,

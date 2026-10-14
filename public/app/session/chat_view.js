@@ -31,6 +31,40 @@ export function orderMessagesForDisplay(messages) {
 	return ordered;
 }
 
+function imageBlocks(content) {
+	return Array.isArray(content) ? content.filter((block) => block && block.type === "image") : [];
+}
+
+/** Mirrors pi's parseSkillBlock: an expanded `/skill:name args` prompt. */
+export function parseSkillBlock(text) {
+	const match = /^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/.exec(String(text));
+	if (!match) return null;
+	return { name: match[1], location: match[2], content: match[3], userMessage: match[4]?.trim() || undefined };
+}
+
+function renderUserText(el, text) {
+	const skill = parseSkillBlock(text);
+	if (!skill) {
+		el.textContent = text;
+		return;
+	}
+	el.textContent = "";
+	const toggle = document.createElement("span");
+	toggle.className = "skill-chip";
+	toggle.textContent = `[skill: ${skill.name}]`;
+	toggle.title = skill.location;
+	const body = document.createElement("div");
+	body.className = "skill-body";
+	body.hidden = true;
+	body.textContent = skill.content;
+	toggle.addEventListener("click", () => {
+		body.hidden = !body.hidden;
+	});
+	el.appendChild(toggle);
+	if (skill.userMessage) el.appendChild(document.createTextNode(` ${skill.userMessage}`));
+	el.appendChild(body);
+}
+
 function appendStreamedText(el, raw, shownLength) {
 	const pending = raw.slice(shownLength);
 	if (!pending) return shownLength;
@@ -167,7 +201,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 	function appendUserMessage(text, opts = {}) {
 		const el = document.createElement("div");
 		el.className = "user-msg";
-		el.textContent = text;
+		renderUserText(el, text);
 
 		const insertBeforeEl = opts.insertBefore instanceof HTMLElement ? opts.insertBefore : null;
 		if (insertBeforeEl && insertBeforeEl.parentNode === msgsEl) {
@@ -373,6 +407,17 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 				}
 				tools.setStatus(toolCallId, isError ? "error" : "success");
 				tools.setText(toolCallId, toolName, contentText || safeStringify(m.content));
+				tools.setImages(toolCallId, imageBlocks(m.content));
+				for (const call of Array.isArray(m.nestedCalls?.calls) ? m.nestedCalls.calls : []) {
+					tools.setNested(toolCallId, {
+						id: call.id,
+						name: call.name,
+						args: call.arguments ?? {},
+						status: call.status === "ok" ? "success" : call.status === "error" ? "error" : "pending",
+						durationMs: call.durationMs,
+						error: call.error,
+					});
+				}
 			}
 		}
 	}
@@ -555,6 +600,14 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			return;
 		}
 
+		if (typeof event.parentToolCallId === "string" && event.type.startsWith("tool_execution_")) {
+			if (event.type === "tool_execution_update") return;
+			const status = event.type === "tool_execution_start" ? "pending" : event.isError ? "error" : "success";
+			const nested = { id: event.toolCallId, name: event.toolName, status, durationMs: event.durationMs };
+			if (event.type === "tool_execution_start") nested.args = event.args;
+			if (tools.setNested(event.parentToolCallId, nested)) return;
+		}
+
 		if (event.type === "tool_execution_start") {
 			if (tools.has(event.toolCallId)) {
 				tools.setStatus(event.toolCallId, "pending");
@@ -578,6 +631,8 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			}
 			tools.setStatus(event.toolCallId, event.isError ? "error" : "success");
 			tools.setText(event.toolCallId, event.toolName, toolResultToText(event.result));
+			tools.setDuration(event.toolCallId, event.durationMs);
+			tools.setImages(event.toolCallId, imageBlocks(event.result?.content));
 			return;
 		}
 	}
