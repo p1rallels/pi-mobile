@@ -10,6 +10,7 @@
         "@simplewebauthn/server": "13.2.3",
       },
       "devDependencies": {
+        "@earendil-works/pi-ai": "1.2.0",
         "@playwright/test": "1.51.0",
         "@types/bun": "1.4.3",
       },

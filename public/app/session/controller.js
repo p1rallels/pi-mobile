@@ -26,6 +26,8 @@ export function createSessionController({
 
 	let pendingPrompt = false;
 	let renderedSessionId = null;
+	let retryStatus = null;
+	let compactionReason = null;
 
 	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
 
@@ -147,9 +149,19 @@ export function createSessionController({
 		}
 	}
 
+	function getRunStatus() {
+		if (!activeState) return { kind: "idle" };
+		if (activeState.isCompacting) return { kind: "compacting", reason: compactionReason };
+		if (retryStatus) return { kind: "retrying", ...retryStatus };
+		if (activeState.isStreaming || pendingPrompt) return { kind: "working" };
+		return { kind: "idle" };
+	}
+
 	function reset() {
 		closeEvents();
 		clearFollowUpSync();
+		retryStatus = null;
+		compactionReason = null;
 		activeSessionId = null;
 		activeState = null;
 		controllerClientId = null;
@@ -260,19 +272,65 @@ export function createSessionController({
 		}
 
 		if (event.type === "agent_end") {
-			if (activeState) activeState.isStreaming = false;
 			pendingPrompt = false;
 			onStateChange();
 			chatView.handleAgentEvent(event);
 			return;
 		}
 
-		if (event.type === "compaction_start") {
+		if (event.type === "agent_settled") {
 			if (activeState) {
-				activeState.isCompacting = true;
 				activeState.isStreaming = false;
+				activeState.retryAttempt = 0;
 			}
 			pendingPrompt = false;
+			retryStatus = null;
+			onStateChange();
+			chatView.handleAgentEvent(event);
+			return;
+		}
+
+		if (event.type === "auto_retry_start") {
+			retryStatus = { attempt: event.attempt, maxAttempts: event.maxAttempts };
+			if (activeState) activeState.retryAttempt = event.attempt;
+			const seconds = Math.max(1, Math.round(Number(event.delayMs || 0) / 1000));
+			const reason = typeof event.errorMessage === "string" && event.errorMessage.trim() ? `: ${event.errorMessage.trim()}` : "";
+			chatView.appendNotice(`Retrying in ${seconds}s (attempt ${event.attempt}/${event.maxAttempts})${reason}`);
+			onStateChange();
+			return;
+		}
+
+		if (event.type === "auto_retry_end") {
+			retryStatus = null;
+			if (activeState) activeState.retryAttempt = 0;
+			if (!event.success) {
+				chatView.appendNotice(`Retry failed: ${event.finalError || "unknown error"}`, "error");
+			}
+			onStateChange();
+			return;
+		}
+
+		if (event.type === "summarization_retry_scheduled") {
+			const seconds = Math.max(1, Math.round(Number(event.delayMs || 0) / 1000));
+			chatView.appendNotice(`Summary failed, retrying in ${seconds}s (attempt ${event.attempt}/${event.maxAttempts}): ${event.errorMessage || "unknown error"}`);
+			return;
+		}
+
+		if (event.type === "session_info_changed") {
+			if (activeState) activeState.sessionName = event.name;
+			onStateChange();
+			return;
+		}
+
+		if (event.type === "thinking_level_changed") {
+			if (activeState) activeState.thinkingLevel = event.level;
+			onStateChange();
+			return;
+		}
+
+		if (event.type === "compaction_start") {
+			if (activeState) activeState.isCompacting = true;
+			compactionReason = typeof event.reason === "string" ? event.reason : null;
 			scheduleFollowUpSync();
 			onStateChange();
 			return;
@@ -280,11 +338,8 @@ export function createSessionController({
 
 		if (event.type === "compaction_end") {
 			clearFollowUpSync();
-			if (activeState) {
-				activeState.isCompacting = false;
-				activeState.isStreaming = false;
-			}
-			pendingPrompt = false;
+			if (activeState) activeState.isCompacting = false;
+			compactionReason = null;
 			onStateChange();
 			if (event.result && typeof event.result === "object") {
 				pendingCompactionSummary = {
@@ -557,6 +612,7 @@ export function createSessionController({
 		getControllerClientId: () => controllerClientId,
 		getRole: () => role,
 		getPendingPrompt: () => pendingPrompt,
+		getRunStatus,
 		isController: () => Boolean(activeSessionId && controllerClientId === getClientId()),
 		appendNotice: chatView.appendNotice,
 		reset,

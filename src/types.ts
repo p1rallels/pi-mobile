@@ -101,6 +101,7 @@ export interface ApiSessionState {
 	sessionName?: string;
 	isStreaming: boolean;
 	isCompacting: boolean;
+	retryAttempt: number;
 	model: { provider: string; id: string; name?: string } | null;
 	thinkingLevel: string;
 	steeringMode: "all" | "one-at-a-time";
@@ -126,6 +127,7 @@ export type ApiCommandRequest =
 export interface ApiSessionPatch {
 	isStreaming?: boolean;
 	isCompacting?: boolean;
+	retryAttempt?: number;
 	messages?: ApiSessionState["messages"];
 	model?: ApiSessionState["model"];
 	thinkingLevel?: string;

@@ -247,13 +247,18 @@ function updateTopSelectors() {
 	}
 }
 
+function workingLabel(status) {
+	if (status.kind === "compacting") return status.reason && status.reason !== "manual" ? `Compacting context (${status.reason})...` : "Compacting context...";
+	if (status.kind === "retrying") return `Retrying (${status.attempt}/${status.maxAttempts})...`;
+	return "Working...";
+}
+
 function updateWorkingIndicator() {
 	if (!workingIndicator) return;
-	const activeState = sessionCtrl.getActiveState();
-	const compacting = Boolean(activeState && activeState.isCompacting);
-	const show = isPhoneLike() && (sessionCtrl.getPendingPrompt() || compacting || Boolean(activeState && activeState.isStreaming));
+	const status = sessionCtrl.getRunStatus();
+	const show = isPhoneLike() && status.kind !== "idle";
 	workingIndicator.classList.toggle("open", show);
-	if (workingText) workingText.textContent = compacting ? "Compacting context..." : "Working...";
+	if (workingText) workingText.textContent = workingLabel(status);
 
 	const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 	const updateFrame = () => {

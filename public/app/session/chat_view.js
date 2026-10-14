@@ -357,7 +357,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			return;
 		}
 
-		if (event.type === "agent_end") {
+		if (event.type === "agent_end" || event.type === "agent_settled") {
 			currentAssistant = null;
 			return;
 		}

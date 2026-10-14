@@ -49,9 +49,22 @@ interface RunningSession {
 interface PiWebRuntimeOptions {
 	maxRunningSessions?: number;
 	maxClientsPerSession?: number;
+	modelRuntime?: ModelRuntime;
 }
 
 type SessionThinkingLevel = Parameters<AgentSession["setThinkingLevel"]>[0];
+
+const STATE_PATCH_EVENTS: ReadonlySet<AgentSessionEvent["type"]> = new Set<AgentSessionEvent["type"]>([
+	"agent_start",
+	"agent_end",
+	"agent_settled",
+	"compaction_start",
+	"compaction_end",
+	"auto_retry_start",
+	"auto_retry_end",
+	"session_info_changed",
+	"thinking_level_changed",
+]);
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly SessionThinkingLevel[];
 
@@ -131,6 +144,7 @@ function buildState(session: AgentSession, cwd: string): ApiSessionState {
 		sessionName: session.sessionName,
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
+		retryAttempt: session.retryAttempt,
 		model: safeModelSnapshot(session),
 		thinkingLevel: session.thinkingLevel,
 		steeringMode: session.steeringMode,
@@ -147,6 +161,7 @@ function buildPatch(session: AgentSession, options: { includeMessages?: boolean 
 	return {
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
+		retryAttempt: session.retryAttempt,
 		...(options.includeMessages ? { messages: session.messages } : {}),
 		model: safeModelSnapshot(session),
 		thinkingLevel: session.thinkingLevel,
@@ -217,10 +232,7 @@ export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
 	private agentDir = getAgentDir();
-	private modelRuntimePromise = ModelRuntime.create({
-		authPath: join(this.agentDir, "auth.json"),
-		modelsPath: join(this.agentDir, "models.json"),
-	});
+	private modelRuntimePromise: Promise<ModelRuntime>;
 	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
 	private internalStateRoot = this.agentDir;
 	private tripwireService = new TripwireService();
@@ -230,6 +242,9 @@ export class PiWebRuntime {
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.maxRunningSessions = options.maxRunningSessions ?? 24;
 		this.maxClientsPerSession = options.maxClientsPerSession ?? 8;
+		this.modelRuntimePromise = options.modelRuntime
+			? Promise.resolve(options.modelRuntime)
+			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
 	}
 
 	private async loadReposFromDisk(): Promise<string[]> {
@@ -715,19 +730,13 @@ export class PiWebRuntime {
 				}
 			}
 
-			if (event.type === "agent_start" || event.type === "agent_end" || event.type === "compaction_start" || event.type === "compaction_end") {
+			if (event.type === "agent_start" || event.type === "agent_settled") {
 				runtime.tripwireAbortRequested = false;
+			}
+			if (STATE_PATCH_EVENTS.has(event.type)) {
 				const patch = buildPatch(session, { includeMessages: event.type === "compaction_end" && Boolean(event.result) });
-				if (event.type === "agent_start") patch.isStreaming = true;
-				if (event.type === "agent_end") patch.isStreaming = false;
-				if (event.type === "compaction_start") {
-					patch.isCompacting = true;
-					patch.isStreaming = false;
-				}
-				if (event.type === "compaction_end") {
-					patch.isCompacting = false;
-					patch.isStreaming = false;
-				}
+				// auto-compaction releases its abort controller only after compaction_end listeners ran
+				if (event.type === "compaction_end") patch.isCompacting = false;
 				this.broadcast(sessionId, { type: "state_patch", patch });
 			}
 		});
