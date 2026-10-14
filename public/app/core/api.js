@@ -9,7 +9,9 @@ async function handleJsonResponse(res) {
 	) {
 		window.dispatchEvent(new CustomEvent("pi-web-faceid-required", { detail: { message } }));
 	}
-	throw new Error(message);
+	const error = new Error(message);
+	error.status = res.status;
+	throw error;
 }
 
 function normalizeBaseUrl(baseUrl) {

@@ -57,7 +57,7 @@ export async function startFauxSession(
 	const clientId = "client-1";
 	const { sessionId } = await runtime.startSession({ cwd: process.cwd(), clientId });
 	const events: SseEvent[] = [];
-	runtime.addClient(sessionId, { clientId, send: (event) => events.push(event), close() {} });
+	runtime.addClient(sessionId, { connectionId: "connection-1", clientId, send: (event) => events.push(event), close() {} });
 	return { runtime, sessionId, clientId, events, faux, modelRuntime, agentDir };
 }
 

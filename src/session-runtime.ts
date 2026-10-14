@@ -9,10 +9,10 @@ import {
 	type AgentSessionEvent,
 	type PromptOptions,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { transcriptPage, type TranscriptPage } from "./transcript.ts";
 import { TripwireService } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
@@ -32,6 +32,7 @@ import type {
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 
 export interface SessionClient {
+	connectionId: string;
 	clientId: string;
 	send(event: SseEvent): void;
 	close(): void;
@@ -43,6 +44,7 @@ interface RunningSession {
 	sessionFile: string | null;
 	createdAtMs: number;
 	modifiedAtMs: number;
+	lastSeenAtMs: number;
 	controllerClientId: string | null;
 	clients: Map<string, SessionClient>;
 	unsubscribe: (() => void) | null;
@@ -53,8 +55,27 @@ interface RunningSession {
 interface PiWebRuntimeOptions {
 	maxRunningSessions?: number;
 	maxClientsPerSession?: number;
+	idleSessionTtlMs?: number;
 	modelRuntime?: ModelRuntime;
 }
+
+interface DetachedSession {
+	sessionId: string;
+	size: number;
+	mtimeMs: number;
+}
+
+const DEFAULT_IDLE_SESSION_TTL_MS = 15 * 60_000;
+
+function fileFingerprint(path: string): { size: number; mtimeMs: number } | null {
+	try {
+		const info = statSync(path);
+		return { size: info.size, mtimeMs: info.mtimeMs };
+	} catch {
+		return null;
+	}
+}
+const IDLE_SWEEP_INTERVAL_MS = 60_000;
 
 type SessionThinkingLevel = Parameters<AgentSession["setThinkingLevel"]>[0];
 
@@ -280,6 +301,8 @@ function serializeSessionSummary(entry: {
 export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
+	private resumingByPath = new Map<string, Promise<RunningSession>>();
+	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
 	private modelRuntimePromise: Promise<ModelRuntime>;
 	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
@@ -287,10 +310,12 @@ export class PiWebRuntime {
 	private tripwireService = new TripwireService();
 	private maxRunningSessions: number;
 	private maxClientsPerSession: number;
+	private idleSessionTtlMs: number;
 
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.maxRunningSessions = options.maxRunningSessions ?? 24;
 		this.maxClientsPerSession = options.maxClientsPerSession ?? 8;
+		this.idleSessionTtlMs = options.idleSessionTtlMs ?? DEFAULT_IDLE_SESSION_TTL_MS;
 		this.modelRuntimePromise = options.modelRuntime
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
@@ -428,22 +453,6 @@ export class PiWebRuntime {
 		return sessions;
 	}
 
-	private async listKnownSessionPaths(): Promise<Set<string>> {
-		const paths = new Set<string>();
-
-		const saved = await SessionManager.listAll().catch(() => []);
-		for (const entry of saved) {
-			if (typeof entry.path === "string" && entry.path.trim()) {
-				paths.add(resolve(entry.path));
-			}
-		}
-
-		for (const path of this.runningByPath.keys()) {
-			paths.add(resolve(path));
-		}
-
-		return paths;
-	}
 
 	private async assertAllowedCwd(rawCwd: string): Promise<string> {
 		const cwd = normalizeCwd(rawCwd);
@@ -457,10 +466,12 @@ export class PiWebRuntime {
 		return cwd;
 	}
 
-	private async assertAllowedResumePath(rawPath: string): Promise<string> {
+	/** Session files live one directory below the sessions root, like SessionManager.listAll() finds them. */
+	private assertAllowedResumePath(rawPath: string): string {
 		const path = resolve(rawPath.trim());
-		const knownPaths = await this.listKnownSessionPaths();
-		if (!knownPaths.has(path)) {
+		const sessionsDir = resolve(this.agentDir, "sessions");
+		const isRunning = this.runningByPath.has(path);
+		if (!isRunning && (dirname(dirname(path)) !== sessionsDir || extname(path) !== ".jsonl")) {
 			throw new Error(`session_path_not_allowed: ${path}`);
 		}
 		return path;
@@ -477,6 +488,10 @@ export class PiWebRuntime {
 			contextWindow: model.contextWindow,
 			maxTokens: model.maxTokens,
 		}));
+	}
+
+	isRunning(sessionId: string): boolean {
+		return this.runningById.has(sessionId);
 	}
 
 	getSessionState(sessionId: string): ApiSessionState {
@@ -523,52 +538,180 @@ export class PiWebRuntime {
 		if (!runtime) {
 			throw new Error("session_not_running");
 		}
-		if (!runtime.clients.has(client.clientId) && runtime.clients.size >= this.maxClientsPerSession) {
+		if (!runtime.clients.has(client.connectionId) && runtime.clients.size >= this.maxClientsPerSession) {
 			throw new Error("too_many_clients");
 		}
-		runtime.clients.set(client.clientId, client);
+		runtime.clients.set(client.connectionId, client);
+		runtime.lastSeenAtMs = Date.now();
 		return this.getSessionRole(sessionId, client.clientId);
 	}
 
-	removeClient(sessionId: string, clientId: string): void {
+	removeClient(sessionId: string, connectionId: string): void {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) return;
-		runtime.clients.delete(clientId);
+		runtime.clients.delete(connectionId);
+		runtime.lastSeenAtMs = Date.now();
 	}
 
 	async startSession(request: ApiCreateSessionRequest): Promise<{ sessionId: string }> {
 		const clientId = request.clientId ?? randomUUID();
 
 		if (request.resumeSessionPath) {
-			const path = await this.assertAllowedResumePath(request.resumeSessionPath);
-			const existingId = this.runningByPath.get(path);
-			if (existingId) {
-				const existing = this.runningById.get(existingId);
-				if (existing && existing.controllerClientId === null) {
-					existing.controllerClientId = clientId;
-					this.broadcast(existingId, { type: "controller_changed", controllerClientId: clientId });
-				}
-				return { sessionId: existingId };
-			}
-
-			if (!existsSync(path)) {
-				throw new Error(`session file does not exist: ${path}`);
-			}
-
-			const sessionManager = SessionManager.open(path);
-			const cwd = sessionManager.getCwd();
-			const session = await this.createRuntimeSession(cwd, sessionManager);
-			const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
-			const runtime = this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
+			const runtime = await this.resumeSession(this.assertAllowedResumePath(request.resumeSessionPath), clientId);
 			return { sessionId: runtime.session.sessionId };
 		}
 
 		const cwd = await this.assertAllowedCwd(request.cwd ?? process.cwd());
+		this.ensureCapacity();
 		const sessionManager = SessionManager.create(cwd);
 		const session = await this.createRuntimeSession(cwd, sessionManager);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
 		const runtime = this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
 		return { sessionId: runtime.session.sessionId };
+	}
+
+	/**
+	 * Brings back a session pi-web disposed for idling, as long as nothing else (e.g. the pi CLI)
+	 * wrote to its file since. Released sessions and files changed elsewhere need an explicit reopen.
+	 */
+	async attachSession(sessionId: string, rawPath: string | undefined, clientId: string): Promise<void> {
+		if (this.runningById.has(sessionId)) return;
+		if (!rawPath) throw new Error("session_not_running");
+		const path = this.assertAllowedResumePath(rawPath);
+		if (!this.resumingByPath.has(path) && !this.isUnchangedSinceDetach(path, sessionId)) {
+			throw new Error("session_not_attachable");
+		}
+		await this.resumeSession(path, clientId, sessionId);
+	}
+
+	private isUnchangedSinceDetach(path: string, sessionId: string): boolean {
+		const detached = this.detachedByPath.get(path);
+		const current = fileFingerprint(path);
+		return Boolean(
+			detached && current && detached.sessionId === sessionId && detached.size === current.size && detached.mtimeMs === current.mtimeMs,
+		);
+	}
+
+	private rememberDetached(runtime: RunningSession): void {
+		const fingerprint = runtime.sessionFile ? fileFingerprint(runtime.sessionFile) : null;
+		if (!runtime.sessionFile || !fingerprint) return;
+		this.detachedByPath.set(runtime.sessionFile, { sessionId: runtime.session.sessionId, ...fingerprint });
+	}
+
+	private async resumeSession(path: string, clientId: string, expectedSessionId?: string): Promise<RunningSession> {
+		const existingId = this.runningByPath.get(path);
+		const existing = existingId ? this.runningById.get(existingId) : undefined;
+		if (existing) {
+			if (expectedSessionId !== undefined && existing.session.sessionId !== expectedSessionId) {
+				throw new Error("session_path_mismatch");
+			}
+			this.claimControllerIfVacant(existing, clientId);
+			return existing;
+		}
+
+		const pending = this.resumingByPath.get(path);
+		if (pending) {
+			const runtime = await pending;
+			if (expectedSessionId !== undefined && runtime.session.sessionId !== expectedSessionId) {
+				throw new Error("session_path_mismatch");
+			}
+			return runtime;
+		}
+
+		this.ensureCapacity();
+		const resuming = this.openSessionFile(path, clientId, expectedSessionId).finally(() => {
+			this.resumingByPath.delete(path);
+		});
+		this.detachedByPath.delete(path);
+		this.resumingByPath.set(path, resuming);
+		return resuming;
+	}
+
+	private async openSessionFile(path: string, clientId: string, expectedSessionId?: string): Promise<RunningSession> {
+		if (!existsSync(path)) {
+			throw new Error(`session file does not exist: ${path}`);
+		}
+		const sessionManager = SessionManager.open(path);
+		if (expectedSessionId !== undefined && sessionManager.getSessionId() !== expectedSessionId) {
+			throw new Error("session_path_mismatch");
+		}
+		const cwd = sessionManager.getCwd();
+		const session = await this.createRuntimeSession(cwd, sessionManager);
+		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
+		return this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
+	}
+
+	private claimControllerIfVacant(runtime: RunningSession, clientId: string): void {
+		if (runtime.controllerClientId !== null) return;
+		runtime.controllerClientId = clientId;
+		this.broadcast(runtime.session.sessionId, { type: "controller_changed", controllerClientId: clientId });
+	}
+
+	private lastActivityAtMs(runtime: RunningSession): number {
+		return Math.max(runtime.modifiedAtMs, runtime.lastSeenAtMs);
+	}
+
+	private isEvictable(runtime: RunningSession): boolean {
+		return runtime.clients.size === 0 && runtime.session.isIdle;
+	}
+
+	/** Frees a slot by disposing the least recently used idle session nobody is watching. */
+	private ensureCapacity(): void {
+		if (this.runningById.size + this.resumingByPath.size < this.maxRunningSessions) return;
+		const victim = [...this.runningById.values()]
+			.filter((runtime) => this.isEvictable(runtime))
+			.sort((a, b) => this.lastActivityAtMs(a) - this.lastActivityAtMs(b))[0];
+		if (!victim) throw new Error("too_many_active_sessions");
+		this.rememberDetached(victim);
+		this.disposeRuntime(victim);
+	}
+
+	/** Disposes idle sessions without viewers; their jsonl is already persisted, so attaching resumes them. */
+	evictIdleSessions(now = Date.now()): string[] {
+		const expired = [...this.runningById.values()].filter(
+			(runtime) =>
+				this.isEvictable(runtime) &&
+				runtime.sessionFile !== null &&
+				existsSync(runtime.sessionFile) &&
+				now - this.lastActivityAtMs(runtime) >= this.idleSessionTtlMs,
+		);
+		for (const runtime of expired) {
+			this.rememberDetached(runtime);
+			this.disposeRuntime(runtime);
+		}
+		return expired.map((runtime) => runtime.session.sessionId);
+	}
+
+	startIdleSweep(intervalMs = IDLE_SWEEP_INTERVAL_MS): () => void {
+		const timer = setInterval(() => {
+			for (const sessionId of this.evictIdleSessions()) {
+				console.log(`[pi-web] disposed idle session ${sessionId}`);
+			}
+		}, intervalMs);
+		timer.unref?.();
+		return () => clearInterval(timer);
+	}
+
+	private disposeRuntime(runtime: RunningSession): void {
+		const sessionId = runtime.session.sessionId;
+		for (const client of runtime.clients.values()) {
+			client.close();
+		}
+		try {
+			runtime.session.dispose();
+		} catch {
+			// best effort
+		}
+		try {
+			runtime.unsubscribe?.();
+		} catch {
+			// best effort
+		}
+		this.runningById.delete(sessionId);
+		if (runtime.sessionFile) {
+			this.runningByPath.delete(runtime.sessionFile);
+		}
+		this.tripwireService.forgetSession(sessionId);
 	}
 
 	private startManualCompaction(runtime: RunningSession, customInstructions: string | undefined): void {
@@ -698,32 +841,13 @@ export class PiWebRuntime {
 
 		this.broadcast(sessionId, { type: "released", byClientId: request.clientId });
 
-		for (const client of runtime.clients.values()) {
-			client.close();
-		}
-
 		try {
 			runtime.session.abortCompaction();
 			await runtime.session.abort();
 		} catch {
 			// best effort
 		}
-		try {
-			runtime.session.dispose();
-		} catch {
-			// best effort
-		}
-		try {
-			runtime.unsubscribe?.();
-		} catch {
-			// best effort
-		}
-
-		this.runningById.delete(sessionId);
-		if (runtime.sessionFile) {
-			this.runningByPath.delete(runtime.sessionFile);
-		}
-		this.tripwireService.forgetSession(sessionId);
+		this.disposeRuntime(runtime);
 	}
 
 	private async buildTripwireAllowedRoots(cwd: string): Promise<Set<string>> {
@@ -743,15 +867,9 @@ export class PiWebRuntime {
 		const sessionId = session.sessionId;
 		const sessionFile = session.sessionFile ? resolve(session.sessionFile) : null;
 
-		if (this.runningById.size >= this.maxRunningSessions) {
-			throw new Error("too_many_active_sessions");
-		}
-
-		if (sessionFile) {
-			const existingId = this.runningByPath.get(sessionFile);
-			if (existingId) {
-				throw new Error("session_already_running");
-			}
+		if ((sessionFile && this.runningByPath.has(sessionFile)) || this.runningById.has(sessionId)) {
+			session.dispose();
+			throw new Error("session_already_running");
 		}
 
 		const createdAtMs = Date.now();
@@ -761,6 +879,7 @@ export class PiWebRuntime {
 			sessionFile,
 			createdAtMs,
 			modifiedAtMs: createdAtMs,
+			lastSeenAtMs: createdAtMs,
 			controllerClientId,
 			clients: new Map(),
 			unsubscribe: null,

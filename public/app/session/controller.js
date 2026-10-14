@@ -8,6 +8,7 @@ export function createSessionController({
 	pillEl,
 	api,
 	getClientId,
+	onRefreshClient = async () => {},
 	onStateChange,
 	onCloseMenu,
 	onSidebarClose,
@@ -32,6 +33,10 @@ export function createSessionController({
 	let oldestEntryId = null;
 	let olderLoading = false;
 	let renderGeneration = 0;
+	let activeSessionPath = null;
+	let connection = "idle";
+	let recoveryTimer = null;
+	let recoveryAttempt = 0;
 
 	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
 	msgsEl.addEventListener("scroll", () => maybeLoadOlderMessages(), { passive: true });
@@ -43,16 +48,75 @@ export function createSessionController({
 		}
 	}
 
+	function setConnection(next) {
+		if (connection === next) return;
+		connection = next;
+		onStateChange();
+	}
+
+	function stopRecovery() {
+		if (recoveryTimer) clearTimeout(recoveryTimer);
+		recoveryTimer = null;
+		recoveryAttempt = 0;
+	}
+
+	function sessionUrl(sessionId, action) {
+		const query = activeSessionPath ? `?path=${encodeURIComponent(activeSessionPath)}` : "";
+		return `/api/sessions/${encodeURIComponent(sessionId)}/${action}${query}`;
+	}
+
 	function connectEvents(sessionId) {
 		closeEvents();
-		eventSource = api.eventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
-		eventSource.onmessage = (msg) => {
-			const payload = JSON.parse(msg.data);
-			handleSse(payload);
+		setConnection("connecting");
+		const source = api.eventSource(sessionUrl(sessionId, "events"));
+		eventSource = source;
+		source.onopen = () => {
+			if (source !== eventSource) return;
+			recoveryAttempt = 0;
+			setConnection("live");
 		};
-		eventSource.onerror = () => {
-			// Browser will auto-retry; keep UI stable.
+		source.onmessage = (msg) => {
+			if (source !== eventSource) return;
+			handleSse(JSON.parse(msg.data));
 		};
+		source.onerror = () => {
+			if (source !== eventSource) return;
+			// EventSource retries network errors itself but gives up for good on HTTP errors.
+			if (source.readyState === EventSource.CLOSED) {
+				scheduleRecovery(sessionId);
+			} else {
+				setConnection("reconnecting");
+			}
+		};
+	}
+
+	function scheduleRecovery(sessionId, delayMs = Math.min(30_000, 1000 * 2 ** Math.min(recoveryAttempt, 5))) {
+		closeEvents();
+		setConnection("reconnecting");
+		if (recoveryTimer) clearTimeout(recoveryTimer);
+		recoveryAttempt += 1;
+		recoveryTimer = setTimeout(() => void recoverEvents(sessionId), delayMs);
+	}
+
+	async function recoverEvents(sessionId) {
+		recoveryTimer = null;
+		if (sessionId !== activeSessionId) return;
+		try {
+			await onRefreshClient();
+			await api.getJson(sessionUrl(sessionId, "state"));
+			if (sessionId !== activeSessionId) return;
+			connectEvents(sessionId);
+		} catch (error) {
+			if (sessionId !== activeSessionId) return;
+			if (error && error.status === 404) {
+				closeEvents();
+				stopRecovery();
+				setConnection("gone");
+				chatView.appendNotice("This session is no longer running. Open it again from the sidebar.", "error");
+				return;
+			}
+			scheduleRecovery(sessionId);
+		}
 	}
 
 	function clearFollowUpSync() {
@@ -210,6 +274,9 @@ export function createSessionController({
 
 	function reset() {
 		closeEvents();
+		stopRecovery();
+		setConnection("idle");
+		activeSessionPath = null;
 		clearFollowUpSync();
 		retryStatus = null;
 		compactionReason = null;
@@ -235,6 +302,7 @@ export function createSessionController({
 		if (event.type === "init") {
 			onCloseMenu();
 			activeState = event.state;
+			activeSessionPath = activeState.sessionFile || activeSessionPath;
 			controllerClientId = event.controllerClientId || null;
 			role = event.role;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
@@ -270,6 +338,9 @@ export function createSessionController({
 			onCloseMenu();
 			const cmd = lastCliCommand;
 			closeEvents();
+			stopRecovery();
+			setConnection("idle");
+			activeSessionPath = null;
 			clearFollowUpSync();
 			activeSessionId = null;
 			activeState = null;
@@ -526,10 +597,15 @@ export function createSessionController({
 
 	async function syncState() {
 		if (!activeSessionId || activeSessionId === "replay" || syncInFlight) return;
+		if (connection === "reconnecting") {
+			scheduleRecovery(activeSessionId, 0);
+			return;
+		}
+		if (connection === "gone") return;
 		syncInFlight = true;
 		try {
 			const previousState = activeState;
-			const state = await api.getJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/state`);
+			const state = await api.getJson(sessionUrl(activeSessionId, "state"));
 			activeState = state;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
 			const shouldRenderMessages =
@@ -553,10 +629,12 @@ export function createSessionController({
 
 	async function selectSession(session) {
 		clearFollowUpSync();
+		stopRecovery();
 		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		if (session.isRunning) {
 			activeSessionId = session.id;
+			activeSessionPath = session.path || null;
 			connectEvents(activeSessionId);
 			onSidebarClose();
 			onStateChange();
@@ -569,6 +647,7 @@ export function createSessionController({
 
 		const result = await api.postJson("/api/sessions", { clientId: getClientId(), resumeSessionPath: session.path });
 		activeSessionId = result.sessionId;
+		activeSessionPath = session.path;
 		connectEvents(activeSessionId);
 		onSidebarClose();
 		onStateChange();
@@ -661,9 +740,11 @@ export function createSessionController({
 
 	function openSessionId(sessionId) {
 		clearFollowUpSync();
+		stopRecovery();
 		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		activeSessionId = sessionId;
+		activeSessionPath = null;
 		connectEvents(activeSessionId);
 		onStateChange();
 	}
@@ -675,6 +756,7 @@ export function createSessionController({
 		getRole: () => role,
 		getPendingPrompt: () => pendingPrompt,
 		getRunStatus,
+		getConnection: () => connection,
 		isController: () => Boolean(activeSessionId && controllerClientId === getClientId()),
 		appendNotice: chatView.appendNotice,
 		reset,

@@ -113,6 +113,7 @@
     }
     .top-pill.controller { color: #b5bd68; border-color: #2a3a2a; background: #1e2a20; }
     .top-pill.viewer { color: #808080; }
+    .top-pill.offline { color: #f0c674; border-color: #3a3424; background: #2a2618; }
 
 	    .top-btn {
 	      display: flex; align-items: center; gap: 6px;

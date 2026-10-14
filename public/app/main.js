@@ -113,6 +113,11 @@ async function ensureClientSession() {
 	return clientId;
 }
 
+async function refreshClientSession() {
+	clientIdsByOrigin.delete(api.getBaseUrl());
+	return ensureClientSession();
+}
+
 async function loadHosts() {
 	const data = await api.getJson("/api/hosts").catch(() => ({ hosts: [] }));
 	const rawHosts = Array.isArray(data.hosts) ? data.hosts : [];
@@ -228,9 +233,11 @@ function updateFooter() {
 
 function updateRolePill() {
 	const role = sessionCtrl.getRole();
-	rolePill.textContent = role;
-	rolePill.classList.remove("controller", "viewer");
-	rolePill.classList.add(role);
+	const connection = sessionCtrl.getConnection();
+	const offline = Boolean(sessionCtrl.getActiveSessionId()) && (connection === "reconnecting" || connection === "gone");
+	rolePill.textContent = offline ? (connection === "gone" ? "ended" : "reconnecting") : role;
+	rolePill.classList.remove("controller", "viewer", "offline");
+	rolePill.classList.add(offline ? "offline" : role);
 }
 
 function updateTopSelectors() {
@@ -362,6 +369,7 @@ const sessionCtrl = createSessionController({
 	pillEl: jumpLatest,
 	api,
 	getClientId: () => clientId,
+	onRefreshClient: refreshClientSession,
 	onStateChange: () => {
 		updateFooter();
 		updateControls();

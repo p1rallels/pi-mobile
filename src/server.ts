@@ -34,6 +34,7 @@ interface ServerArgs {
 	allowedOrigins: string[];
 	maxRunningSessions: number;
 	maxClientsPerSession: number;
+	idleSessionMinutes: number;
 	secureMode: boolean;
 	deviceRegistryPath: string;
 	hostRegistryPath: string;
@@ -302,6 +303,7 @@ function parseArgs(argv: string[]): ServerArgs {
 	const clientCertHeader = process.env.PI_WEB_CLIENT_CERT_HEADER?.trim() || "x-pi-web-client-cert-fingerprint";
 	const maxRunningSessions = parsePositiveInt(process.env.PI_WEB_MAX_RUNNING_SESSIONS, 24, "PI_WEB_MAX_RUNNING_SESSIONS");
 	const maxClientsPerSession = parsePositiveInt(process.env.PI_WEB_MAX_CLIENTS_PER_SESSION, 8, "PI_WEB_MAX_CLIENTS_PER_SESSION");
+	const idleSessionMinutes = parsePositiveInt(process.env.PI_WEB_IDLE_SESSION_MINUTES, 15, "PI_WEB_IDLE_SESSION_MINUTES");
 
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
@@ -327,6 +329,7 @@ Env:
   PI_WEB_TRUST_PROXY=1
   PI_WEB_MAX_RUNNING_SESSIONS
   PI_WEB_MAX_CLIENTS_PER_SESSION
+  PI_WEB_IDLE_SESSION_MINUTES (dispose unwatched idle sessions after this long, default 15)
   PI_WEB_SECURE_MODE=1
   PI_WEB_DEVICE_REGISTRY
   PI_WEB_HOST_REGISTRY
@@ -373,7 +376,20 @@ Env:
 	];
 	const allowedOrigins = deriveAllowedOrigins(host, port, scheme, extraOrigins);
 
-	return { host, port, trustProxy, tls, allowedOrigins, maxRunningSessions, maxClientsPerSession, secureMode, deviceRegistryPath, hostRegistryPath, clientCertHeader };
+	return {
+		host,
+		port,
+		trustProxy,
+		tls,
+		allowedOrigins,
+		maxRunningSessions,
+		maxClientsPerSession,
+		idleSessionMinutes,
+		secureMode,
+		deviceRegistryPath,
+		hostRegistryPath,
+		clientCertHeader,
+	};
 }
 
 function parseCookies(req: Request): Map<string, string> {
@@ -675,6 +691,25 @@ function resolveSimpleWebAuthnBrowserFile(url: URL): string | null {
 	return full;
 }
 
+/** Resumes a session pi-web disposed for idling when the client names its file via ?path=. */
+async function attachIfNeeded(req: Request, url: URL, sessionId: string, requesterId: string): Promise<Response | null> {
+	if (runtime.isRunning(sessionId)) return null;
+	const path = url.searchParams.get("path")?.trim();
+	if (!path) return errorResponse("Session not running", 404);
+	const client = resolveClientCookie(req);
+	if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
+	const limited = sessionCreateLimiter.check(`sessions:${requesterId}`);
+	if (limited) return rateLimitResponse(limited);
+	try {
+		await runtime.attachSession(sessionId, path, client.clientId);
+		return null;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (message === "too_many_active_sessions") return errorResponse("Too many active sessions", 429);
+		return errorResponse("Session not running", 404);
+	}
+}
+
 function createCookieResponse(body: unknown, status: number, cookieHeader: string): Response {
 	return json(body, status, { "set-cookie": cookieHeader });
 }
@@ -707,6 +742,7 @@ const {
 	allowedOrigins,
 	maxRunningSessions,
 	maxClientsPerSession,
+	idleSessionMinutes,
 	secureMode,
 	deviceRegistryPath,
 	hostRegistryPath,
@@ -725,7 +761,8 @@ const commandLimiter = createRateLimiter(60_000, 90);
 const faceIdChallengeLimiter = createRateLimiter(60_000, 12);
 const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
 
-const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession });
+const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession, idleSessionTtlMs: idleSessionMinutes * 60_000 });
+runtime.startIdleSweep();
 const faceId = new FaceIdService();
 const clientSessions = createSessionStore<{ clientId: string }>();
 const faceIdSessions = createSessionStore<{ rpId: string; clientId: string; verifiedAt: number }>();
@@ -1003,6 +1040,11 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 
 		const { sessionId, action } = sessionRoute;
 
+		if (req.method === "GET" && (action === "state" || action === "events")) {
+			const attachError = await attachIfNeeded(req, url, sessionId, requesterId);
+			if (attachError) return attachError;
+		}
+
 		if (req.method === "GET" && action === "state") {
 			try {
 				const state: ApiSessionState = runtime.getSessionState(sessionId);
@@ -1052,6 +1094,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 
 			const stream = createSseStream(req.signal);
 			const clientSession: SessionClient = {
+				connectionId: randomUUID(),
 				clientId: client.clientId,
 				send: stream.send,
 				close: stream.close,
@@ -1083,7 +1126,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			req.signal.addEventListener(
 				"abort",
 				() => {
-					runtime.removeClient(sessionId, client.clientId);
+					runtime.removeClient(sessionId, clientSession.connectionId);
 				},
 				{ once: true },
 			);
@@ -1171,7 +1214,9 @@ if (trustProxy) {
 }
 console.log(`Response security headers enabled${enableHsts ? " (including HSTS)." : "."}`);
 console.log(`Face ID remote session window: ${String(Math.floor(FACEID_TTL_MS / 60000))}m total, ${String(Math.floor(FACEID_FRESH_TTL_MS / 60000))}m freshness for control actions.`);
-console.log(`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session.`);
+console.log(
+	`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session, idle sessions disposed after ${String(idleSessionMinutes)}m.`,
+);
 if (secureMode) {
 	console.log(`Secure mode enabled: client certificate fingerprints must be allowed in ${deviceRegistryPath}.`);
 	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
