@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { closeSync, openSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { emptyDeviceRegistry, loadDeviceRegistry, revokeDevice, saveDeviceRegistry, upsertDevice } from "./device-registry.ts";
 import { ensureClientCa, issueDeviceCertificate } from "./certificates.ts";
 import { writeCaddyfile } from "./caddy-config.ts";
@@ -314,14 +316,30 @@ function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<
 	return env;
 }
 
+function tailLines(text: string, count: number): string {
+	return text.trim().split("\n").slice(-count).join("\n");
+}
+
+// `caddy start` leaves a background `caddy run` holding our stdio, so piped output never reaches EOF.
+function startCaddy(caddyfile: string): { ok: boolean; output: string } {
+	const logPath = join(dirname(caddyfile), "caddy.log");
+	const fd = openSync(logPath, "w", 0o600);
+	try {
+		const proc = Bun.spawnSync({ cmd: ["caddy", "start", "--config", caddyfile], stdout: fd, stderr: fd });
+		return { ok: proc.exitCode === 0, output: tailLines(readFileSync(logPath, "utf8"), 20) };
+	} finally {
+		closeSync(fd);
+	}
+}
+
 function ensureCaddy(config: PiWebConfig): void {
 	if (!config.caddy.enabled) return;
 	const validate = runSync(["caddy", "validate", "--config", config.caddy.caddyfile]);
 	if (!validate.ok) throw new Error(validate.stderr || validate.stdout || "caddy validation failed");
 	const reload = runSync(["caddy", "reload", "--config", config.caddy.caddyfile]);
 	if (reload.ok) return;
-	const start = runSync(["caddy", "start", "--config", config.caddy.caddyfile]);
-	if (!start.ok) throw new Error(start.stderr || start.stdout || "caddy start failed");
+	const start = startCaddy(config.caddy.caddyfile);
+	if (!start.ok) throw new Error(start.output || "caddy start failed");
 }
 
 async function commandStart(): Promise<void> {
