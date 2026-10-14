@@ -609,7 +609,9 @@ export function createSessionController({
 			const state = await api.getJson(sessionUrl(activeSessionId, "state"));
 			activeState = state;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
+			// a live event stream already rendered everything; reconnects re-render from their init event
 			const shouldRenderMessages =
+				connection !== "live" &&
 				!activeState.isStreaming &&
 				!activeState.isCompacting &&
 				(Boolean(previousState?.isCompacting) || messagesChanged(previousState?.messages, activeState.messages));

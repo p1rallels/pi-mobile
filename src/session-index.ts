@@ -273,5 +273,3 @@ export function createSessionIndex(sessionsDir: string) {
 
 	return { list };
 }
-
-export type SessionIndex = ReturnType<typeof createSessionIndex>;
