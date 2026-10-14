@@ -66,6 +66,20 @@ interface DetachedSession {
 	sessionId: string;
 	size: number;
 	mtimeMs: number;
+	detachedAtMs: number;
+}
+
+const DETACHED_RECORD_TTL_MS = 30 * 24 * 60 * 60_000;
+const MAX_DETACHED_RECORDS = 500;
+
+function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
+	if (!Array.isArray(raw)) return [];
+	return raw.flatMap((record): Array<[string, DetachedSession]> => {
+		if (!record || typeof record !== "object") return [];
+		const { path, sessionId, size, mtimeMs, detachedAtMs } = record as Record<string, unknown>;
+		if (typeof path !== "string" || typeof sessionId !== "string" || typeof size !== "number" || typeof mtimeMs !== "number") return [];
+		return [[path, { sessionId, size, mtimeMs, detachedAtMs: typeof detachedAtMs === "number" ? detachedAtMs : Date.now() }]];
+	});
 }
 
 const DEFAULT_IDLE_SESSION_TTL_MS = 15 * 60_000;
@@ -307,6 +321,8 @@ export class PiWebRuntime {
 	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
 	private sessionIndex = createSessionIndex(join(this.agentDir, "sessions"));
+	private detachedStorePath = join(this.agentDir, "pi-web", "detached-sessions.json");
+	private detachedWrites: Promise<void> = Promise.resolve();
 	private modelRuntimePromise: Promise<ModelRuntime>;
 	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
 	private internalStateRoot = this.agentDir;
@@ -499,6 +515,16 @@ export class PiWebRuntime {
 		return this.runningById.has(sessionId);
 	}
 
+	getHealth(): { runningSessions: number; busySessions: number; viewers: number; detachedSessions: number } {
+		const runtimes = [...this.runningById.values()];
+		return {
+			runningSessions: runtimes.length,
+			busySessions: runtimes.filter((runtime) => !runtime.session.isIdle).length,
+			viewers: runtimes.reduce((total, runtime) => total + runtime.clients.size, 0),
+			detachedSessions: this.detachedByPath.size,
+		};
+	}
+
 	getSessionState(sessionId: string): ApiSessionState {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
@@ -634,7 +660,57 @@ export class PiWebRuntime {
 	private rememberDetached(runtime: RunningSession): void {
 		const fingerprint = runtime.sessionFile ? fileFingerprint(runtime.sessionFile) : null;
 		if (!runtime.sessionFile || !fingerprint) return;
-		this.detachedByPath.set(runtime.sessionFile, { sessionId: runtime.session.sessionId, ...fingerprint });
+		this.detachedByPath.set(runtime.sessionFile, { sessionId: runtime.session.sessionId, ...fingerprint, detachedAtMs: Date.now() });
+		this.persistDetached();
+	}
+
+	/** Restores re-attach records written before a restart, keeping only files nobody touched since. */
+	async loadDetachedSessions(now = Date.now()): Promise<number> {
+		let raw: unknown = [];
+		try {
+			raw = await readPrivateJsonFile<unknown>(this.detachedStorePath);
+		} catch (error) {
+			if (!isMissingFileError(error)) console.error(`[pi-web] ignoring unreadable ${this.detachedStorePath}: ${errorMessage(error)}`);
+		}
+		for (const [path, record] of parseDetachedRecords(raw)) {
+			const current = fileFingerprint(path);
+			const fresh = now - record.detachedAtMs < DETACHED_RECORD_TTL_MS;
+			if (fresh && current && current.size === record.size && current.mtimeMs === record.mtimeMs) {
+				this.detachedByPath.set(path, record);
+			}
+		}
+		return this.detachedByPath.size;
+	}
+
+	private persistDetached(): void {
+		this.detachedWrites = this.detachedWrites
+			.then(() => {
+				const records = [...this.detachedByPath.entries()]
+					.sort(([, a], [, b]) => b.detachedAtMs - a.detachedAtMs)
+					.slice(0, MAX_DETACHED_RECORDS)
+					.map(([path, record]) => ({ path, ...record }));
+				return writePrivateJsonFile(this.detachedStorePath, records);
+			})
+			.catch((error: unknown) => {
+				console.error(`[pi-web] failed to save ${this.detachedStorePath}: ${errorMessage(error)}`);
+			});
+	}
+
+	/** Stops runs, records every session for re-attach after the restart, and disposes them. */
+	async shutdown(timeoutMs = 5_000): Promise<void> {
+		const runtimes = [...this.runningById.values()];
+		const stopped = Promise.allSettled(
+			runtimes.map(async (runtime) => {
+				runtime.session.abortCompaction();
+				await runtime.session.abort();
+			}),
+		);
+		await Promise.race([stopped, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);
+		for (const runtime of runtimes) {
+			this.rememberDetached(runtime);
+			this.disposeRuntime(runtime);
+		}
+		await this.detachedWrites;
 	}
 
 	private async resumeSession(path: string, clientId: string, expectedSessionId?: string): Promise<RunningSession> {
@@ -661,7 +737,7 @@ export class PiWebRuntime {
 		const resuming = this.openSessionFile(path, clientId, expectedSessionId).finally(() => {
 			this.resumingByPath.delete(path);
 		});
-		this.detachedByPath.delete(path);
+		if (this.detachedByPath.delete(path)) this.persistDetached();
 		this.resumingByPath.set(path, resuming);
 		return resuming;
 	}

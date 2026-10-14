@@ -59,6 +59,8 @@ bun run cli -- doctor
 bun run cli -- start
 ```
 
+On an always-on Mac, `bun run cli -- service install` runs pi-web and Caddy as launchd agents instead. See [RUNBOOK.md](RUNBOOK.md).
+
 If you have a trusted server certificate/key, pass `--server-cert` and `--server-key` during init. Otherwise generated Caddy config uses `tls internal`, which requires client devices to trust Caddy's local CA.
 
 Install the generated `.p12` on the target device. Each device should get its own certificate so it can be revoked independently. On iPhone/iPad, accepting the `.p12` transfer is not enough; finish installation in Settings → Profile Downloaded or Settings → General → VPN & Device Management.

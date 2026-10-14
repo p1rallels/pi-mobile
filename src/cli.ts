@@ -1,9 +1,22 @@
 #!/usr/bin/env bun
-import { closeSync, openSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { emptyDeviceRegistry, loadDeviceRegistry, revokeDevice, saveDeviceRegistry, upsertDevice } from "./device-registry.ts";
 import { ensureClientCa, issueDeviceCertificate } from "./certificates.ts";
 import { writeCaddyfile } from "./caddy-config.ts";
+import {
+	CADDY_LABEL,
+	caddyAgentSpec,
+	launchAgentPath,
+	renderLaunchAgentPlist,
+	SERVER_LABEL,
+	serverAgentSpec,
+	serviceEnvironment,
+	type LaunchAgentSpec,
+	type ServiceLayout,
+} from "./launchd.ts";
 import { hasDoctorErrors, runDoctor, type DoctorCheck } from "./doctor.ts";
 import { loadHostRegistry, removeHost, upsertHost, type HostRecord } from "./host-registry.ts";
 import { refreshModelCatalogs } from "./model-catalog.ts";
@@ -19,6 +32,7 @@ function usage(): string {
 
 Usage:
   pi-web start
+  pi-web service install [--no-caddy] [--force] | uninstall | status | print [--no-caddy]
   pi-web doctor
   pi-web update --models [--timeout <seconds>]
   pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>] [--server-cert <path>] [--server-key <path>] [--device <name>] [--platform <platform>]
@@ -334,6 +348,7 @@ function startCaddy(caddyfile: string): { ok: boolean; output: string } {
 
 function ensureCaddy(config: PiWebConfig): void {
 	if (!config.caddy.enabled) return;
+	if (process.env.PI_WEB_MANAGE_CADDY === "0") return;
 	const validate = runSync(["caddy", "validate", "--config", config.caddy.caddyfile]);
 	if (!validate.ok) throw new Error(validate.stderr || validate.stdout || "caddy validation failed");
 	const reload = runSync(["caddy", "reload", "--config", config.caddy.caddyfile]);
@@ -358,8 +373,113 @@ async function commandStart(): Promise<void> {
 		stderr: "inherit",
 		env: envForServer(config, paths),
 	});
+	// launchd and tmux stop the cli process; the server needs the signal to save its sessions
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+		process.on(signal, () => proc.kill(signal === "SIGHUP" ? "SIGTERM" : signal));
+	}
 	const exitCode = await proc.exited;
 	process.exit(exitCode);
+}
+
+function serviceLayout(paths = resolvePiWebPaths()): ServiceLayout {
+	return { launchAgentsDir: join(homedir(), "Library", "LaunchAgents"), logsDir: join(paths.home, "logs") };
+}
+
+function launchdDomain(): string {
+	return `gui/${String(process.getuid?.() ?? 501)}`;
+}
+
+function whichCommand(command: string): string | null {
+	const found = runSync(["/usr/bin/which", command]);
+	return found.ok && found.stdout ? found.stdout.split("\n")[0]!.trim() : null;
+}
+
+async function serviceSpecs(args: ParsedArgs): Promise<LaunchAgentSpec[]> {
+	const paths = resolvePiWebPaths();
+	const config = (await loadPiWebConfig(paths)) ?? defaultPiWebConfig(paths);
+	const layout = serviceLayout(paths);
+	const withCaddy = config.caddy.enabled && args.flags.get("no-caddy") !== true;
+	const caddyPath = withCaddy ? whichCommand("caddy") : null;
+	if (withCaddy && !caddyPath) throw new Error("caddy not found in PATH; install it or pass --no-caddy");
+	const environment = serviceEnvironment(process.env);
+	const server = serverAgentSpec({
+		bunPath: process.execPath,
+		repoDir: resolve(import.meta.dir, ".."),
+		layout,
+		environment: { ...environment, PI_WEB_MANAGE_CADDY: withCaddy ? "0" : "1" },
+	});
+	return caddyPath ? [server, caddyAgentSpec({ caddyPath, caddyfile: config.caddy.caddyfile, layout, environment })] : [server];
+}
+
+async function serverResponds(port: number): Promise<boolean> {
+	try {
+		const res = await fetch(`http://127.0.0.1:${String(port)}/health`, { signal: AbortSignal.timeout(1_000) });
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
+async function commandService(args: ParsedArgs): Promise<void> {
+	const action = args.positionals[1];
+	const layout = serviceLayout();
+	if (action === "print") {
+		for (const spec of await serviceSpecs(args)) {
+			console.log(`# ${launchAgentPath(layout, spec.label)}\n${renderLaunchAgentPlist(spec)}`);
+		}
+		return;
+	}
+	if (action === "install") {
+		if (process.platform !== "darwin") throw new Error("pi-web service uses launchd and only supports macOS.");
+		const config = (await loadPiWebConfig(resolvePiWebPaths())) ?? defaultPiWebConfig(resolvePiWebPaths());
+		if (args.flags.get("force") !== true && (await serverResponds(config.port))) {
+			throw new Error(`something already answers on port ${String(config.port)}; stop the manually started pi-web first (or pass --force)`);
+		}
+		const specs = await serviceSpecs(args);
+		if (specs.some((spec) => spec.label === CADDY_LABEL) && runSync(["caddy", "stop"]).ok) {
+			console.log("stopped the caddy instance pi-web started earlier; launchd runs it from now on");
+		}
+		await mkdir(layout.launchAgentsDir, { recursive: true });
+		await mkdir(layout.logsDir, { recursive: true, mode: 0o700 });
+		for (const spec of [...specs].reverse()) {
+			const plistPath = launchAgentPath(layout, spec.label);
+			await writeFile(plistPath, renderLaunchAgentPlist(spec), { mode: 0o644 });
+			runSync(["launchctl", "bootout", `${launchdDomain()}/${spec.label}`]);
+			const loaded = runSync(["launchctl", "bootstrap", launchdDomain(), plistPath]);
+			if (!loaded.ok) throw new Error(`launchctl bootstrap ${spec.label} failed: ${loaded.stderr || loaded.stdout}`);
+			console.log(`installed ${spec.label} -> ${plistPath}`);
+		}
+		console.log(`logs: ${layout.logsDir}`);
+		return;
+	}
+	if (action === "uninstall") {
+		for (const label of [SERVER_LABEL, CADDY_LABEL]) {
+			const plistPath = launchAgentPath(layout, label);
+			runSync(["launchctl", "bootout", `${launchdDomain()}/${label}`]);
+			if (existsSync(plistPath)) {
+				await rm(plistPath);
+				console.log(`removed ${label}`);
+			}
+		}
+		return;
+	}
+	if (action === "status") {
+		for (const label of [SERVER_LABEL, CADDY_LABEL]) {
+			const printed = runSync(["launchctl", "print", `${launchdDomain()}/${label}`]);
+			const state = /^\s*state = (.+)$/m.exec(printed.stdout)?.[1] ?? (existsSync(launchAgentPath(layout, label)) ? "not loaded" : "not installed");
+			const pid = /^\s*pid = (\d+)$/m.exec(printed.stdout)?.[1];
+			console.log(`${label.padEnd(20)} ${state}${pid ? ` (pid ${pid})` : ""}`);
+		}
+		const config = (await loadPiWebConfig(resolvePiWebPaths())) ?? defaultPiWebConfig(resolvePiWebPaths());
+		try {
+			const res = await fetch(`http://127.0.0.1:${String(config.port)}/health`, { signal: AbortSignal.timeout(2_000) });
+			console.log(`health ${JSON.stringify(await res.json())}`);
+		} catch (error) {
+			console.log(`health unreachable on port ${String(config.port)}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return;
+	}
+	throw new Error("Usage: pi-web service install|uninstall|status|print");
 }
 
 async function main(): Promise<void> {
@@ -370,6 +490,7 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (cmd === "start") return commandStart();
+	if (cmd === "service") return commandService(args);
 	if (cmd === "doctor") return commandDoctor();
 	if (cmd === "update") return commandUpdate(args);
 	if (cmd === "secure" && subcmd === "init") return commandSecureInit(args);

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { activeDevices, expiredDevices, expiringDevices, loadDeviceRegistry } from "./device-registry.ts";
 import { clientCaPaths } from "./certificates.ts";
@@ -71,6 +72,14 @@ export async function runDoctor(paths: PiWebPaths, config: PiWebConfig | null): 
 	checks.push(configExists(paths) ? check("config.exists", "ok", `config found: ${paths.configPath}`) : check("config.exists", "warn", `config not found: ${paths.configPath}`));
 	checks.push(commandExists("openssl") ? check("openssl.exists", "ok", "openssl found") : check("openssl.exists", "error", "openssl not found"));
 	checks.push(hasTrackedSecretFiles() ? check("git.secrets", "error", "git tracks secret-looking files") : check("git.secrets", "ok", "git does not track obvious key/cert secret files"));
+	if (process.platform === "darwin") {
+		const plist = join(homedir(), "Library", "LaunchAgents", "dev.pi-web.server.plist");
+		checks.push(
+			existsSync(plist)
+				? check("service.launchd", "ok", `launchd keeps pi-web running: ${plist}`)
+				: check("service.launchd", "warn", "pi-web is not a launchd agent, so a reboot or crash leaves it down (pi-web service install)"),
+		);
+	}
 
 	if (!config) return checks;
 

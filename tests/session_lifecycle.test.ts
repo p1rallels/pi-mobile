@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFile } from "node:fs/promises";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { PiWebRuntime } from "../src/session-runtime.ts";
 import { agentEventTypes, cleanupAgentDirs, startFauxSession, waitFor, type FauxSession } from "./support/faux_runtime.ts";
 
 afterEach(cleanupAgentDirs);
@@ -101,5 +102,22 @@ describe("session lifecycle", () => {
 		expect((await runtime.listSessions({ cwd: "/somewhere/else" })).sessions).toEqual([]);
 
 		await runtime.release(second, { clientId });
+	});
+
+	test("records sessions at shutdown so a restarted server can re-attach them", async () => {
+		const { runtime, sessionId, clientId, sessionFile, modelRuntime } = await persistedSession();
+		await runtime.shutdown(1_000);
+		expect(runtime.isRunning(sessionId)).toBe(false);
+
+		const restarted = new PiWebRuntime({ modelRuntime });
+		expect(await restarted.loadDetachedSessions()).toBe(1);
+		await restarted.attachSession(sessionId, sessionFile, clientId);
+		expect(restarted.getSessionState(sessionId).messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		await restarted.shutdown(1_000);
+
+		await appendFile(sessionFile, `${JSON.stringify({ type: "label", id: "cli00002", parentId: null, timestamp: new Date().toISOString(), targetId: "x", label: "cli" })}\n`);
+		const again = new PiWebRuntime({ modelRuntime });
+		expect(await again.loadDetachedSessions()).toBe(0);
+		await expect(again.attachSession(sessionId, sessionFile, clientId)).rejects.toThrow("session_not_attachable");
 	});
 });

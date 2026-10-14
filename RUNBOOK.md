@@ -51,6 +51,23 @@ bun run cli -- start
 
 `pi-web start` runs doctor checks, starts pi-web on `127.0.0.1`, validates/reloads Caddy, and prints the usable URL.
 
+### Keep it running (macOS)
+
+On an always-on host, let launchd own pi-web and Caddy so a crash or reboot brings them back:
+
+```bash
+bun run cli -- service print     # review the generated LaunchAgents first
+bun run cli -- service install   # refuses while another pi-web answers on the port
+bun run cli -- service status    # launchd state plus /health
+bun run cli -- service uninstall
+```
+
+The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-web.caddy.plist`, with logs in `~/.pi-web/logs/`. The server agent captures the `PATH` of the shell that ran `install`, because launchd starts agents with a bare `PATH` and the agent's bash tool needs your tools. Re-run `install` after moving the repo or changing `PATH`.
+
+On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime.
+
+`GET /health` reports the pi SDK version, uptime, memory, and running/busy/viewer counts.
+
 ---
 
 ## Multi-host federation

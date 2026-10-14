@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { FaceIdService } from "./faceid.ts";
 import { loadHostRegistry } from "./host-registry.ts";
@@ -763,6 +764,7 @@ const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
 
 const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession, idleSessionTtlMs: idleSessionMinutes * 60_000 });
 runtime.startIdleSweep();
+const restoredSessions = await runtime.loadDetachedSessions();
 const faceId = new FaceIdService();
 const clientSessions = createSessionStore<{ clientId: string }>();
 const faceIdSessions = createSessionStore<{ rpId: string; clientId: string; verifiedAt: number }>();
@@ -828,7 +830,19 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		if (trustError) return trustError;
 
 		if (url.pathname === "/health") {
-			return json({ ok: true }, 200);
+			const memory = process.memoryUsage();
+			return json(
+				{
+					ok: true,
+					piVersion: PI_VERSION,
+					pid: process.pid,
+					uptimeSeconds: Math.round(process.uptime()),
+					rssMb: Math.round(memory.rss / 1_048_576),
+					heapUsedMb: Math.round(memory.heapUsed / 1_048_576),
+					...runtime.getHealth(),
+				},
+				200,
+			);
 		}
 
 		if (secureMode) {
@@ -1194,7 +1208,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		return plainText("Not found", 404);
 }
 
-Bun.serve({
+const server = Bun.serve({
 	hostname: host,
 	port,
 	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
@@ -1225,6 +1239,22 @@ if (secureMode) {
 	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
 }
 console.log("SDK extension auto-loading is enabled.");
+if (restoredSessions > 0) console.log(`${String(restoredSessions)} session(s) from before the restart can re-attach.`);
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+	if (shuttingDown) return;
+	shuttingDown = true;
+	console.log(`[pi-web] ${signal}: stopping runs and saving sessions for re-attach`);
+	void server.stop();
+	try {
+		await runtime.shutdown();
+	} finally {
+		process.exit(0);
+	}
+}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 if (isTailnetHost(host) && !secureMode) {
 	console.log("Direct Tailscale binding enabled by explicit opt-in. Prefer secure mode behind Caddy mTLS.");
 	console.log("First remote Face ID enrollment requires secure mode with mTLS, or enrollment from a trusted local browser.");
