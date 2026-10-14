@@ -19,7 +19,7 @@ const safePath = (urlPath: string): string => {
 	return join(rootDir, relative);
 };
 
-const assetHeaders = (path: string): HeadersInit => ({
+const assetHeaders = (path: string): Record<string, string> => ({
 	"content-type": mimeTypes.get(extname(path)) || "application/octet-stream",
 	"cache-control": "no-store",
 	"x-content-type-options": "nosniff",
@@ -37,7 +37,7 @@ export const handleRequest = async (request: Request): Promise<Response> => {
 
 if (import.meta.main) {
 	Bun.serve({
-		host,
+		hostname: host,
 		port,
 		fetch: handleRequest,
 	});

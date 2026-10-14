@@ -11,7 +11,8 @@
 		"cli": "bun src/cli.ts",
 		"mock": "bun mock-ui/server.ts",
 		"test": "bun test",
-		"test:e2e": "playwright test"
+		"test:e2e": "playwright test",
+		"typecheck": "bun check"
 	},
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "1.2.0",
@@ -19,6 +20,7 @@
 		"@simplewebauthn/server": "13.2.3"
 	},
 	"devDependencies": {
-		"@playwright/test": "1.51.0"
+		"@playwright/test": "1.51.0",
+		"@types/bun": "1.4.3"
 	}
 }

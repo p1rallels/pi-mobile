@@ -444,7 +444,7 @@ function applySecurityHeaders(headers: Headers): void {
 	}
 }
 
-function json(body: unknown, status = 200, extraHeaders?: HeadersInit): Response {
+function json(body: unknown, status = 200, extraHeaders?: Bun.HeadersInit): Response {
 	const headers = new Headers(extraHeaders);
 	applySecurityHeaders(headers);
 	headers.set("content-type", "application/json; charset=utf-8");
@@ -452,17 +452,17 @@ function json(body: unknown, status = 200, extraHeaders?: HeadersInit): Response
 	return new Response(JSON.stringify(body), { status, headers });
 }
 
-function ok(extraHeaders?: HeadersInit): Response {
+function ok(extraHeaders?: Bun.HeadersInit): Response {
 	const body: ApiOkResponse = { ok: true };
 	return json(body, 200, extraHeaders);
 }
 
-function errorResponse(message: string, status: number, extraHeaders?: HeadersInit): Response {
+function errorResponse(message: string, status: number, extraHeaders?: Bun.HeadersInit): Response {
 	const body: ApiErrorResponse = { error: message };
 	return json(body, status, extraHeaders);
 }
 
-function plainText(body: string | null, status = 200, extraHeaders?: HeadersInit): Response {
+function plainText(body: string | null, status = 200, extraHeaders?: Bun.HeadersInit): Response {
 	const headers = new Headers(extraHeaders);
 	applySecurityHeaders(headers);
 	headers.set("cache-control", "no-store");
@@ -688,7 +688,7 @@ function forwardedClientIp(req: Request): string | null {
 	return forwardedFor || null;
 }
 
-function resolveRequesterId(req: Request, server: Bun.Server): string {
+function resolveRequesterId(req: Request, server: Bun.Server<undefined>): string {
 	if (trustProxy) {
 		const forwarded = forwardedClientIp(req);
 		if (forwarded) return forwarded;
@@ -779,7 +779,7 @@ function corsPreflightResponse(req: Request): Response | null {
 	return new Response(null, { status: 204, headers });
 }
 
-async function handleFetch(req: Request, server: Bun.Server): Promise<Response> {
+async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise<Response> {
 		const url = new URL(req.url);
 		const secure = isSecureRequest(req, url, trustProxy);
 		const requestProtocol = secure ? "https:" : url.protocol;
@@ -902,8 +902,8 @@ async function handleFetch(req: Request, server: Bun.Server): Promise<Response> 
 			const limited = repoMutationLimiter.check(`repos:${requesterId}`);
 			if (limited) return rateLimitResponse(limited);
 			try {
-				const raw = (await requireJsonBody(req)) as ApiAddRepoRequest;
-				if (!raw?.cwd || typeof raw.cwd !== "string") {
+				const raw: Partial<ApiAddRepoRequest> = await requireJsonBody(req);
+				if (!raw.cwd || typeof raw.cwd !== "string") {
 					return errorResponse("Missing cwd", 400);
 				}
 				await runtime.addRepo(raw.cwd);

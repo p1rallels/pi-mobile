@@ -9,6 +9,8 @@ import {
 	verifyRegistrationResponse,
 	type AuthenticationResponseJSON,
 	type AuthenticatorTransportFuture,
+	type PublicKeyCredentialCreationOptionsJSON,
+	type PublicKeyCredentialRequestOptionsJSON,
 	type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
@@ -107,7 +109,7 @@ export class FaceIdService {
 	): Promise<{
 		challengeId: string;
 		kind: ChallengeKind;
-		options: Record<string, unknown>;
+		options: PublicKeyCredentialCreationOptionsJSON | PublicKeyCredentialRequestOptionsJSON;
 	}> {
 		this.pruneChallenges();
 		if (this.challenges.size >= MAX_PENDING_CHALLENGES) {

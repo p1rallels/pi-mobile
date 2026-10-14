@@ -25,6 +25,14 @@ bun run dev -- --port 4317
 
 Open `http://localhost:4317`.
 
+Checks:
+
+```bash
+bun run typecheck
+bun test
+bun run test:e2e
+```
+
 ## Pi updates
 
 The Pi SDK is pinned to an exact version so upstream breaking changes only land through deliberate upgrades. Refresh dynamic provider model catalogs independently of the SDK version:

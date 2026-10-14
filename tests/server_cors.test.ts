@@ -10,6 +10,7 @@ async function freePort(): Promise<number> {
 	const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
 	const port = server.port;
 	server.stop(true);
+	if (port === undefined) throw new Error("failed to allocate a port");
 	return port;
 }
 
