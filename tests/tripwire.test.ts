@@ -30,17 +30,12 @@ describe("tripwire service", () => {
 			allowedRoots: ["/workspace/repo"],
 		};
 
-		const inspection = service.inspectEvent(ctx, {
-			type: "tool_execution_start",
-			toolCallId: "call-write",
-			toolName: "write",
-			args: { path: "../outside.txt", content: "oops" },
-		} as never);
+		const inspection = service.inspectToolCall(ctx, "write", "call-write", { path: "../outside.txt", content: "oops" });
 
-		expect(inspection.shouldAbort).toBe(true);
+		expect(inspection.shouldBlock).toBe(true);
 		expect(inspection.alerts).toHaveLength(1);
 		expect(service.toApiAlert(inspection.alerts[0]!).category).toBe("repo_escape");
-		expect(service.toApiAlert(inspection.alerts[0]!).response).toBe("abort_requested");
+		expect(service.toApiAlert(inspection.alerts[0]!).response).toBe("blocked");
 
 		await service.recordAlerts(ctx.sessionId, inspection.alerts);
 
@@ -53,45 +48,39 @@ describe("tripwire service", () => {
 		expect(secondSnapshot.alerts).toHaveLength(1);
 	});
 
-	test("logs repo-external reads without auto-aborting", async () => {
+	test("logs repo-external reads without blocking", async () => {
 		const service = await createService();
-		const inspection = service.inspectEvent(
+		const inspection = service.inspectToolCall(
 			{
 				sessionId: "sess-read",
 				cwd: "/workspace/repo",
 				allowedRoots: ["/workspace/repo"],
 			},
-			{
-				type: "tool_execution_start",
-				toolCallId: "call-read",
-				toolName: "read",
-				args: { path: "../notes.txt" },
-			} as never,
+			"read",
+			"call-read",
+			{ path: "../notes.txt" },
 		);
 
-		expect(inspection.shouldAbort).toBe(false);
+		expect(inspection.shouldBlock).toBe(false);
 		expect(inspection.alerts).toHaveLength(1);
 		expect(service.toApiAlert(inspection.alerts[0]!).severity).toBe("observe");
 		expect(service.toApiAlert(inspection.alerts[0]!).category).toBe("repo_escape");
 	});
 
-	test("aborts on host persistence bash patterns", async () => {
+	test("blocks host persistence bash patterns", async () => {
 		const service = await createService();
-		const inspection = service.inspectEvent(
+		const inspection = service.inspectToolCall(
 			{
 				sessionId: "sess-persist",
 				cwd: "/workspace/repo",
 				allowedRoots: ["/workspace/repo"],
 			},
-			{
-				type: "tool_execution_start",
-				toolCallId: "call-bash",
-				toolName: "bash",
-				args: { command: "echo 'alias ll=ls -la' >> ~/.zshrc" },
-			} as never,
+			"bash",
+			"call-bash",
+			{ command: "echo 'alias ll=ls -la' >> ~/.zshrc" },
 		);
 
-		expect(inspection.shouldAbort).toBe(true);
+		expect(inspection.shouldBlock).toBe(true);
 		expect(inspection.alerts).toHaveLength(1);
 		expect(service.toApiAlert(inspection.alerts[0]!).category).toBe("persistence");
 	});

@@ -12,7 +12,7 @@ Web UI for the `pi` coding agent, built on the `@earendil-works/pi-coding-agent`
 - Tailscale + Caddy mTLS for private-network and enrolled-device access
 - Federated host list for switching across a few independently secured boxes
 - Face ID / Touch ID / WebAuthn freshness checks for remote control actions
-- Tripwire alerts for repo escape, secret access, persistence, destructive commands, and suspicious network patterns
+- Tripwire that blocks secret access, persistence, destructive commands, repo-external writes and suspicious network patterns before the tool runs, and logs repo-external reads
 
 SDK upstream: https://github.com/earendil-works/pi
 

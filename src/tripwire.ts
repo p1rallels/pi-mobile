@@ -46,7 +46,7 @@ export interface TripwireSessionContext {
 
 export interface TripwireInspectionResult {
 	alerts: StoredTripwireAlert[];
-	shouldAbort: boolean;
+	shouldBlock: boolean;
 }
 
 const TRIPWIRE_STORE_VERSION = 1;
@@ -160,34 +160,27 @@ export class TripwireService {
 		].map((path) => resolve(path));
 	}
 
+	/**
+	 * Runs from a `tool_call` handler, after argument validation and before the tool executes, for
+	 * model-issued and nested (codemode, MCP) calls alike. Critical findings block the call.
+	 */
+	inspectToolCall(context: TripwireSessionContext, toolName: string, toolCallId: string, input: unknown): TripwireInspectionResult {
+		const toolAlert = this.inspectToolStart(context, toolName, toolCallId, input);
+		if (toolAlert) {
+			return { alerts: [toolAlert], shouldBlock: toolAlert.response === "blocked" };
+		}
+		const rateAlert = this.inspectToolRate(context.sessionId, toolName);
+		return { alerts: rateAlert ? [rateAlert] : [], shouldBlock: false };
+	}
+
 	inspectEvent(context: TripwireSessionContext, event: AgentSessionEvent): TripwireInspectionResult {
-		if (!event || typeof event !== "object" || typeof event.type !== "string") {
-			return { alerts: [], shouldAbort: false };
-		}
-
-		if (event.type === "tool_execution_start") {
-			const toolAlert = this.inspectToolStart(context, event.toolName, event.toolCallId, event.args);
-			if (toolAlert) {
-				return {
-					alerts: [toolAlert],
-					shouldAbort: toolAlert.response === "abort_requested",
-				};
-			}
-
-			const rateAlert = this.inspectToolRate(context.sessionId, event.toolName);
-			if (rateAlert) {
-				return { alerts: [rateAlert], shouldAbort: false };
-			}
-		}
-
 		if (event.type === "tool_execution_end") {
 			const failureAlert = this.inspectFailureRate(context.sessionId, Boolean(event.isError));
 			if (failureAlert) {
-				return { alerts: [failureAlert], shouldAbort: false };
+				return { alerts: [failureAlert], shouldBlock: false };
 			}
 		}
-
-		return { alerts: [], shouldAbort: false };
+		return { alerts: [], shouldBlock: false };
 	}
 
 	async recordAlerts(sessionId: string, alerts: StoredTripwireAlert[]): Promise<void> {
@@ -253,7 +246,7 @@ export class TripwireService {
 				detail: `Command: ${preview}`,
 				toolName,
 				toolCallId,
-				response: "abort_requested",
+				response: "blocked",
 			});
 		}
 
@@ -266,7 +259,7 @@ export class TripwireService {
 				detail: `Command: ${preview}`,
 				toolName,
 				toolCallId,
-				response: "abort_requested",
+				response: "blocked",
 			});
 		}
 
@@ -279,7 +272,7 @@ export class TripwireService {
 				detail: `Command: ${preview}`,
 				toolName,
 				toolCallId,
-				response: "abort_requested",
+				response: "blocked",
 			});
 		}
 
@@ -292,7 +285,7 @@ export class TripwireService {
 				detail: `Command: ${preview}`,
 				toolName,
 				toolCallId,
-				response: "abort_requested",
+				response: "blocked",
 			});
 		}
 
@@ -319,7 +312,7 @@ export class TripwireService {
 					detail: `Path: ${resolvedPath}`,
 					toolName,
 					toolCallId,
-					response: "abort_requested",
+					response: "blocked",
 				});
 			}
 
@@ -332,7 +325,7 @@ export class TripwireService {
 					detail: `Path: ${resolvedPath}`,
 					toolName,
 					toolCallId,
-					response: "abort_requested",
+					response: "blocked",
 				});
 			}
 
@@ -347,7 +340,7 @@ export class TripwireService {
 						detail: `Path: ${resolvedPath}`,
 						toolName,
 						toolCallId,
-						response: "abort_requested",
+						response: "blocked",
 					});
 				}
 				if (!observedPath) observedPath = resolvedPath;

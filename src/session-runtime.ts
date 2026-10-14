@@ -7,7 +7,10 @@ import {
 	SettingsManager,
 	type AgentSession,
 	type AgentSessionEvent,
+	type InlineExtension,
 	type PromptOptions,
+	type ToolCallEvent,
+	type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -51,7 +54,7 @@ interface RunningSession {
 	clients: Map<string, SessionClient>;
 	unsubscribe: (() => void) | null;
 	tripwireAllowedRoots: Set<string>;
-	tripwireAbortRequested: boolean;
+	tripwireStopRequested: boolean;
 }
 
 interface PiWebRuntimeOptions {
@@ -326,7 +329,7 @@ export class PiWebRuntime {
 	private modelRuntimePromise: Promise<ModelRuntime>;
 	private repoStorePath = join(this.agentDir, "pi-web", "repos.json");
 	private internalStateRoot = this.agentDir;
-	private tripwireService = new TripwireService();
+	private tripwireService = new TripwireService(join(this.agentDir, "pi-web", "tripwire-state.json"));
 	private maxRunningSessions: number;
 	private maxClientsPerSession: number;
 	private idleSessionTtlMs: number;
@@ -367,7 +370,12 @@ export class PiWebRuntime {
 
 	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<AgentSession> {
 		const settingsManager = SettingsManager.create(cwd, this.agentDir);
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, settingsManager });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: this.agentDir,
+			settingsManager,
+			extensionFactories: [this.tripwireGuard()],
+		});
 		const modelRuntime = await this.refreshModelRuntime();
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
@@ -383,6 +391,41 @@ export class PiWebRuntime {
 			},
 		});
 		return session;
+	}
+
+	private tripwireGuard(): InlineExtension {
+		return {
+			name: "pi-web-tripwire",
+			hidden: true,
+			factory: (pi) => {
+				pi.on("tool_call", (event, ctx) => this.guardToolCall(ctx.sessionManager.getSessionId(), event));
+			},
+		};
+	}
+
+	/** Blocks critical tool calls before they run and stops the run for a human to look. */
+	private guardToolCall(sessionId: string, event: ToolCallEvent): ToolCallEventResult | undefined {
+		const runtime = this.runningById.get(sessionId);
+		if (!runtime) return undefined;
+		const inspection = this.tripwireService.inspectToolCall(
+			{ sessionId, cwd: runtime.cwd, allowedRoots: runtime.tripwireAllowedRoots },
+			event.toolName,
+			event.toolCallId,
+			event.input,
+		);
+		for (const alert of inspection.alerts) {
+			this.broadcast(sessionId, { type: "tripwire_alert", alert: this.tripwireService.toApiAlert(alert) });
+		}
+		void this.tripwireService.recordAlerts(sessionId, inspection.alerts);
+		const blocking = inspection.shouldBlock ? inspection.alerts[0] : undefined;
+		if (!blocking) return undefined;
+		if (!runtime.tripwireStopRequested) {
+			runtime.tripwireStopRequested = true;
+			// aborting inside the handler would replace the block reason with "Operation aborted"
+			setTimeout(() => void runtime.session.abort().catch(() => {}), 0);
+		}
+		const detail = blocking.detail ? ` ${blocking.detail}` : "";
+		return { block: true, terminate: true, reason: `Blocked by the pi-web tripwire: ${blocking.summary}${detail}` };
 	}
 
 	async listRepos(): Promise<string[]> {
@@ -996,7 +1039,7 @@ export class PiWebRuntime {
 			clients: new Map(),
 			unsubscribe: null,
 			tripwireAllowedRoots,
-			tripwireAbortRequested: false,
+			tripwireStopRequested: false,
 		};
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
@@ -1016,17 +1059,10 @@ export class PiWebRuntime {
 					this.broadcast(sessionId, { type: "tripwire_alert", alert: this.tripwireService.toApiAlert(alert) });
 				}
 				void this.tripwireService.recordAlerts(sessionId, inspection.alerts);
-
-				if (inspection.shouldAbort && !runtime.tripwireAbortRequested) {
-					runtime.tripwireAbortRequested = true;
-					void runtime.session.abort().catch(() => {
-						// best effort
-					});
-				}
 			}
 
 			if (event.type === "agent_start" || event.type === "agent_settled") {
-				runtime.tripwireAbortRequested = false;
+				runtime.tripwireStopRequested = false;
 			}
 			if (STATE_PATCH_EVENTS.has(event.type)) {
 				const patch = buildPatch(session);

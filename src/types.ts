@@ -155,7 +155,7 @@ export type ApiTripwireSeverity = "observe" | "critical";
 
 export type ApiTripwireCategory = "repo_escape" | "secret_access" | "persistence" | "destructive" | "network" | "runaway";
 
-export type ApiTripwireResponse = "logged" | "abort_requested";
+export type ApiTripwireResponse = "logged" | "abort_requested" | "blocked";
 
 export interface ApiTripwireAlert {
 	id: string;

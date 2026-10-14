@@ -248,7 +248,8 @@ export function createSessionController({
 		const category = typeof alert.category === "string" ? alert.category.replaceAll("_", " ") : "tripwire";
 		const summary = typeof alert.summary === "string" ? alert.summary : "Tripwire alert";
 		const detail = typeof alert.detail === "string" && alert.detail.trim() ? ` ${alert.detail.trim()}` : "";
-		chatView.appendNotice(`[tripwire ${severity}][${category}] ${summary}${detail}`, severity === "critical" ? "error" : "info");
+		const label = alert.response === "blocked" ? "blocked" : severity;
+		chatView.appendNotice(`[tripwire ${label}][${category}] ${summary}${detail}`, severity === "critical" ? "error" : "info");
 	}
 
 	async function loadTripwireAlerts(sessionId) {
