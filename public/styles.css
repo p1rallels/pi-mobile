@@ -426,6 +426,22 @@
       margin-top: 6px;
     }
     .notice-text.error { color: #cc6666; }
+    .notice-text.custom { color: #b294bb; }
+
+    .load-older {
+      align-self: center;
+      margin-top: 0.5em;
+      padding: 4px 12px;
+      border-radius: 999px;
+      border: 1px solid #2a2a32;
+      background: transparent;
+      color: #808080;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .load-older:hover:not(:disabled) { color: #d4d4d4; }
+    .load-older:disabled { cursor: default; }
 
     /* markdown */
     .md { white-space: pre-wrap; word-break: break-word; }

@@ -21,6 +21,7 @@ import type {
 	ApiReleaseRequest,
 	ApiSessionState,
 	ApiTakeoverRequest,
+	ApiTranscriptPageResponse,
 	ApiTripwireAlertsResponse,
 	SseEvent,
 } from "./types.ts";
@@ -1007,6 +1008,23 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				const state: ApiSessionState = runtime.getSessionState(sessionId);
 				return json(state, 200);
 			} catch {
+				return errorResponse("Session not running", 404);
+			}
+		}
+
+		if (req.method === "GET" && action === "transcript") {
+			const before = url.searchParams.get("before")?.trim() || undefined;
+			const limitParam = url.searchParams.get("limit");
+			const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+			try {
+				const body: ApiTranscriptPageResponse = runtime.getTranscriptPage(sessionId, {
+					before,
+					limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
+				});
+				return json(body, 200);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message === "unknown_entry") return errorResponse("Unknown transcript entry", 404);
 				return errorResponse("Session not running", 404);
 			}
 		}

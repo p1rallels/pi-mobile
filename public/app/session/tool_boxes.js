@@ -1,6 +1,6 @@
 import { toolCallToText, toolPreviewLines } from "../core/tool_format.js";
 
-export function createToolBoxManager({ msgsEl, onContentChange = () => {} }) {
+export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 	let toolBoxes = new Map(); // toolCallId -> { box, call, out, toolName, previewLines, expanded, callText, fullText }
 
 	function clear() {
@@ -22,7 +22,7 @@ export function createToolBoxManager({ msgsEl, onContentChange = () => {} }) {
 
 		box.appendChild(call);
 		box.appendChild(out);
-		msgsEl.appendChild(box);
+		mount(box);
 
 		const entry = {
 			box,

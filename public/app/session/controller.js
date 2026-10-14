@@ -28,8 +28,13 @@ export function createSessionController({
 	let renderedSessionId = null;
 	let retryStatus = null;
 	let compactionReason = null;
+	let hasOlderMessages = false;
+	let oldestEntryId = null;
+	let olderLoading = false;
+	let renderGeneration = 0;
 
 	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
+	msgsEl.addEventListener("scroll", () => maybeLoadOlderMessages(), { passive: true });
 
 	function closeEvents() {
 		if (eventSource) {
@@ -94,6 +99,7 @@ export function createSessionController({
 
 	function messageFingerprint(message) {
 		if (!message || typeof message !== "object") return "";
+		if (typeof message.entryId === "string") return message.entryId;
 		const role = typeof message.role === "string" ? message.role : "";
 		const timestamp = typeof message.timestamp === "number" ? message.timestamp : "";
 		const summary = typeof message.summary === "string" ? message.summary.length : "";
@@ -107,8 +113,48 @@ export function createSessionController({
 		return messageFingerprint(previousMessages[previousMessages.length - 1]) !== messageFingerprint(nextMessages[nextMessages.length - 1]);
 	}
 
+	function firstEntryId(messages) {
+		const first = (messages || []).find((message) => message && typeof message.entryId === "string");
+		return first ? first.entryId : null;
+	}
+
+	function syncOlderControl(state = olderLoading ? "loading" : "idle") {
+		chatView.setOlderControl(hasOlderMessages && oldestEntryId ? state : "none", () => void loadOlderMessages());
+	}
+
+	function maybeLoadOlderMessages() {
+		if (hasOlderMessages && !olderLoading && chatView.isNearTop()) void loadOlderMessages();
+	}
+
+	async function loadOlderMessages() {
+		if (olderLoading || !hasOlderMessages || !oldestEntryId || !activeSessionId || activeSessionId === "replay") return;
+		const sessionId = activeSessionId;
+		const generation = renderGeneration;
+		olderLoading = true;
+		syncOlderControl();
+		try {
+			const page = await api.getJson(
+				`/api/sessions/${encodeURIComponent(sessionId)}/transcript?before=${encodeURIComponent(oldestEntryId)}`,
+			);
+			if (sessionId !== activeSessionId || generation !== renderGeneration) return;
+			const messages = Array.isArray(page?.messages) ? page.messages : [];
+			hasOlderMessages = Boolean(page?.hasOlder) && messages.length > 0;
+			chatView.prependHistory(messages, { hasOlder: hasOlderMessages });
+			oldestEntryId = firstEntryId(messages) || oldestEntryId;
+			olderLoading = false;
+			syncOlderControl();
+			maybeLoadOlderMessages();
+		} catch (error) {
+			if (sessionId !== activeSessionId || generation !== renderGeneration) return;
+			console.error("Failed to load earlier messages", error);
+			olderLoading = false;
+			syncOlderControl("error");
+		}
+	}
+
 	function renderStateMessages(messages, { keepPosition = false } = {}) {
 		const restoreTop = keepPosition && !chatView.isPinned() ? chatView.getScrollTop() : null;
+		renderGeneration += 1;
 		chatView.clear();
 		chatView.renderHistory(messages || []);
 		if (pendingCompactionSummary && !(messages || []).some((message) => compactionMatches(message, pendingCompactionSummary))) {
@@ -116,12 +162,17 @@ export function createSessionController({
 		}
 		pendingCompactionSummary = null;
 		applyQueuedMessages(activeState?.queuedMessages);
+		hasOlderMessages = Boolean(activeState?.hasOlderMessages);
+		oldestEntryId = firstEntryId(messages);
+		olderLoading = false;
+		syncOlderControl();
 		chatView.flush();
 		if (restoreTop === null) {
 			chatView.pin();
 		} else {
 			chatView.restoreScroll(restoreTop);
 		}
+		maybeLoadOlderMessages();
 	}
 
 	function appendTripwireAlert(alert) {
@@ -162,6 +213,9 @@ export function createSessionController({
 		clearFollowUpSync();
 		retryStatus = null;
 		compactionReason = null;
+		hasOlderMessages = false;
+		oldestEntryId = null;
+		renderGeneration += 1;
 		activeSessionId = null;
 		activeState = null;
 		controllerClientId = null;
@@ -199,11 +253,7 @@ export function createSessionController({
 			if (!activeState) return;
 			if (event.patch && typeof event.patch === "object") {
 				Object.assign(activeState, event.patch);
-				if (Array.isArray(event.patch.messages)) {
-					renderStateMessages(event.patch.messages, { keepPosition: true });
-				} else if (event.patch.queuedMessages) {
-					applyQueuedMessages(event.patch.queuedMessages);
-				}
+				if (event.patch.queuedMessages) applyQueuedMessages(event.patch.queuedMessages);
 				onStateChange();
 			}
 			return;

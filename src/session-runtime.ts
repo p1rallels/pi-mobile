@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import { transcriptPage, type TranscriptPage } from "./transcript.ts";
 import { TripwireService } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
 import type {
@@ -56,6 +57,12 @@ interface PiWebRuntimeOptions {
 }
 
 type SessionThinkingLevel = Parameters<AgentSession["setThinkingLevel"]>[0];
+
+const INITIAL_TRANSCRIPT_MESSAGES = 150;
+const INITIAL_TRANSCRIPT_BYTES = 600_000;
+const TRANSCRIPT_PAGE_MESSAGES = 200;
+const MAX_TRANSCRIPT_PAGE_MESSAGES = 500;
+const TRANSCRIPT_PAGE_BYTES = 1_000_000;
 
 const STATE_PATCH_EVENTS: ReadonlySet<AgentSessionEvent["type"]> = new Set<AgentSessionEvent["type"]>([
 	"agent_start",
@@ -140,6 +147,10 @@ function safeQueuedMessagesSnapshot(session: AgentSession): ApiSessionState["que
 }
 
 function buildState(session: AgentSession, cwd: string): ApiSessionState {
+	const transcript = transcriptPage(session.sessionManager.getBranch(), {
+		maxMessages: INITIAL_TRANSCRIPT_MESSAGES,
+		maxBytes: INITIAL_TRANSCRIPT_BYTES,
+	});
 	return {
 		sessionId: session.sessionId,
 		cwd,
@@ -156,16 +167,16 @@ function buildState(session: AgentSession, cwd: string): ApiSessionState {
 		queuedMessages: safeQueuedMessagesSnapshot(session),
 		stats: safeStatsSnapshot(session),
 		contextUsage: safeContextUsageSnapshot(session),
-		messages: session.messages,
+		messages: transcript.messages,
+		hasOlderMessages: transcript.hasOlder,
 	};
 }
 
-function buildPatch(session: AgentSession, options: { includeMessages?: boolean } = {}): ApiSessionPatch {
+function buildPatch(session: AgentSession): ApiSessionPatch {
 	return {
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
 		retryAttempt: session.retryAttempt,
-		...(options.includeMessages ? { messages: session.messages } : {}),
 		model: safeModelSnapshot(session),
 		thinkingLevel: session.thinkingLevel,
 		sessionName: session.sessionName,
@@ -476,6 +487,19 @@ export class PiWebRuntime {
 		return buildState(runtime.session, runtime.cwd);
 	}
 
+	getTranscriptPage(sessionId: string, request: { before?: string; limit?: number }): TranscriptPage {
+		const runtime = this.runningById.get(sessionId);
+		if (!runtime) {
+			throw new Error("session_not_running");
+		}
+		const limit = Math.min(Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_MESSAGES)), MAX_TRANSCRIPT_PAGE_MESSAGES);
+		return transcriptPage(runtime.session.sessionManager.getBranch(), {
+			before: request.before,
+			maxMessages: limit,
+			maxBytes: TRANSCRIPT_PAGE_BYTES,
+		});
+	}
+
 	async getTripwireAlerts(sessionId: string, clientId: string): Promise<ApiTripwireAlertsResponse> {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
@@ -774,7 +798,7 @@ export class PiWebRuntime {
 				runtime.tripwireAbortRequested = false;
 			}
 			if (STATE_PATCH_EVENTS.has(event.type)) {
-				const patch = buildPatch(session, { includeMessages: event.type === "compaction_end" && Boolean(event.result) });
+				const patch = buildPatch(session);
 				// auto-compaction releases its abort controller only after compaction_end listeners ran
 				if (event.type === "compaction_end") patch.isCompacting = false;
 				this.broadcast(sessionId, { type: "state_patch", patch });

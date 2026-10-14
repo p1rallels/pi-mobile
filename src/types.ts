@@ -1,4 +1,5 @@
-import type { AgentSession, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { TranscriptMessage, TranscriptPage } from "./transcript.ts";
 
 export type ClientRole = "controller" | "viewer";
 
@@ -110,8 +111,11 @@ export interface ApiSessionState {
 	queuedMessages: ApiQueuedMessages;
 	stats: ApiSessionStats | null;
 	contextUsage: ApiContextUsage | null;
-	messages: AgentSession["messages"];
+	messages: TranscriptMessage[];
+	hasOlderMessages: boolean;
 }
+
+export type ApiTranscriptPageResponse = TranscriptPage;
 
 export type ApiPromptDisposition = "started" | "queued" | "handled";
 
@@ -135,7 +139,6 @@ export interface ApiSessionPatch {
 	isStreaming?: boolean;
 	isCompacting?: boolean;
 	retryAttempt?: number;
-	messages?: ApiSessionState["messages"];
 	model?: ApiSessionState["model"];
 	thinkingLevel?: string;
 	sessionName?: string;

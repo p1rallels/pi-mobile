@@ -50,6 +50,8 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 	let appendedCompactionIds = new Set();
 	const streamingBlocks = new Set();
 	let frameRequested = false;
+	let mountTarget = null;
+	let olderControl = null;
 
 	const follower = createScrollFollower({ scrollEl: msgsEl, pillEl });
 
@@ -88,8 +90,13 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		block.shownThinking = block.rawThinking.length;
 	}
 
+	function mount(el) {
+		(mountTarget || msgsEl).appendChild(el);
+	}
+
 	function clear() {
 		msgsEl.innerHTML = "";
+		olderControl = null;
 		currentAssistant = null;
 		streamingBlocks.clear();
 		tools.clear();
@@ -147,7 +154,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 		block.appendChild(thinking);
 		block.appendChild(text);
-		msgsEl.appendChild(block);
+		mount(block);
 
 		currentAssistant = { block, text, thinking, rawText: "", rawThinking: "", shownText: 0, shownThinking: 0 };
 		return currentAssistant;
@@ -166,7 +173,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		if (insertBeforeEl && insertBeforeEl.parentNode === msgsEl) {
 			msgsEl.insertBefore(el, insertBeforeEl);
 		} else {
-			msgsEl.appendChild(el);
+			mount(el);
 		}
 		scheduleFrame();
 	}
@@ -200,7 +207,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		el.className = `notice-text ${kind}`;
 		el.textContent = text;
 		block.appendChild(el);
-		msgsEl.appendChild(block);
+		mount(block);
 		scheduleFrame();
 	}
 
@@ -211,10 +218,24 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 	function appendCompactionSummary(message) {
 		if (!message || typeof message !== "object") return;
-		const summary = typeof message.summary === "string" ? message.summary : "";
 		const tokensBefore = typeof message.tokensBefore === "number" ? message.tokensBefore : 0;
+		appendSummaryCard(message, {
+			kind: "compaction",
+			label: "[compaction]",
+			line: `Compacted from ${formatTokenCount(tokensBefore)} tokens `,
+			key: tokensBefore,
+		});
+	}
+
+	function appendBranchSummary(message) {
+		if (!message || typeof message !== "object") return;
+		appendSummaryCard(message, { kind: "branch", label: "[branch summary]", line: "Summary of the abandoned branch ", key: message.fromId || "" });
+	}
+
+	function appendSummaryCard(message, { kind, label: labelText, line: lineText, key: cardKey }) {
+		const summary = typeof message.summary === "string" ? message.summary : "";
 		const timestamp = typeof message.timestamp === "number" ? message.timestamp : Date.now();
-		const id = `compaction:${timestamp}:${tokensBefore}:${summary.length}`;
+		const id = `${kind}:${timestamp}:${cardKey}:${summary.length}`;
 		if (appendedCompactionIds.has(id)) return;
 		appendedCompactionIds.add(id);
 		const expanded = expandedCompactionIds.has(id);
@@ -226,11 +247,11 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 		const label = document.createElement("div");
 		label.className = "compact-label";
-		label.textContent = "[compaction]";
+		label.textContent = labelText;
 
 		const line = document.createElement("div");
 		line.className = "compact-summary";
-		line.appendChild(document.createTextNode(`Compacted from ${formatTokenCount(tokensBefore)} tokens `));
+		line.appendChild(document.createTextNode(lineText));
 		const expand = document.createElement("span");
 		expand.className = "exp-key";
 		expand.textContent = expanded ? "(tap to collapse)" : "(tap to expand)";
@@ -256,7 +277,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			scheduleFrame();
 		});
 
-		msgsEl.appendChild(card);
+		mount(card);
 		scheduleFrame();
 	}
 
@@ -280,10 +301,32 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		}
 	}
 
-	const tools = createToolBoxManager({ msgsEl, onContentChange: scheduleFrame });
+	const tools = createToolBoxManager({ mount, onContentChange: scheduleFrame });
+
+	function stopReasonNotice(message) {
+		if (message.stopReason === "aborted") return "Operation aborted";
+		if (message.stopReason !== "error") return null;
+		return typeof message.errorMessage === "string" && message.errorMessage.trim() ? `Error: ${message.errorMessage.trim()}` : "Error";
+	}
+
+	function appendCustomMessage(message) {
+		const text = extractTextContent(message.content);
+		if (!text) return;
+		const type = typeof message.customType === "string" && message.customType ? `[${message.customType}] ` : "";
+		appendNotice(`${type}${text}`, "custom");
+	}
+
+	function appendBashExecution(message, index) {
+		const id = `bash:${typeof message.timestamp === "number" ? message.timestamp : index}`;
+		const failed = message.cancelled || (typeof message.exitCode === "number" && message.exitCode !== 0);
+		tools.setCall(id, "bash", { command: typeof message.command === "string" ? message.command : "" });
+		tools.setStatus(id, failed ? "error" : "success");
+		const output = typeof message.output === "string" ? message.output : "";
+		tools.setText(id, "bash", message.cancelled ? `${output}\n(cancelled)`.trim() : output);
+	}
 
 	function renderHistory(messages) {
-		for (const m of orderMessagesForDisplay(messages)) {
+		for (const [index, m] of orderMessagesForDisplay(messages).entries()) {
 			if (!m || typeof m !== "object") continue;
 			if (m.role === "user") {
 				const text = extractTextContent(m.content);
@@ -301,12 +344,25 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 					block.rawText = parsed.text;
 					renderMarkdown(block.text, parsed.text);
 				}
+				const notice = stopReasonNotice(m);
+				if (notice) {
+					const err = document.createElement("div");
+					err.className = "notice-text error";
+					err.textContent = notice;
+					block.block.appendChild(err);
+				}
 				for (const call of parsed.toolCalls) {
 					tools.setCall(call.id, call.name, call.arguments);
 				}
 				currentAssistant = null;
 			} else if (m.role === "compactionSummary") {
 				appendCompactionSummary(m);
+			} else if (m.role === "branchSummary") {
+				appendBranchSummary(m);
+			} else if (m.role === "custom") {
+				appendCustomMessage(m);
+			} else if (m.role === "bashExecution") {
+				appendBashExecution(m, index);
 			} else if (m.role === "toolResult") {
 				const toolCallId = typeof m.toolCallId === "string" ? m.toolCallId : safeRandomUUID();
 				const toolName = typeof m.toolName === "string" ? m.toolName : "tool";
@@ -319,6 +375,53 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 				tools.setText(toolCallId, toolName, contentText || safeStringify(m.content));
 			}
 		}
+	}
+
+	function prependHistory(messages, { hasOlder = false } = {}) {
+		const fragment = document.createDocumentFragment();
+		const liveAssistant = currentAssistant;
+		mountTarget = fragment;
+		try {
+			renderHistory(messages);
+		} finally {
+			mountTarget = null;
+			currentAssistant = liveAssistant;
+		}
+		const top = msgsEl.scrollTop;
+		const height = msgsEl.scrollHeight;
+		if (!hasOlder && olderControl) {
+			olderControl.remove();
+			olderControl = null;
+		}
+		const firstContent = olderControl && olderControl.parentNode === msgsEl ? olderControl.nextSibling : msgsEl.firstChild;
+		msgsEl.insertBefore(fragment, firstContent);
+		if (follower.isPinned()) {
+			follower.sync();
+		} else {
+			follower.restore(top + (msgsEl.scrollHeight - height));
+		}
+	}
+
+	function setOlderControl(state, onLoad) {
+		if (state === "none") {
+			if (olderControl) olderControl.remove();
+			olderControl = null;
+			return;
+		}
+		if (!olderControl || olderControl.parentNode !== msgsEl) {
+			olderControl = document.createElement("button");
+			olderControl.type = "button";
+			olderControl.className = "load-older";
+			olderControl.addEventListener("click", () => onLoad());
+			msgsEl.insertBefore(olderControl, msgsEl.firstChild);
+		}
+		olderControl.disabled = state === "loading";
+		olderControl.textContent =
+			state === "loading" ? "loading earlier messages…" : state === "error" ? "couldn't load earlier messages, tap to retry" : "↑ earlier messages";
+	}
+
+	function isNearTop(thresholdPx = 400) {
+		return msgsEl.scrollTop <= thresholdPx;
 	}
 
 	function renderReleased({ cliCommand }) {
@@ -342,10 +445,10 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			out.textContent = cliCommand;
 			cmdBox.appendChild(title);
 			cmdBox.appendChild(out);
-			msgsEl.appendChild(cmdBox);
+			mount(cmdBox);
 		}
 
-		msgsEl.appendChild(block);
+		mount(block);
 		follower.pin();
 	}
 
@@ -488,6 +591,9 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		getScrollTop: follower.getScrollTop,
 		appendNotice,
 		appendCompactionSummary,
+		prependHistory,
+		setOlderControl,
+		isNearTop,
 		renderQueuedMessages,
 		renderHistory,
 		renderReleased,
