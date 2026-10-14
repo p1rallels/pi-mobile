@@ -374,10 +374,11 @@
       flex: 1; overflow-y: auto;
       display: flex;
       flex-direction: column;
-      justify-content: flex-end;
       padding: 1em 0;
       scrollbar-width: thin; scrollbar-color: #2a2a32 transparent;
     }
+    /* bottom-anchor short transcripts; collapses to 0 once history overflows so the top stays scrollable */
+    .msgs::before { content: ""; flex: 1 0 0; }
 
     /* every block owns its top gap — no external spacer divs needed */
     .user-msg, .tool-box, .bash-block, .assistant-block { margin-top: 1em; }
