@@ -42,6 +42,7 @@ import type {
 	ApiResyncTranscript,
 	ApiSessionState,
 	ApiSessionStatus,
+	ApiCanvasSessionStatus,
 	ApiSessionSummary,
 	ClientRole,
 	ApiSessionPatch,
@@ -382,6 +383,7 @@ function serializeSessionSummary(entry: SessionSummary, isRunning: boolean): Api
 export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
+	private statusListeners = new Set<() => void>();
 	private transcriptFiles = new Map<string, { mtimeMs: number; size: number; sessionId: string; entries: ReturnType<SessionManager["getBranch"]> }>();
 	private resumingByPath = new Map<string, Promise<RunningSession>>();
 	private detachedByPath = new Map<string, DetachedSession>();
@@ -540,6 +542,33 @@ export class PiWebRuntime {
 
 		for (const runtime of this.runningById.values()) {
 			runtime.tripwireAllowedRoots.add(cwd);
+		}
+	}
+
+	/** What the canvas needs to know about every running session, cheap enough to send on each change. */
+	canvasStatus(): ApiCanvasSessionStatus[] {
+		return [...this.runningById.values()].map((runtime) => ({
+			id: runtime.session.sessionId,
+			path: runtime.sessionFile,
+			working: runtime.session.isStreaming || runtime.session.isCompacting,
+			waiting: runtime.ui.snapshot().dialogs.length > 0,
+			viewers: runtime.clients.size,
+		}));
+	}
+
+	/** Hears when a session starts or stops running, working or waiting on a dialog. */
+	onStatusChange(listener: () => void): () => void {
+		this.statusListeners.add(listener);
+		return () => this.statusListeners.delete(listener);
+	}
+
+	private notifyStatus(): void {
+		for (const listener of this.statusListeners) {
+			try {
+				listener();
+			} catch {
+				// a broken listener must not break the session
+			}
 		}
 	}
 
@@ -1039,6 +1068,7 @@ export class PiWebRuntime {
 			this.runningByPath.delete(runtime.sessionFile);
 		}
 		this.tripwireService.forgetSession(sessionId);
+		this.notifyStatus();
 	}
 
 	private startManualCompaction(runtime: RunningSession, customInstructions: string | undefined): void {
@@ -1273,6 +1303,7 @@ export class PiWebRuntime {
 		if (sessionFile) {
 			this.runningByPath.set(sessionFile, sessionId);
 		}
+		this.notifyStatus();
 
 		return runtime;
 	}
@@ -1291,6 +1322,7 @@ export class PiWebRuntime {
 	private broadcast(sessionId: string, event: SseEvent): void {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) return;
+		if (event.type === "state_patch" || event.type === "extension_ui_request" || event.type === "extension_ui_closed") this.notifyStatus();
 		runtime.outbox.push(event);
 		if (runtime.flushScheduled) return;
 		runtime.flushScheduled = true;

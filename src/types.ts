@@ -231,4 +231,22 @@ export type SseEvent =
 	| { type: "command_error"; command: ApiCommandRequest["type"]; message: string }
 	| { type: "controller_changed"; controllerClientId: string | null }
 	| { type: "released"; byClientId: string }
-	| ExtensionUiEvent;
+	| ExtensionUiEvent
+	| CanvasStatusEvent;
+
+/** One running session as the canvas sees it from GET /api/canvas/status, without attaching to it. */
+export interface ApiCanvasSessionStatus {
+	id: string;
+	path: string | null;
+	/** streaming or compacting */
+	working: boolean;
+	/** an extension dialog is waiting for an answer */
+	waiting: boolean;
+	viewers: number;
+}
+
+/** GET /api/canvas/status: every running session's status, sent on connect and whenever one changes. */
+export interface CanvasStatusEvent {
+	type: "canvas_status";
+	sessions: ApiCanvasSessionStatus[];
+}

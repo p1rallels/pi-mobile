@@ -73,6 +73,7 @@ const FACEID_FRESH_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_
 const FACEID_COMMAND_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_COMMAND_MINUTES, 60, "PI_WEB_FACEID_COMMAND_MINUTES");
 
 const DEFAULT_JSON_BODY_LIMIT = 256 * 1024;
+const CANVAS_STATUS_THROTTLE_MS = 250;
 const COMMAND_JSON_BODY_LIMIT = 64 * 1024;
 const UI_RESPONSE_JSON_BODY_LIMIT = 1024 * 1024;
 const MAX_PROMPT_CHARS = 32_000;
@@ -965,6 +966,29 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			const repos = await runtime.listRepos();
 			const body: ApiListReposResponse = { repos };
 			return json(body, 200);
+		}
+
+		// one stream for the whole canvas: which sessions run, work or wait, so idle tiles can let go of theirs
+		if (req.method === "GET" && url.pathname === "/api/canvas/status") {
+			const stream = createSseStream(req.signal);
+			let timer: ReturnType<typeof setTimeout> | null = null;
+			const send = () => {
+				timer = null;
+				stream.send({ type: "canvas_status", sessions: runtime.canvasStatus() });
+			};
+			const unsubscribe = runtime.onStatusChange(() => {
+				timer ??= setTimeout(send, CANVAS_STATUS_THROTTLE_MS);
+			});
+			req.signal.addEventListener(
+				"abort",
+				() => {
+					unsubscribe();
+					if (timer) clearTimeout(timer);
+				},
+				{ once: true },
+			);
+			send();
+			return stream.response;
 		}
 
 		if (req.method === "GET" && url.pathname === "/api/canvas") {

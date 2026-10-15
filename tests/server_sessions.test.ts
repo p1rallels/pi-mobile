@@ -115,6 +115,52 @@ describe("server canvas layout", () => {
 	});
 });
 
+/** Reads `count` data frames of an SSE stream, running `between` after the first one arrives. */
+async function readFrames(url: string, count: number, between: () => Promise<unknown> = async () => {}): Promise<unknown[]> {
+	const controller = new AbortController();
+	const res = await fetch(url, { signal: controller.signal });
+	if (!res.ok || !res.body) throw new Error(`stream failed: ${String(res.status)}`);
+	const reader = res.body.getReader();
+	const frames: unknown[] = [];
+	let buffer = "";
+	while (frames.length < count) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		buffer += new TextDecoder().decode(value);
+		const parts = buffer.split("\n\n");
+		buffer = parts.pop() ?? "";
+		for (const part of parts) {
+			const data = part.split("\n").find((line) => line.startsWith("data: "));
+			if (!data) continue;
+			frames.push(JSON.parse(data.slice(6)));
+			if (frames.length === 1) await between();
+		}
+	}
+	controller.abort();
+	return frames;
+}
+
+describe("server canvas status", () => {
+	test("GET /api/canvas/status streams the running sessions, then each change", async () => {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));
+		tempDirs.push(root);
+		const cwd = join(root, "repo");
+		await mkdir(cwd);
+		const { path, id } = await writeSessionFile(root, cwd);
+		const port = await freePort();
+		const base = `http://127.0.0.1:${String(port)}`;
+		await startServer(root, port);
+		const client = await fetch(`${base}/api/client`, { method: "POST" });
+		const cookie = client.headers.get("set-cookie")?.split(";")[0] ?? "";
+
+		const frames = await readFrames(`${base}/api/canvas/status`, 2, () =>
+			fetch(`${base}/api/sessions`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ resumeSessionPath: path }) }),
+		);
+		expect(frames[0]).toEqual({ type: "canvas_status", sessions: [] });
+		expect(frames[1]).toEqual({ type: "canvas_status", sessions: [{ id, path, working: false, waiting: false, viewers: 0 }] });
+	});
+});
+
 describe("server session files", () => {
 	test("GET /api/session-transcript reads a session that isn't running without attaching it", async () => {
 		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));
