@@ -12,10 +12,15 @@ const mimeTypes = new Map([
 	[".svg", "image/svg+xml"],
 ]);
 
+// /public/* serves the real frontend (public/), so mock pages run the shipped canvas engine and styles.
+const publicDir = join(rootDir, "..", "public");
+const PUBLIC_PREFIX = "public/";
+
 const safePath = (urlPath: string): string => {
 	const decoded = decodeURIComponent(urlPath.split("?")[0] || "/");
 	const normalized = normalize(decoded).replace(/^\.\.(?:\/|$)/, "");
 	const relative = normalized === "/" ? "index.html" : normalized.replace(/^\/+/, "");
+	if (relative.startsWith(PUBLIC_PREFIX)) return join(publicDir, relative.slice(PUBLIC_PREFIX.length));
 	return join(rootDir, relative);
 };
 

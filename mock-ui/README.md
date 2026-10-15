@@ -62,3 +62,18 @@ open devtools and run:
 localStorage.clear()
 location.reload()
 ```
+
+## canvas prototype
+
+`http://127.0.0.1:8787/canvas.html` runs the real canvas engine (`../public/app/canvas/`, served under `/public/`) with fake panes that stream like working sessions. it's where the feel and the perf of the laptop canvas view get tuned. run it through the relay sandbox when working unattended (`~/.pi-relay/infinite/bin/sandbox bun mock-ui/server.ts`).
+
+knobs (query string):
+
+- `tiles=N`: number of tiles (default 12)
+- `streaming=K`: how many of them stream (default a third)
+- `rate=R`: deltas per second per streaming tile (default 30)
+- `offscreen=stream`: keep streaming tiles that are offscreen (by default they pause, like the real view drops their streams)
+- `fps=0`: hide the frame meter (fps, p95 frame time, long tasks)
+- `seed=S`: different fake content; `reset=1`: forget the stored camera
+
+gestures: pinch or ctrl+wheel zooms at the cursor (20-200%), wheel on empty canvas and cmd+wheel anywhere pan, drag empty canvas or cmd+drag anywhere pans, drag a title bar to move a tile, its right/bottom edge or corner to resize, double-click empty canvas for a new tile, esc aborts the focused tile. `window.__canvasMock` exposes the canvas for the e2e and perf harness.
