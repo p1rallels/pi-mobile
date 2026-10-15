@@ -63,12 +63,12 @@ export function autoResize(el) {
  *   transcriptWindow?: { unfocused: number, focused: number, pageSize: number } | null,
  *   tileUi?: { dialogHost: HTMLElement, hasKeyboard: () => boolean, onTitle: (title: string | null) => void } | null,
  *   onFreshStarted?: (sessionId: string) => void,
- *   goneNotice?: string,
+ *   goneNotice?: string | null,
  * }} options
  * `transcriptWindow` keeps only the newest entries of the transcript (canvas tiles); the phone keeps them all.
  * `tileUi` keeps extension dialogs and the extension title inside a canvas tile instead of on the page.
  * `onFreshStarted` hears the session a fresh pane's first send started (see fresh.js); `goneNotice` replaces
- * what the pane says when its session ended for good.
+ * what the pane says when its session ended for good (null: nothing, the shell says it).
  */
 export function createSessionPane({
 	refs,
@@ -140,7 +140,7 @@ export function createSessionPane({
 		createSession,
 		transcriptWindow,
 		onFreshStarted: (/** @type {string} */ sessionId) => onFreshStarted?.(sessionId),
-		...(goneNotice ? { goneNotice } : {}),
+		...(goneNotice !== undefined ? { goneNotice } : {}),
 	});
 
 	const menuCtrl = createMenu({
@@ -404,10 +404,10 @@ export function createSessionPane({
 		/** @param {boolean} focused */
 		setFocused: (focused) => sessionCtrl.setFocused(focused),
 		/**
-		 * @param {{ messages: unknown[], hasOlder?: boolean }} page @param {string} [notice]
+		 * @param {{ messages: unknown[], hasOlder?: boolean }} page
 		 * @param {{ sessionId: string, path: string } | null} [source] the session it came from, to page back through its file
 		 */
-		showReadOnly: (page, notice, source = null) => sessionCtrl.showReadOnly(page, notice, source),
+		showReadOnly: (page, source = null) => sessionCtrl.showReadOnly(page, source),
 		getShownEntryCount: () => sessionCtrl.getShownEntryCount(),
 		sendPromptFromInput,
 		abort,

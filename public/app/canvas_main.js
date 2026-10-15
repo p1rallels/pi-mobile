@@ -37,7 +37,6 @@ export async function bootCanvas() {
 	const KEEP_MOUNTED_OFFSCREEN = intKnob("keepMounted", 8);
 	// transcript entries a tile keeps: the newest 20 (50 while focused, plus older pages you scroll to)
 	const TRANSCRIPT_WINDOW = { unfocused: intKnob("window", 20), focused: intKnob("focusedWindow", 50), pageSize: 50 };
-	const DORMANT_NOTICE = "Not running. Click this tile to resume it here.";
 	// a never-saved session whose folder the host can't tell (several saved folders map to its session folder)
 	const NEVER_SAVED_NOTICE = "Nothing was ever sent here, so there is nothing to resume. Close this tile and start a new session.";
 	// on-screen tiles whose session is idle (per the host's status stream) let go of their stream after
@@ -55,7 +54,7 @@ export async function bootCanvas() {
 	 *   controls: { btnModel: HTMLButtonElement, btnThinking: HTMLButtonElement, lblModel: HTMLElement, lblThinking: HTMLElement },
 	 *   pill: HTMLElement,
 	 *   dormant: boolean,
-	 *   notice: boolean,
+	 *   nothingToResume: boolean,
 	 *   fresh: import("./session/fresh.js").FreshRecord | null,
 	 *   elsewhere: any | null,
 	 *   forkLabel: string | null,
@@ -241,6 +240,7 @@ export async function bootCanvas() {
 		} else if (entry.dormant) {
 			// running again (resumed from another device): go live
 			entry.dormant = false;
+			entry.nothingToResume = false;
 			entry.opened = false;
 			openIfReady(entry);
 		} else if (entry.elsewhere && !entry.opened) {
@@ -395,9 +395,14 @@ export async function bootCanvas() {
 		}
 	}
 
+	/** A dormant tile with a session file to resume: its pill says so, and a click on it (or the body) resumes. @param {TileEntry} entry */
+	function resumable(entry) {
+		return entry.dormant && Boolean(entry.path) && !entry.nothingToResume;
+	}
+
 	/** @param {TileEntry} entry */
 	function pillFor(entry) {
-		if (entry.dormant) return { text: "not running", kind: "idle" };
+		if (entry.dormant) return resumable(entry) ? { text: "not running · click to resume", kind: "dormant" } : { text: "not running", kind: "idle" };
 		if (!entry.mounted || !entry.opened) return { text: "offscreen", kind: "idle" };
 		const connection = entry.pane.getConnection();
 		if (connection === "suspended" && entry.idleSuspended) {
@@ -434,9 +439,8 @@ export async function bootCanvas() {
 			entry.dormant = true;
 			entry.opened = false;
 			entry.elsewhere = null;
-			// the pane said so already: its gone notice is DORMANT_NOTICE
+			// the pane keeps what it showed (it has no gone notice here); the pill offers the resume
 			entry.readOnly = "shown";
-			entry.notice = true;
 		}
 	}
 
@@ -465,6 +469,8 @@ export async function bootCanvas() {
 			entry.shown.pill = pillKey;
 			entry.pill.textContent = pill.text;
 			entry.pill.className = `cv-pill is-${pill.kind}`;
+			// a click on the resume pill resumes, so pressing it mustn't start a title-bar drag
+			entry.pill.toggleAttribute("data-no-drag", pill.kind === "dormant");
 			tile.el.classList.toggle("cv-working", pill.kind === "working");
 		}
 		tile.el.classList.toggle("cv-waiting", entry.mounted && !entry.dormant && entry.pane.extensionUi.isOpen());
@@ -489,7 +495,7 @@ export async function bootCanvas() {
 			const following = !entry.dormant && pane.getMode() === "elsewhere";
 			const fresh = Boolean(entry.fresh);
 			if (entry.dormant) {
-				item("Resume", "attach this session so it can run here", () => wake(entry.id));
+				if (resumable(entry)) item("Resume", "attach this session so it can run here", () => wake(entry.id));
 			} else if (fresh) {
 				// no session behind it yet: sending starts one
 			} else if (following) {
@@ -534,7 +540,7 @@ export async function bootCanvas() {
 			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 			onStateChange: () => renderTileChrome(entry.id),
 			onFreshStarted: (sessionId) => adoptSession(entry, sessionId),
-			goneNotice: DORMANT_NOTICE,
+			goneNotice: null,
 			transcriptWindow: TRANSCRIPT_WINDOW,
 			tileUi: {
 				dialogHost: el,
@@ -548,31 +554,33 @@ export async function bootCanvas() {
 		entry.mounted = true;
 		entry.opened = false;
 		entry.readOnly = "none";
-		entry.notice = false;
 		if (focusedTileId === entry.id) entry.pane.setFocused(true);
 		entry.pane.render();
 		settleDormant(entry);
 	}
 
-	/** The dormant notice, once per pane. @param {TileEntry} entry @param {string} [text] */
-	function showDormantNotice(entry, text = DORMANT_NOTICE) {
-		if (entry.notice) return;
-		entry.notice = true;
-		entry.pane.appendNotice(text);
+	/**
+	 * A never-saved session whose folder the host can't tell: the pane says so (once, see settleDormant), and the
+	 * pill, the ⋯ menu and clicks stop offering a resume.
+	 * @param {TileEntry} entry
+	 */
+	function showNothingToResume(entry) {
+		entry.nothingToResume = true;
+		entry.pane.appendNotice(NEVER_SAVED_NOTICE);
+		renderTileChrome(entry.id);
 	}
 
 	/**
 	 * What a dormant tile on screen shows, read from the host without attaching anything: the tail of its session
-	 * file under the resume notice (earlier pages come from the file too), or, when there is no file because nobody
-	 * ever sent the session anything, a fresh composer in the same folder (freshen). Hosts without GET
-	 * /api/session-transcript get the notice alone. Offscreen tiles wait until they show (onTileVisibility).
+	 * file (earlier pages come from the file too; the pill offers the resume), or, when there is no file because
+	 * nobody ever sent the session anything, a fresh composer in the same folder (freshen). Hosts without GET
+	 * /api/session-transcript show just the pill. Offscreen tiles wait until they show (onTileVisibility).
 	 * @param {TileEntry} entry
 	 */
 	function settleDormant(entry) {
 		if (!entry.dormant || !entry.mounted || !entry.visible || entry.readOnly !== "none") return;
 		if (!entry.path) {
 			entry.readOnly = "shown";
-			showDormantNotice(entry);
 			return;
 		}
 		entry.readOnly = "loading";
@@ -584,13 +592,9 @@ export async function bootCanvas() {
 				if (!current()) return;
 				entry.readOnly = "shown";
 				// a pane that ran the session until it stopped keeps showing what it had
-				if (pane.getSessionId()) {
-					showDormantNotice(entry);
-					return;
-				}
+				if (pane.getSessionId()) return;
 				const sessionId = typeof page?.sessionId === "string" ? page.sessionId : entry.id;
-				pane.showReadOnly(page, DORMANT_NOTICE, { sessionId, path });
-				entry.notice = true;
+				pane.showReadOnly(page, { sessionId, path });
 			},
 			(/** @type {unknown} */ error) => {
 				if (!current()) return;
@@ -600,7 +604,7 @@ export async function bootCanvas() {
 					return;
 				}
 				entry.readOnly = "shown";
-				showDormantNotice(entry, neverSaved ? NEVER_SAVED_NOTICE : DORMANT_NOTICE);
+				if (neverSaved) showNothingToResume(entry);
 			},
 		);
 	}
@@ -616,7 +620,7 @@ export async function bootCanvas() {
 		entry.elsewhere = null;
 		entry.idleSuspended = false;
 		entry.readOnly = "none";
-		entry.notice = false;
+		entry.nothingToResume = false;
 		entry.fresh = record;
 		entry.opened = false;
 		openIfReady(entry);
@@ -746,7 +750,7 @@ export async function bootCanvas() {
 			controls: { btnModel, btnThinking, lblModel, lblThinking },
 			pill,
 			dormant: !running && !elsewhere,
-			notice: false,
+			nothingToResume: false,
 			fresh: null,
 			elsewhere: running ? null : elsewhere,
 			forkLabel,
@@ -769,6 +773,12 @@ export async function bootCanvas() {
 			if (!entry.mounted) mountPane(entry);
 			openTileActions(more, entry);
 		});
+		// the canvas skips clicks on [data-no-drag], so the resume pill does what a click on the body does
+		pill.addEventListener("click", () => {
+			if (!resumable(entry)) return;
+			focusComposer(entry.id);
+			wake(entry.id);
+		});
 		mountPane(entry);
 		openIfReady(entry);
 		renderTileChrome(id);
@@ -778,7 +788,7 @@ export async function bootCanvas() {
 	/** @param {string} id */
 	function wake(id) {
 		const entry = entries.get(id);
-		if (!entry || !entry.dormant) return;
+		if (!entry || !entry.dormant || entry.nothingToResume) return;
 		if (!entry.mounted) mountPane(entry);
 		if (!entry.path) {
 			entry.pane.appendNotice("This session has no file to resume from.", "error");
@@ -797,7 +807,7 @@ export async function bootCanvas() {
 			}
 			entry.dormant = true;
 			entry.opened = false;
-			if (neverSaved) showDormantNotice(entry, NEVER_SAVED_NOTICE);
+			if (neverSaved) showNothingToResume(entry);
 			else entry.pane.appendNotice(`Couldn't resume: ${error instanceof Error ? error.message : String(error)}`, "error");
 			renderTileChrome(entry.id);
 		});

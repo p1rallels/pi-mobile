@@ -101,26 +101,35 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
 }
 .cv-close:hover { background: #ff5f57; }
 .cv-title {
-  flex: 1;
+  flex: 1 1 80px;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: #c8c8cc;
 }
-.cv-status, .cv-controls { flex: none; display: flex; align-items: center; gap: 6px; }
+.cv-status, .cv-controls { display: flex; align-items: center; gap: 6px; }
+.cv-controls { flex: none; }
+/* a narrow tile cuts the pill short (the resume one is long) along with the title, which keeps a share (its 80px basis) */
+.cv-status { flex: 0 1 auto; min-width: 0; }
 .cv-status:empty, .cv-controls:empty { display: none; }
 .cv-pill {
+  min-width: 0;
+  overflow: hidden;
   padding: 1px 7px;
   border: 1px solid #2a2a32;
   border-radius: 999px;
   color: #808080;
   font-size: 10.5px;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .cv-pill.is-working { color: #8abeb7; border-color: #29403e; }
 .cv-pill.is-waiting { color: #f0c674; border-color: #3a3424; }
 .cv-pill.is-offline, .cv-pill.is-error { color: #cc6666; border-color: #3a2a2a; }
+/* a dormant tile's pill resumes it, like a click on the body */
+.cv-pill.is-dormant { cursor: pointer; }
+.cv-pill.is-dormant:hover { background: #1a1a22; border-color: #3a3a44; color: #d4d4d4; }
 .cv-ctl {
   max-width: 220px;
   overflow: hidden;

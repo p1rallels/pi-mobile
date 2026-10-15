@@ -127,11 +127,11 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		await page.goto(`${base}/`);
 		await expect(page.locator(".cv-tile")).toHaveCount(2);
 		expect(await page.evaluate((id) => window.__canvas.canvas.tiles.get(id).rect, S1)).toEqual(rect);
-		await expect(tile(page, S2).locator(".cv-pill")).toHaveText("not running");
-		await expect(tile(page, S2).locator(".notice-text")).toContainText("Not running");
-		// a dormant tile shows the tail of its session file, without attaching it on the host
+		await expect(tile(page, S2).locator(".cv-pill")).toHaveText("not running · click to resume");
+		// a dormant tile shows the tail of its session file, without attaching it on the host; the pill alone says how to wake it
 		await expect(tile(page, S2).locator(".user-msg")).toHaveText("second session");
 		await expect(tile(page, S2).locator(".assistant-block .md")).toHaveText("reply two");
+		await expect(tile(page, S2).locator(".notice-text")).toHaveCount(0);
 		expect(await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.map((s) => s.id))).not.toContain(S2);
 
 		await tile(page, S2).locator(".msgs").click();
@@ -349,7 +349,7 @@ test("dormant tiles page back through their session file without attaching it", 
 
 		await page.goto(`${base}/?ui=canvas`);
 		const t = tile(page, S1);
-		await expect(t.locator(".cv-pill")).toHaveText("not running");
+		await expect(t.locator(".cv-pill")).toHaveText("not running · click to resume");
 		await expect(t.locator(".user-msg").last()).toHaveText("question 29");
 		await expect(t.locator(".user-msg").first()).toHaveText("question 20");
 		await expect(t.locator(".load-older")).toHaveText("↑ earlier messages");
@@ -361,8 +361,16 @@ test("dormant tiles page back through their session file without attaching it", 
 		const older = requests.find((url) => url.pathname.endsWith(`/${S1}/transcript`));
 		expect(older?.searchParams.get("path")).toBe(path);
 		expect(older?.searchParams.get("before")).toBe(`u20${S1.slice(-7)}`);
-		await expect(t.locator(".cv-pill")).toHaveText("not running");
+		await expect(t.locator(".cv-pill")).toHaveText("not running · click to resume");
 		expect(await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.length)).toBe(0);
+
+		// the pill does what it says: a click on it resumes the session here, like a click on the body
+		await t.locator(".cv-pill").click();
+		await expect(t.locator(".cv-pill")).toHaveText(/idle|viewing/);
+		await expect(t).toHaveClass(/cv-focused/);
+		await expect(t.locator("textarea")).toBeFocused();
+		await expect(t.locator(".user-msg").last()).toHaveText("question 29");
+		expect(await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.map((s) => s.id))).toContain(S1);
 	} finally {
 		server.kill("SIGTERM");
 		await new Promise((resolve) => server.once("exit", resolve));

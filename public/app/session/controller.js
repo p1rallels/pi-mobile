@@ -49,7 +49,7 @@ export function createSessionController({
 	transcriptWindow = null,
 	// a fresh pane's first send started this session (see openFresh)
 	onFreshStarted = () => {},
-	// what a pane says when its session ended for good (the canvas has no sidebar)
+	// what a pane says when its session ended for good; null says nothing (a canvas tile's pill says it)
 	goneNotice = "This session is no longer running. Open it again from the sidebar.",
 }) {
 	let activeSessionId = null;
@@ -216,7 +216,7 @@ export function createSessionController({
 				closeEvents();
 				stopRecovery();
 				setConnection("gone");
-				chatView.appendNotice(goneNotice, "error");
+				if (goneNotice) chatView.appendNotice(goneNotice, "error");
 				return;
 			}
 			scheduleRecovery(sessionId);
@@ -1131,7 +1131,7 @@ export function createSessionController({
 	 * what the session was doing until you resume it. Given the session it came from (`source`), earlier
 	 * pages load from the file too.
 	 */
-	function showReadOnly(page, notice, source = null) {
+	function showReadOnly(page, source = null) {
 		if (activeSessionId || fresh) return;
 		renderGeneration += 1;
 		readOnly = source && typeof source.sessionId === "string" && typeof source.path === "string" ? { sessionId: source.sessionId, path: source.path } : null;
@@ -1142,7 +1142,6 @@ export function createSessionController({
 		oldestEntryId = hasOlderMessages ? firstEntryId(messages) : null;
 		olderLoading = false;
 		syncOlderControl();
-		if (notice) chatView.appendNotice(notice);
 		chatView.flush();
 		chatView.pin();
 	}
