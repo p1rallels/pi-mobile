@@ -5,8 +5,8 @@ import { dirname, join, resolve } from "node:path";
 
 /**
  * The git branch a session's folder is on, for the footer, read the way pi's own footer reads it: the HEAD file, found by
- * walking up to .git (a folder, or a worktree's "gitdir:" file), with git itself only for reftable repos. "detached" when
- * HEAD isn't on a branch, null outside git.
+ * walking up to .git (a folder, or a worktree's "gitdir:" file), with git itself only for reftable repos. Null when HEAD
+ * isn't on a branch (detached) and outside git: the footer shows nothing then.
  */
 
 export interface GitHead {
@@ -50,12 +50,12 @@ export function findGitHead(cwd: string): GitHead | null {
 	return parent === dir ? null : findGitHead(parent);
 }
 
-/** The branch HEAD names, "detached" off a branch, or null for reftable's placeholder (only git knows then). */
-export function branchOfHead(content: string): string | null {
+/** The branch HEAD names, null off a branch (detached), undefined for reftable's placeholder (only git knows then). */
+export function branchOfHead(content: string): string | null | undefined {
 	const text = content.trim();
-	if (!text.startsWith(REFS_HEADS)) return "detached";
+	if (!text.startsWith(REFS_HEADS)) return null;
 	const branch = text.slice(REFS_HEADS.length);
-	return branch === ".invalid" ? null : branch;
+	return branch === ".invalid" ? undefined : branch;
 }
 
 function gitSymbolicRef(repoDir: string): Promise<string | null> {
@@ -70,7 +70,7 @@ export async function readGitBranch(head: GitHead | null): Promise<string | null
 	if (!head) return null;
 	try {
 		const branch = branchOfHead(await readFile(head.headPath, "utf8"));
-		return branch ?? (await gitSymbolicRef(head.repoDir)) ?? "detached";
+		return branch === undefined ? await gitSymbolicRef(head.repoDir) : branch;
 	} catch {
 		return null;
 	}
@@ -81,7 +81,7 @@ function readGitBranchSync(head: GitHead | null): { branch: string | null; settl
 	if (!head) return { branch: null, settled: true };
 	try {
 		const branch = branchOfHead(readFileSync(head.headPath, "utf8"));
-		return { branch, settled: branch !== null };
+		return { branch: branch ?? null, settled: branch !== undefined };
 	} catch {
 		return { branch: null, settled: true };
 	}

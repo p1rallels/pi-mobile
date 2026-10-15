@@ -15,7 +15,7 @@ const DIR_DEBOUNCE_MS = 120;
  * @typedef {{ name: string, path: string }} DirEntry
  * @typedef {{ query: string, path: string, exists: boolean, parent: string, parentExists: boolean, insideHome: boolean, canCreate: boolean, entries: DirEntry[], truncated: boolean }} DirListing
  * @typedef {{ fresh: boolean, path: string, exists: boolean, canCreate: boolean, entries: DirEntry[] }} TypedFolder
- * @typedef {{ cwd: string, modified?: string, sessions?: number }} RepoSuggestion
+ * @typedef {{ cwd: string, modified?: string, sessions?: number, forkLabel?: string }} RepoSuggestion
  */
 
 /** @param {string} cwd */
@@ -279,10 +279,10 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 			.filter((cwd) => matchesQuery(query, cwd))
 			.map((cwd) => ({ key: `repo:${cwd}`, primary: repoName(cwd), secondary: cwd, pick: () => void openRepo(cwd), complete: withSlash(cwd) }));
 		const used = suggestions
-			.filter((suggestion) => !repos.includes(suggestion.cwd) && matchesQuery(query, suggestion.cwd))
+			.filter((suggestion) => !repos.includes(suggestion.cwd) && matchesQuery(query, `${suggestion.forkLabel ?? ""} ${suggestion.cwd}`))
 			.map((suggestion) => ({
 				key: `suggest:${suggestion.cwd}`,
-				primary: repoName(suggestion.cwd),
+				primary: suggestion.forkLabel ?? repoName(suggestion.cwd),
 				secondary: [relativeTime(suggestion.modified, now), suggestion.cwd].filter(Boolean).join(" · "),
 				badge: "not added",
 				muted: true,

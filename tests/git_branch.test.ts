@@ -35,11 +35,11 @@ async function checkout(repo: string, branch: string): Promise<void> {
 }
 
 describe("git branch", () => {
-	test("HEAD names a branch, or says detached; reftable's placeholder needs git", () => {
+	test("HEAD names a branch, or none when detached; reftable's placeholder needs git", () => {
 		expect(branchOfHead("ref: refs/heads/main\n")).toBe("main");
 		expect(branchOfHead("ref: refs/heads/feat/footer")).toBe("feat/footer");
-		expect(branchOfHead("8a1b2c3d4e5f60718293a4b5c6d7e8f901234567\n")).toBe("detached");
-		expect(branchOfHead("ref: refs/heads/.invalid")).toBeNull();
+		expect(branchOfHead("8a1b2c3d4e5f60718293a4b5c6d7e8f901234567\n")).toBeNull();
+		expect(branchOfHead("ref: refs/heads/.invalid")).toBeUndefined();
 	});
 
 	test("finds HEAD from any folder inside the repo, through a worktree's gitdir file too", async () => {
@@ -54,7 +54,7 @@ describe("git branch", () => {
 		await mkdir(worktree);
 		await writeFile(join(worktree, ".git"), "gitdir: ../wt-git\n");
 		expect(findGitHead(worktree)).toEqual({ repoDir: worktree, headPath: join(root, "wt-git", "HEAD") });
-		expect(await readGitBranch(findGitHead(worktree))).toBe("detached");
+		expect(await readGitBranch(findGitHead(worktree))).toBeNull();
 
 		const plain = join(root, "plain");
 		await mkdir(plain);

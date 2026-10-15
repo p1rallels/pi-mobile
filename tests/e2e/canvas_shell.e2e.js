@@ -1,7 +1,7 @@
 // The canvas shell (?ui=canvas) against an isolated pi-web server with two sessions on disk.
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -663,8 +663,13 @@ test("the launcher suggests folders pi has been used in, and picking one adds it
 	await mkdir(used, { recursive: true });
 	const scratch = join(root, "scratch");
 	await mkdir(scratch);
+	const fork = join(used, ".forks", "1");
+	await mkdir(fork, { recursive: true });
 	await writeSessionFile(root, used, S1, "hello from a folder", "hi there");
 	await writeSessionFile(root, scratch, S2, "scratch work", "ok");
+	const forkSession = await writeSessionFile(root, fork, "01a13c00-0000-7000-8000-0000000000c3", "work in a fork", "ok");
+	const anHourAgo = Date.now() / 1000 - 3600;
+	await utimes(forkSession, anHourAgo, anHourAgo);
 	const port = await freePort();
 	const base = `http://127.0.0.1:${port}`;
 	const server = await startServer(root, port);
@@ -682,9 +687,12 @@ test("the launcher suggests folders pi has been used in, and picking one adds it
 		await launcher.screenshot({ path: testInfo.outputPath("launcher-suggestions.png") });
 		await testInfo.attach("launcher-suggestions", { path: testInfo.outputPath("launcher-suggestions.png"), contentType: "image/png" });
 		await expect(launcher.locator(`.cv-launch-row[data-key="suggest:${scratch}"]`)).toHaveCount(0);
+		// pfs forks are suggested too, named like the session lists name them
+		await expect(launcher.locator(`.cv-launch-row[data-key="suggest:${fork}"] .cv-launch-primary`)).toContainText("used-repo · fork 1");
 
 		await search.fill("used-repo");
-		await expect(launcher.locator(".cv-launch-row")).toHaveCount(1);
+		await expect(launcher.locator(".cv-launch-row")).toHaveCount(2);
+		await expect(launcher.locator(".cv-launch-row").first()).toHaveAttribute("data-key", `suggest:${used}`);
 		await search.press("Enter");
 		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("used-repo \u00b7 pick a session");
 		await expect(launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`)).toContainText("hello from a folder");

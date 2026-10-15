@@ -33,6 +33,8 @@ export interface ApiRepoSuggestion {
 	/** The newest session file's last write. */
 	modified: string;
 	sessions: number;
+	/** "repo · fork 8-hooks" for a pfs fork (<repo>/.forks/<n>). */
+	forkLabel?: string;
 }
 
 export interface ApiRepoSuggestionsResponse {
@@ -197,7 +199,7 @@ export interface ApiSessionStatus {
 	sessionId: string;
 	projectTrust: ApiProjectTrust;
 	cwd: string;
-	/** The branch cwd is on ("detached" off a branch), null outside git. */
+	/** The branch cwd is on; null off a branch (detached HEAD) or outside git. */
 	gitBranch: string | null;
 	sessionFile: string | null;
 	sessionName?: string;

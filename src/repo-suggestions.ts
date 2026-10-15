@@ -5,15 +5,14 @@ import type { SessionFolder } from "./session-index.ts";
 
 /**
  * Folders pi has been used in that aren't saved repos, for the canvas launcher to offer. Scratch folders don't count: temp
- * dirs (test runs leave hundreds), pi-web's own test folders wherever TMPDIR points, and pfs forks (<repo>/.forks/<n>),
- * which come and go with their branch.
+ * dirs (test runs leave hundreds) and pi-web's own test folders wherever TMPDIR points. pfs forks (<repo>/.forks/<n>) do:
+ * they're removed when done with, so the ones still there are in use.
  */
 
 export const REPO_SUGGESTION_LIMIT = 100;
 
 const TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders"];
 const TEST_FOLDER = /(^|\/)pi-web-[^/]*(e2e|test)[^/]*(\/|$)/;
-const FORK_FOLDER = /\/\.forks\/\d+(\/|$)/;
 
 /** The system temp roots plus this process's temp dir, as given and with symlinks resolved. */
 export function defaultScratchRoots(): string[] {
@@ -28,7 +27,7 @@ export function defaultScratchRoots(): string[] {
 }
 
 export function isScratchFolder(cwd: string, scratchRoots: readonly string[]): boolean {
-	return scratchRoots.some((root) => isInsideFolder(cwd, root)) || TEST_FOLDER.test(cwd) || FORK_FOLDER.test(cwd);
+	return scratchRoots.some((root) => isInsideFolder(cwd, root)) || TEST_FOLDER.test(cwd);
 }
 
 /** Absolute, not saved, not scratch; newest session first. Whether each still exists is the caller's check. */

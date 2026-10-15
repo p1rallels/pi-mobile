@@ -79,7 +79,7 @@ export function elsewherePlaceholder(follow) {
 	return "Finished elsewhere — type to continue here";
 }
 
-/** "(main)" like pi's footer, "(detached)" off a branch, null outside git. @param {any} state */
+/** "(main)" like pi's footer; null off a branch or outside git, so the footer skips it. @param {any} state */
 export function branchLabel(state) {
 	const branch = typeof state?.gitBranch === "string" ? state.gitBranch.trim() : "";
 	return branch ? `(${branch})` : null;

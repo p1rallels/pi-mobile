@@ -657,15 +657,18 @@ export class PiWebRuntime {
 		return cwd;
 	}
 
-	/** Folders pi sessions ran in that aren't saved: not scratch, still there, newest session first. */
+	/** Folders pi sessions ran in that aren't saved: not scratch, still there, newest session first; forks named like the session lists name them. */
 	async listRepoSuggestions(limit = REPO_SUGGESTION_LIMIT): Promise<ApiRepoSuggestion[]> {
 		const [folders, saved] = await Promise.all([this.sessionFolders.list(), this.listRepos()]);
 		const candidates = pickRepoSuggestions(folders, new Set(saved), this.scratchRoots);
 		const present = await Promise.all(candidates.map(async (folder) => (await isDirectory(folder.cwd)) ? folder : null));
-		return present
-			.filter((folder): folder is SessionFolder => folder !== null)
-			.slice(0, limit)
-			.map((folder) => ({ cwd: folder.cwd, modified: toIso(folder.lastWriteMs), sessions: folder.sessions }));
+		const listed = present.filter((folder): folder is SessionFolder => folder !== null).slice(0, limit);
+		return Promise.all(
+			listed.map(async (folder) => {
+				const forkLabel = await this.forkLabels.label(folder.cwd).catch(() => undefined);
+				return { cwd: folder.cwd, modified: toIso(folder.lastWriteMs), sessions: folder.sessions, ...(forkLabel ? { forkLabel } : {}) };
+			}),
+		);
 	}
 
 	/** What the canvas needs to know about every running session, cheap enough to send on each change. */

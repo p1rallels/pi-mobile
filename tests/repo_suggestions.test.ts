@@ -35,14 +35,13 @@ async function writeSession(sessionsDir: string, cwd: string, id: string, atMs: 
 const folder = (cwd: string, lastWriteMs: number, sessions = 1) => ({ cwd, lastWriteMs, sessions });
 
 describe("scratch folders", () => {
-	test("temp roots, pi-web test folders and pfs forks are scratch", () => {
+	test("temp roots and pi-web test folders are scratch; pfs forks aren't", () => {
 		const roots = ["/tmp", "/private/var/folders"];
 		expect(isScratchFolder("/tmp", roots)).toBe(true);
 		expect(isScratchFolder("/tmp/x/y", roots)).toBe(true);
 		expect(isScratchFolder("/private/var/folders/j0/T/pi-web-canvas-e2e-abc/repo", roots)).toBe(true);
 		expect(isScratchFolder("/Users/me/scratch/pi-web-runtime-test-1/repo", roots)).toBe(true);
-		expect(isScratchFolder("/Users/me/cc/pi-web/.forks/3", roots)).toBe(true);
-		expect(isScratchFolder("/Users/me/cc/pi-web/.forks/3/src", roots)).toBe(true);
+		expect(isScratchFolder("/Users/me/cc/pi-web/.forks/3", roots)).toBe(false);
 		expect(isScratchFolder("/Users/me/cc/pi-web", roots)).toBe(false);
 		expect(isScratchFolder("/Users/me/cc/pi-web-live", roots)).toBe(false);
 		expect(isScratchFolder("/Users/me/tmp-notes", roots)).toBe(false);
@@ -83,7 +82,8 @@ describe("session folders", () => {
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		const work = join(root, "work");
 		const [saved, fresh, older, gone, scratch] = ["saved", "fresh", "older", "gone", "scratch"].map((name) => join(work, name));
-		for (const dir of [saved, fresh, older, join(scratch, "inner")]) await mkdir(dir, { recursive: true });
+		const fork = join(work, "repo", ".forks", "2");
+		for (const dir of [saved, fresh, older, join(scratch, "inner"), fork]) await mkdir(dir, { recursive: true });
 		const sessions = join(agentDir, "sessions");
 		const now = Date.now();
 		await writeSession(sessions, saved, "a", now);
@@ -92,17 +92,18 @@ describe("session folders", () => {
 		await writeSession(sessions, older, "d", now - 60_000);
 		await writeSession(sessions, gone, "e", now);
 		await writeSession(sessions, join(scratch, "inner"), "f", now);
-		await writeSession(sessions, join(work, "repo", ".forks", "2"), "g", now);
+		await writeSession(sessions, fork, "g", now - 120_000);
 
-		const runtime = new PiWebRuntime({ scratchRoots: [scratch] });
+		const runtime = new PiWebRuntime({ scratchRoots: [scratch], listForks: async () => '{"id":2,"label":"2-probe"}\n' });
 		await runtime.addRepo(saved);
 		const suggestions = await runtime.listRepoSuggestions();
-		expect(suggestions.map((suggestion) => suggestion.cwd)).toEqual([fresh, older]);
+		expect(suggestions.map((suggestion) => suggestion.cwd)).toEqual([fresh, older, fork]);
+		expect(suggestions.map((suggestion) => suggestion.forkLabel)).toEqual([undefined, undefined, "repo · fork 2-probe"]);
 		expect(suggestions[0]?.sessions).toBe(2);
 		expect(Math.abs(Date.parse(suggestions[0]?.modified ?? "") - (now - 1_000))).toBeLessThan(1_000);
 		expect((await runtime.listRepoSuggestions(1)).map((suggestion) => suggestion.cwd)).toEqual([fresh]);
 
 		await runtime.addRepo(fresh);
-		expect((await runtime.listRepoSuggestions()).map((suggestion) => suggestion.cwd)).toEqual([older]);
+		expect((await runtime.listRepoSuggestions()).map((suggestion) => suggestion.cwd)).toEqual([older, fork]);
 	});
 });
