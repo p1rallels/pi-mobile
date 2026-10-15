@@ -1,5 +1,5 @@
-// The launcher tile: pick a directory (saved repos + the server's cwd), then a session from it (newest
-// first) or a new one. The host turns the launcher into that session's tile in place, or flies to the
+// The launcher tile: pick a directory (saved repos + the server's cwd, or type a path to add one), then a
+// session from it (newest first) or a new one. The host turns the launcher into that session's tile in place, or flies to the
 // tile when the session is already on the canvas. Answers a project trust prompt inline.
 import { createSessionWithTrust } from "../session/project_trust.js";
 
@@ -53,6 +53,17 @@ export function relativeTime(iso, now) {
 	const hours = Math.round(minutes / 60);
 	if (hours < 48) return `${hours}h ago`;
 	return `${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * The folder a directory query asks to add: a path (/… or ~…) that isn't saved yet, else null.
+ * @param {string} query @param {string[]} repos
+ */
+export function addableDirectory(query, repos) {
+	const path = query.trim();
+	if (!/^(\/|~(\/|$))/.test(path)) return null;
+	const bare = path.length > 1 ? path.replace(/\/+$/, "") : path;
+	return repos.includes(bare) ? null : path;
 }
 
 /** Every word of the query appears somewhere in the text (case-insensitive). @param {string} query @param {string} text */
@@ -128,7 +139,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 
 	function hint() {
 		if (view.step === "trust") return "enter answers · esc cancels";
-		return view.step === "repos" ? "↑↓ · enter opens · esc closes" : "↑↓ · enter opens · esc goes back";
+		return view.step === "repos" ? "↑↓ · enter opens · a /path adds it · esc closes" : "↑↓ · enter opens · esc goes back";
 	}
 
 	/** @returns {Row[]} */
@@ -143,9 +154,12 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 			}));
 		}
 		if (view.step === "repos") {
-			return repos
+			const addable = addableDirectory(query, repos);
+			const add = addable === null ? [] : [{ key: "add-repo", primary: "+ add directory", secondary: addable, pick: () => void addDirectory(addable) }];
+			const saved = repos
 				.filter((cwd) => matchesQuery(query, cwd))
 				.map((cwd) => ({ key: `repo:${cwd}`, primary: repoName(cwd), secondary: cwd, pick: () => void openRepo(cwd) }));
+			return [...add, ...saved];
 		}
 		const { cwd } = view;
 		const now = Date.now();
@@ -167,7 +181,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		back.hidden = view.step === "repos";
 		crumb.textContent = view.step === "repos" ? "open a session · pick a directory" : view.step === "trust" ? "trust this folder?" : `${repoName(view.cwd)} · pick a session`;
 		crumb.title = view.step === "repos" ? "" : view.cwd;
-		search.placeholder = view.step === "repos" ? "filter directories" : view.step === "trust" ? "" : "filter sessions";
+		search.placeholder = view.step === "repos" ? "filter directories, or type a /path to add one" : view.step === "trust" ? "" : "filter sessions";
 		search.hidden = view.step === "trust";
 		rows = buildRows();
 		active = Math.min(Math.max(0, active), Math.max(0, rows.length - 1));
@@ -218,6 +232,27 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 				loading = false;
 				render();
 			}
+		}
+	}
+
+	/** Saves a typed folder on the host, then opens it like a saved one. @param {string} path */
+	async function addDirectory(path) {
+		if (busy) return;
+		busy = true;
+		setFoot("adding the directory…");
+		render();
+		try {
+			const result = await api.postJson("/api/repos", { cwd: path });
+			if (destroyed) return;
+			const cwd = typeof result?.cwd === "string" ? result.cwd : path;
+			if (!repos.includes(cwd)) repos = [...repos, cwd].sort((a, b) => a.localeCompare(b));
+			busy = false;
+			await openRepo(cwd);
+		} catch (error) {
+			if (destroyed) return;
+			busy = false;
+			setFoot(`Couldn't add the directory: ${messageOf(error)}`, "error");
+			render();
 		}
 	}
 
@@ -330,6 +365,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 
 	search.addEventListener("input", () => {
 		active = 0;
+		if (foot.classList.contains("is-error")) setFoot(hint());
 		render();
 	});
 	search.addEventListener("keydown", (event) => {

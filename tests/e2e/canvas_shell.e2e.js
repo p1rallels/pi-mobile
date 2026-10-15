@@ -564,6 +564,53 @@ test("the launcher lists a directory's sessions, resumes one in place, starts ne
 	}
 });
 
+test("the launcher adds a directory typed as a path and opens it, and says why when the path isn't a folder", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "typed-repo");
+	await mkdir(cwd);
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=canvas`);
+		await expect(page.locator(".cv-root")).toBeVisible();
+		await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
+
+		await page.mouse.dblclick(700, 450);
+		const launcher = page.locator(".cv-tile.cv-launcher");
+		const search = launcher.locator(".cv-launch-search");
+		const rows = launcher.locator(".cv-launch-row");
+		const foot = launcher.locator(".cv-launch-foot");
+		await expect(search).toBeFocused();
+		await expect(search).toHaveAttribute("placeholder", /type a \/path to add one/);
+
+		await search.fill(join(root, "missing"));
+		await expect(rows.first()).toHaveAttribute("data-key", "add-repo");
+		await search.press("Enter");
+		await expect(foot).toHaveText(/Couldn't add the directory: cwd does not exist/);
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("open a session \u00b7 pick a directory");
+
+		await search.fill(`${cwd}/`);
+		await expect(foot).not.toHaveClass(/is-error/);
+		await expect(rows.first()).toContainText("+ add directory");
+		await search.press("Enter");
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("typed-repo \u00b7 pick a session");
+		await expect(rows.first()).toHaveText(/new session/);
+		const repos = await page.evaluate(async () => (await (await fetch("/api/repos")).json()).repos);
+		expect(repos).toContain(cwd);
+
+		await page.keyboard.press("Escape");
+		await search.fill(cwd);
+		await expect(launcher.locator('.cv-launch-row[data-key="add-repo"]')).toHaveCount(0);
+		await expect(launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`)).toHaveCount(1);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 const ASK_EXTENSION = `
 export default function (pi) {
 	pi.registerCommand("ask", {

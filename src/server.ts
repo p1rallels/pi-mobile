@@ -16,6 +16,7 @@ import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PI
 import type {
 	ApiActiveSessionsResponse,
 	ApiAddRepoRequest,
+	ApiAddRepoResponse,
 	ApiCommandRequest,
 	ApiCommandResponse,
 	ApiCreateSessionRequest,
@@ -1060,8 +1061,8 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				if (!raw.cwd || typeof raw.cwd !== "string") {
 					return errorResponse("Missing cwd", 400);
 				}
-				await runtime.addRepo(raw.cwd);
-				return ok();
+				const body: ApiAddRepoResponse = { ok: true, cwd: await runtime.addRepo(raw.cwd) };
+				return json(body, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return errorResponse(message, 400);

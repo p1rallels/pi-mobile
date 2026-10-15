@@ -44,6 +44,12 @@ export interface ApiAddRepoRequest {
 	cwd: string;
 }
 
+export interface ApiAddRepoResponse {
+	ok: true;
+	/** The folder as saved: absolute, ~ expanded. */
+	cwd: string;
+}
+
 export interface ApiActiveSessionsResponse {
 	sessions: ApiSessionSummary[];
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { elsewhereBadge, isListable, matchesQuery, relativeTime, repoName, sessionLabel } from "../public/app/canvas/launcher.js";
+import { addableDirectory, elsewhereBadge, isListable, matchesQuery, relativeTime, repoName, sessionLabel } from "../public/app/canvas/launcher.js";
 
 describe("canvas launcher", () => {
 	test("labels a session by name, else its first line, else its id", () => {
@@ -40,5 +40,17 @@ describe("canvas launcher", () => {
 		expect(relativeTime("2026-10-14T12:00:00.000Z", now)).toBe("24h ago");
 		expect(relativeTime("2026-10-10T12:00:00.000Z", now)).toBe("5d ago");
 		expect(relativeTime(undefined, now)).toBe("");
+	});
+
+	test("a typed path that isn't saved yet can be added; names and saved paths can't", () => {
+		const repos = ["/Users/me/code/app", "/Users/me/code/lib"];
+		expect(addableDirectory("/Users/me/code/new", repos)).toBe("/Users/me/code/new");
+		expect(addableDirectory("  ~/code/new  ", repos)).toBe("~/code/new");
+		expect(addableDirectory("~", repos)).toBe("~");
+		expect(addableDirectory("/Users/me/code/app", repos)).toBeNull();
+		expect(addableDirectory("/Users/me/code/app/", repos)).toBeNull();
+		expect(addableDirectory("app", repos)).toBeNull();
+		expect(addableDirectory("~app", repos)).toBeNull();
+		expect(addableDirectory("", repos)).toBeNull();
 	});
 });

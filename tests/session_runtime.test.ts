@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PiWebRuntime } from "../src/session-runtime.ts";
+import { normalizeCwd, PiWebRuntime } from "../src/session-runtime.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const tempDirs: string[] = [];
@@ -55,5 +55,15 @@ describe("session runtime", () => {
 		expect(runtime.getSessionState(started.sessionId).isCompacting).toBe(false);
 
 		await runtime.release(started.sessionId, { clientId: "client-1" });
+	});
+});
+
+describe("normalizeCwd", () => {
+	test("folders are absolute, and a leading ~ is the home folder", () => {
+		expect(normalizeCwd("  /Users/me/code/app/  ", "/Users/me")).toBe("/Users/me/code/app");
+		expect(normalizeCwd("~", "/Users/me")).toBe("/Users/me");
+		expect(normalizeCwd("~/code/app", "/Users/me")).toBe("/Users/me/code/app");
+		expect(normalizeCwd("/Users/me/code/../lib", "/Users/me")).toBe("/Users/me/lib");
+		expect(normalizeCwd("~other/code", "/Users/me").endsWith("/~other/code")).toBe(true);
 	});
 });

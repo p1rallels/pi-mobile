@@ -17,6 +17,7 @@ import {
 import { existsSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { createExtensionUiBridge, type ApiExtensionUiResponse, type ExtensionUiBridge } from "./extension-ui.ts";
 import { EMPTY_LIVE_SNAPSHOT, reduceLiveSnapshot, type LiveSnapshot } from "./live-snapshot.ts";
@@ -395,8 +396,12 @@ async function ensureDirectory(path: string): Promise<void> {
 	}
 }
 
-function normalizeCwd(input: string): string {
-	return resolve(input.trim());
+/** An absolute folder path; a leading ~ means the home folder of the user running pi-web. */
+export function normalizeCwd(input: string, home = homedir()): string {
+	const trimmed = input.trim();
+	if (trimmed === "~") return resolve(home);
+	if (trimmed.startsWith("~/")) return resolve(home, trimmed.slice(2));
+	return resolve(trimmed);
 }
 
 function parseCompactCommandText(text: string): string | null {
@@ -631,7 +636,8 @@ export class PiWebRuntime {
 		return [...repos].sort((a, b) => a.localeCompare(b));
 	}
 
-	async addRepo(rawCwd: string): Promise<void> {
+	/** Saves a folder sessions may start in; returns it as saved (absolute, ~ expanded). */
+	async addRepo(rawCwd: string): Promise<string> {
 		const cwd = normalizeCwd(rawCwd);
 		await ensureDirectory(cwd);
 
@@ -642,6 +648,7 @@ export class PiWebRuntime {
 		for (const runtime of this.runningById.values()) {
 			runtime.tripwireAllowedRoots.add(cwd);
 		}
+		return cwd;
 	}
 
 	/** What the canvas needs to know about every running session, cheap enough to send on each change. */
