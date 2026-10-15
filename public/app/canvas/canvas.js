@@ -3,6 +3,7 @@
 // pinch to zoom; a click on a tile focuses it and the tile keeps the keyboard while you pan.
 import { boundsOf, cameraFitting } from "./camera.js";
 import { createHud } from "./hud.js";
+import { gripRules, gripScaleFor } from "./layout.js";
 import { INTERACTIVE_SELECTOR, createTileLayer } from "./tiles.js";
 import { createViewport } from "./viewport.js";
 
@@ -22,8 +23,10 @@ import { createViewport } from "./viewport.js";
  *   onGeometryCommit?: (id: string, rect: Rect) => void,
  *   onVisibilityChange?: (id: string, visible: boolean) => void,
  *   onCameraSettle?: (camera: Camera) => void,
- *   onEscape?: (id: string, event: KeyboardEvent) => void,
+ *   onEscape?: (id: string | null, event: KeyboardEvent) => void,
  * }} options
+ * Keys: esc goes to the focused tile (or the host, with none focused), cmd+= / cmd+- step the zoom at
+ * the viewport center, cmd+0 is 100%, shift+1 fits every tile; the browser's own zoom keys are blocked.
  */
 export function createCanvas(options) {
 	const { root } = options;
@@ -55,7 +58,25 @@ export function createCanvas(options) {
 	}
 
 	const hud = createHud({ root, viewport, onNewTile: options.onNewTile, onFit: fitAll });
-	const unsubscribeSettle = viewport.onSettle((camera) => options.onCameraSettle?.(camera));
+
+	// zoomed out, the resize grips grow in world px so they stay grabbable; rewritten only when the camera settles
+	const gripStyle = doc.createElement("style");
+	gripStyle.dataset.canvas = "grips";
+	doc.head.append(gripStyle);
+	let gripScale = 0;
+	/** @param {number} scale */
+	function applyGripScale(scale) {
+		const next = gripScaleFor(scale);
+		if (next === gripScale) return;
+		gripScale = next;
+		gripStyle.textContent = next === 1 ? "" : gripRules(next);
+	}
+	applyGripScale(viewport.getCamera().scale);
+
+	const unsubscribeSettle = viewport.onSettle((camera) => {
+		applyGripScale(camera.scale);
+		options.onCameraSettle?.(camera);
+	});
 
 	/** @typedef {{ kind: "pan" } | { kind: "drag", id: string } | { kind: "resize", id: string, edges: { right: boolean, bottom: boolean } } | { kind: "content", id: string } | { kind: "hud" }} Press */
 
@@ -128,15 +149,31 @@ export function createCanvas(options) {
 		if (press?.kind === "drag") revealTile(press.id);
 	}
 
+	/** @param {Element | null} el */
+	const isEditable = (el) => Boolean(el && (el.closest("input, textarea, select, [contenteditable]") || (el instanceof view.HTMLElement && el.isContentEditable)));
+
+	/** @param {KeyboardEvent} event @returns {boolean} whether the key was a canvas zoom key */
+	function onZoomKey(event) {
+		const mod = (event.metaKey || event.ctrlKey) && !event.altKey;
+		if (mod && (event.key === "=" || event.key === "+")) viewport.zoomStep(1);
+		else if (mod && (event.key === "-" || event.key === "_")) viewport.zoomStep(-1);
+		else if (mod && event.key === "0") viewport.resetZoom();
+		else if (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && event.code === "Digit1" && !isEditable(doc.activeElement)) fitAll();
+		else return false;
+		event.preventDefault();
+		return true;
+	}
+
 	/** @param {KeyboardEvent} event */
 	function onKeyDown(event) {
+		if (event.isComposing || onZoomKey(event)) return;
 		const focused = tiles.focusedId();
-		if (!focused) return;
 		if (event.key === "Escape") {
-			if (event.isComposing || event.defaultPrevented) return;
+			if (event.defaultPrevented) return;
 			options.onEscape?.(focused, event);
 			return;
 		}
+		if (!focused) return;
 		// typing with nothing focused (after a click on the hud, say) goes to the focused tile's composer
 		const active = doc.activeElement;
 		const typing = event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
@@ -170,6 +207,7 @@ export function createCanvas(options) {
 			root.removeEventListener("dblclick", onDoubleClick);
 			doc.removeEventListener("keydown", onKeyDown);
 			unsubscribeSettle();
+			gripStyle.remove();
 			hud.destroy();
 			tiles.destroy();
 			viewport.destroy();

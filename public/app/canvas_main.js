@@ -115,6 +115,13 @@ export async function bootCanvas() {
 		onCameraSettle: (camera) => saveCamera(window.localStorage, api.getBaseUrl(), camera),
 		onVisibilityChange: (id, visible) => onTileVisibility(id, visible),
 		onEscape: (id, event) => {
+			// the host menu first: esc must never reach a tile's abort while a menu is open over it
+			if (shellMenu.isOpen()) {
+				event.preventDefault();
+				shellMenu.close();
+				return;
+			}
+			if (!id) return;
 			const launcher = launchers.get(id);
 			if (launcher) launcher.handleEscape(event);
 			else entries.get(id)?.pane.handleEscape(event);

@@ -100,6 +100,13 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
 		await expect(tile(page, S1).locator(".cv-ctl-model .sel")).not.toHaveText("—");
 
+		// esc closes a tile's menu before it would ever abort the run
+		await tile(page, S1).locator(".cv-ctl-more").click();
+		await expect(page.locator("#menu-overlay")).toHaveClass(/open/);
+		await page.keyboard.press("Escape");
+		await expect(page.locator("#menu-overlay")).not.toHaveClass(/open/);
+		await expect(tile(page, S1).locator(".notice-text.error")).toHaveCount(0);
+
 		// the canvas is remembered: a plain reload stays on it, with the same tile where it was
 		const rect = await page.evaluate((id) => window.__canvas.canvas.tiles.get(id).rect, S1);
 		// the map lives on the host (GET/PUT /api/canvas): add a tile for the second session there

@@ -76,3 +76,26 @@ export function resizeRect(start, edges, dx, dy) {
 
 /** @param {Rect} start @param {number} dx @param {number} dy @returns {Rect} */
 export const moveRect = (start, dx, dy) => ({ x: Math.round(start.x + dx), y: Math.round(start.y + dy), w: start.w, h: start.h });
+
+const MAX_GRIP_SCALE = 3;
+
+/**
+ * How much to grow the resize grips (in world px) so they stay grabbable when zoomed out: 1 at 100% and
+ * above, up to 3x, in quarter steps so a pinch doesn't rewrite them at every frame of a settle.
+ * @param {number} scale
+ */
+export function gripScaleFor(scale) {
+	const inverse = Number.isFinite(scale) && scale > 0 ? 1 / scale : 1;
+	return Math.round(clamp(inverse, 1, MAX_GRIP_SCALE) * 4) / 4;
+}
+
+/** Grip geometry (world px) for a grip scale; mirrors the base sizes in canvas.css. @param {number} k */
+export function gripRules(k) {
+	const px = (/** @type {number} */ n) => `${Math.round(n * 100) / 100}px`;
+	return [
+		`.cv-grip-e{width:${px(10 * k)};right:${px(-5 * k)}}`,
+		`.cv-grip-s{height:${px(10 * k)};bottom:${px(-5 * k)}}`,
+		`.cv-grip-se{width:${px(18 * k)};height:${px(18 * k)};right:${px(-6 * k)};bottom:${px(-6 * k)}}`,
+		`.cv-grip-se::after{right:${px(9 + 6 * (k - 1))};bottom:${px(9 + 6 * (k - 1))}}`,
+	].join("\n");
+}

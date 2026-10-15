@@ -251,3 +251,67 @@ test("working tiles breathe a glow on the compositor, idle and offscreen tiles d
 	await expect(page.locator('.cv-tile[data-tile-id="mock-0"]')).toHaveClass(/cv-offscreen/);
 	expect(await glowAnimations("mock-0")).toEqual([]);
 });
+
+test("cmd+= and cmd+- step the zoom, cmd+0 resets it, shift+1 fits every tile, even from a composer", async ({ page }) => {
+	await openMock(page);
+	await page.mouse.click(TILE0_TEXT.x, TILE0_TEXT.y);
+	const composer = page.locator('.cv-tile[data-tile-id="mock-0"] textarea');
+	await expect(composer).toBeFocused();
+	await page.keyboard.press("Meta+Equal");
+	await settle(page);
+	expect((await camera(page)).scale).toBeCloseTo(0.7, 9);
+	await page.keyboard.press("Meta+Minus");
+	await page.keyboard.press("Meta+Minus");
+	await settle(page);
+	expect((await camera(page)).scale).toBeCloseTo(0.5, 9);
+	await page.keyboard.press("Meta+Digit0");
+	await settle(page);
+	expect((await camera(page)).scale).toBe(1);
+	await expect(composer).toBeFocused();
+
+	// shift+1 types "!" in a composer, and fits everything from anywhere else
+	await page.keyboard.press("Shift+Digit1");
+	await expect(composer).toHaveValue("!");
+	expect((await camera(page)).scale).toBe(1);
+	await page.evaluate(() => /** @type {HTMLElement} */ (document.activeElement)?.blur());
+	await page.keyboard.press("Shift+Digit1");
+	await settle(page);
+	const fitted = await camera(page);
+	const rects = await page.evaluate(() => window.__canvasMock.canvas.tiles.rects());
+	for (const rect of rects) {
+		const topLeft = toScreen(fitted, rect);
+		const bottomRight = toScreen(fitted, { x: rect.x + rect.w, y: rect.y + rect.h });
+		expect(topLeft.x).toBeGreaterThanOrEqual(0);
+		expect(topLeft.y).toBeGreaterThanOrEqual(0);
+		expect(bottomRight.x).toBeLessThanOrEqual(1440);
+		expect(bottomRight.y).toBeLessThanOrEqual(900);
+	}
+});
+
+test("zoomed out, resize grips grow so they stay grabbable, and resizing from them still works", async ({ page }) => {
+	await openMock(page);
+	/** @param {string} grip */
+	const gripBox = (grip) => page.locator(`.cv-tile[data-tile-id="mock-0"] .cv-grip-${grip}`).boundingBox();
+	/** @param {number} scale */
+	const setScale = (scale) =>
+		page.evaluate((next) => {
+			window.__canvasMock.canvas.viewport.setCamera({ x: 40, y: 64, scale: next });
+			return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+		}, scale);
+	await setScale(1);
+	expect((await gripBox("e"))?.width).toBeCloseTo(10, 0);
+	await setScale(0.25);
+	const east = await gripBox("e");
+	const corner = await gripBox("se");
+	expect(east?.width).toBeCloseTo(7.5, 0);
+	expect(corner?.width).toBeCloseTo(13.5, 0);
+	if (!corner) throw new Error("no corner grip");
+	const before = await tileRect(page, "mock-0");
+	await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
+	await page.mouse.down();
+	await page.mouse.move(corner.x + corner.width / 2 + 25, corner.y + corner.height / 2 + 25, { steps: 4 });
+	await page.mouse.up();
+	const after = await tileRect(page, "mock-0");
+	expect(after.w).toBe(before.w + 100);
+	expect(after.h).toBe(before.h + 100);
+});

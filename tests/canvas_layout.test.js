@@ -1,5 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { MIN_TILE_H, MIN_TILE_W, TILE_GAP, TILE_H, TILE_W, gridSlot, moveRect, nextFreeSlot, rectCenteredAt, resizeRect, sanitizeRect } from "../public/app/canvas/layout.js";
+import {
+	MIN_TILE_H,
+	MIN_TILE_W,
+	TILE_GAP,
+	TILE_H,
+	TILE_W,
+	gridSlot,
+	gripRules,
+	gripScaleFor,
+	moveRect,
+	nextFreeSlot,
+	rectCenteredAt,
+	resizeRect,
+	sanitizeRect,
+} from "../public/app/canvas/layout.js";
 import { createLocalLayoutStore, loadCamera, parseLayout, saveCamera } from "../public/app/canvas/layout_store.js";
 
 function memoryStorage() {
@@ -65,5 +79,24 @@ describe("canvas layout", () => {
 		expect(loadCamera(storage, "https://mini.example")).toBeNull();
 		saveCamera(storage, "https://mini.example", { x: 1, y: 2, scale: 9 });
 		expect(loadCamera(storage, "https://mini.example")).toEqual({ x: 1, y: 2, scale: 2 });
+	});
+});
+
+describe("resize grips when zoomed out", () => {
+	test("grow with the inverse zoom, in quarter steps, between 1x and 3x", () => {
+		expect(gripScaleFor(2)).toBe(1);
+		expect(gripScaleFor(1)).toBe(1);
+		expect(gripScaleFor(0.6)).toBe(1.75);
+		expect(gripScaleFor(0.5)).toBe(2);
+		expect(gripScaleFor(0.2)).toBe(3);
+		expect(gripScaleFor(Number.NaN)).toBe(1);
+		expect(gripScaleFor(0)).toBe(1);
+	});
+
+	test("scale every grip's size and overhang", () => {
+		const rules = gripRules(2);
+		expect(rules).toContain(".cv-grip-e{width:20px;right:-10px}");
+		expect(rules).toContain(".cv-grip-s{height:20px;bottom:-10px}");
+		expect(rules).toContain(".cv-grip-se{width:36px;height:36px;right:-12px;bottom:-12px}");
 	});
 });
