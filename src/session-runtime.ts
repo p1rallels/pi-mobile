@@ -30,6 +30,7 @@ import {
 	type ApiProjectTrustChoice,
 	type ProjectTrustMode,
 } from "./project-trust.ts";
+import { createForkLabels } from "./fork-labels.ts";
 import {
 	classifyElsewhere,
 	createProcessCache,
@@ -129,6 +130,8 @@ interface PiWebRuntimeOptions {
 	/** How long one process listing serves every caller. */
 	processCacheMs?: number;
 	followPollMs?: number;
+	/** `pfs ls --all --json` for a repo root, for fork labels; tests pass a fake. */
+	listForks?: (root: string) => Promise<string | null>;
 }
 
 const DEFAULT_FOLLOW_POLL_MS = 700;
@@ -476,8 +479,10 @@ export class PiWebRuntime {
 	private stopPiProcess: (proc: PiProcess) => Promise<"stopped" | "killed" | "alive">;
 	private followPollMs: number;
 	private followers = new Set<{ stop(): void }>();
+	private forkLabels: ReturnType<typeof createForkLabels>;
 
 	constructor(options: PiWebRuntimeOptions = {}) {
+		this.forkLabels = createForkLabels(options.listForks);
 		this.piProcesses = createProcessCache(options.listPiProcesses ?? (() => listPiProcesses()), options.processCacheMs);
 		this.stopPiProcess = options.stopPiProcess ?? ((proc) => stopProcess(proc));
 		this.followPollMs = options.followPollMs ?? DEFAULT_FOLLOW_POLL_MS;
@@ -667,6 +672,15 @@ export class PiWebRuntime {
 		});
 	}
 
+	private async withForkLabels(sessions: ApiSessionSummary[]): Promise<ApiSessionSummary[]> {
+		return Promise.all(
+			sessions.map(async (session) => {
+				const forkLabel = await this.forkLabels.label(session.cwd).catch(() => undefined);
+				return forkLabel ? { ...session, forkLabel } : session;
+			}),
+		);
+	}
+
 	async listActiveSessions(): Promise<ApiSessionSummary[]> {
 		const sessions: ApiSessionSummary[] = await this.listRunningElsewhere().catch(() => []);
 		for (const runtime of this.runningById.values()) {
@@ -683,7 +697,7 @@ export class PiWebRuntime {
 			});
 		}
 		sessions.sort((a, b) => b.modified.localeCompare(a.modified));
-		return sessions;
+		return this.withForkLabels(sessions);
 	}
 
 	async listSessions(options: { cwd?: string; limit?: number; offset?: number } = {}): Promise<{ sessions: ApiSessionSummary[]; hasMore: boolean }> {
@@ -726,7 +740,7 @@ export class PiWebRuntime {
 		const sessions = [...byId.values()].sort((a, b) => b.modified.localeCompare(a.modified));
 		const offset = Math.max(0, Math.floor(options.offset ?? 0));
 		const limit = Math.max(1, Math.floor(options.limit ?? sessions.length));
-		return { sessions: sessions.slice(offset, offset + limit), hasMore: offset + limit < sessions.length };
+		return { sessions: await this.withForkLabels(sessions.slice(offset, offset + limit)), hasMore: offset + limit < sessions.length };
 	}
 
 	private async assertAllowedCwd(rawCwd: string): Promise<string> {

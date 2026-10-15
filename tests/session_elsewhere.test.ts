@@ -77,6 +77,7 @@ async function setup(initial: PiProcess[] | null = []) {
 		followPollMs: 20,
 		processCacheMs: 0,
 		listPiProcesses: async () => processes,
+		listForks: async () => '{"id":2,"label":"2-probe"}\n',
 		stopPiProcess: async (proc) => {
 			stopped.push(proc);
 			processes = (processes ?? []).filter((other) => other.pid !== proc.pid);
@@ -153,6 +154,19 @@ describe("sessions another process is writing", () => {
 		expect(active.map((session) => [session.id, session.isRunning, session.elsewhere?.state, session.firstMessage])).toEqual([
 			["s-busy", false, "running", "count to 20 with sleeps"],
 		]);
+	});
+
+	test("names the pfs fork a session ran in", async () => {
+		const repo = await workDir();
+		const fork = join(repo, ".forks", "2");
+		await mkdir(fork, { recursive: true });
+		const { runtime, agentDir } = await setup([writer(9191, fork, Date.now() - 60_000)]);
+		await writeSession(agentDir, fork, "s-fork", MID_TOOL);
+		const name = repo.split("/").at(-1);
+
+		expect((await runtime.listActiveSessions()).map((session) => [session.id, session.forkLabel])).toEqual([["s-fork", `${name} · fork 2-probe`]]);
+		expect((await runtime.listSessions({ cwd: fork })).sessions[0]?.forkLabel).toBe(`${name} · fork 2-probe`);
+		expect((await runtime.listSessions({ cwd: repo })).sessions).toEqual([]);
 	});
 
 	test("stops the one pi writing a session and refuses to guess between several", async () => {

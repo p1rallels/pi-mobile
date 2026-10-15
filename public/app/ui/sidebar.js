@@ -226,7 +226,8 @@ export function createSidebar({
 			meta.className = "si-meta";
 			const elsewhere = elsewhereLabel(s);
 			const rel = formatRelativeTime(elsewhere ? s.elsewhere.lastWrite : s.modified);
-			const cwd = escapeHtml(s.cwd);
+			const cwd = escapeHtml(typeof s.forkLabel === "string" && s.forkLabel ? s.forkLabel : s.cwd);
+			meta.title = s.cwd;
 			if (elsewhere) {
 				meta.innerHTML = `${rel} · <span class="si-elsewhere ${escapeHtml(s.elsewhere.state)}">${escapeHtml(elsewhere)}</span> · ${cwd}`;
 			} else {

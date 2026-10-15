@@ -64,6 +64,8 @@ export interface ApiSessionSummary {
 	isRunning: boolean;
 	/** Set when pi-web isn't hosting the session and its last message left the turn open. */
 	elsewhere?: ApiElsewhere;
+	/** "repo · fork 8-hooks" when the session ran in a pfs fork (<repo>/.forks/<n>). */
+	forkLabel?: string;
 }
 
 export type ApiElsewhereState = ElsewhereState;
