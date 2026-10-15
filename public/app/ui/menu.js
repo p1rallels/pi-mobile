@@ -297,13 +297,19 @@ export function createMenu({
 		});
 	}
 
-	if (menuScrim) menuScrim.addEventListener("click", () => close());
+	const onScrimClick = () => close();
+	if (menuScrim) menuScrim.addEventListener("click", onScrimClick);
 
 	return {
 		close,
 		isOpen: () => open,
 		openModelMenu,
 		openThinkingMenu,
+		openCustom: openMenu,
+		destroy() {
+			if (menuScrim) menuScrim.removeEventListener("click", onScrimClick);
+			if (open) close();
+		},
 	};
 }
 

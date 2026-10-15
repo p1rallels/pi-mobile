@@ -110,6 +110,15 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
   cursor: pointer;
 }
 .cv-ctl:hover { background: #22222c; color: #d4d4d4; }
+.cv-ctl:disabled { opacity: 0.55; cursor: default; }
+.cv-ctl:disabled:hover { background: #1a1a22; color: #9a9aa2; }
+/* model · thinking: one control, two hit targets */
+.cv-combo { display: inline-flex; }
+.cv-combo .cv-ctl-model { border-radius: 6px 0 0 6px; border-right: none; max-width: 200px; }
+.cv-combo .cv-ctl-thinking { border-radius: 0 6px 6px 0; }
+.cv-combo .cv-ctl-thinking::before { content: "· "; color: #5a5a64; }
+.cv-ctl .sel { pointer-events: none; }
+.cv-ctl-more { padding: 2px 6px; letter-spacing: 0.05em; }
 
 /* ── Body: the session pane ────────────────────────────── */
 .cv-body {
@@ -122,6 +131,9 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
   -webkit-user-select: text;
 }
 .cv-body .msgs { overscroll-behavior: contain; }
+.cv-body .chat { flex: 1; min-height: 0; }
+/* one footer line in tiles: the title bar already shows the repo, the model and the thinking level */
+.cv-body .footer-line-1, .cv-body .footer-right { display: none; }
 
 /* ── Resize grips: right edge, bottom edge, corner ─────── */
 .cv-grip { position: absolute; z-index: 2; }
@@ -189,6 +201,21 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
 .cv-hud-sep { width: 1px; height: 16px; margin: 0 5px; background: rgba(255, 255, 255, 0.2); }
 .cv-hud-slot { display: flex; align-items: center; gap: 4px; }
 .cv-hud-slot:empty { display: none; }
+.cv-hud-host { max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+.cv-hud-host:disabled { cursor: default; opacity: 0.8; }
+.cv-hud-host:disabled:hover { background: transparent; color: rgba(255, 255, 255, 0.7); }
+
+.cv-fatal {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translateX(-50%);
+  padding: 12px 16px;
+  border: 1px solid #3a2a2a;
+  border-radius: 8px;
+  background: #2a1e1e;
+  color: #cc6666;
+}
 
 .cv-fps {
   position: absolute;

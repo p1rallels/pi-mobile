@@ -298,6 +298,8 @@ export function createSessionPane({ refs, api, getClientId, refreshClient, menuD
 		openModelMenu: () => menuCtrl.openModelMenu(),
 		openThinkingMenu: () => menuCtrl.openThinkingMenu(),
 		closeMenu: () => menuCtrl.close(),
+		/** A custom menu in the shared overlay, closed by Esc like the model menu. @param {HTMLElement} anchor @param {(panel: HTMLElement) => void} build */
+		openMenu: (anchor, build) => menuCtrl.openCustom(anchor, build),
 		/**
 		 * Esc closes this pane's extension dialog or menu first, otherwise aborts its run.
 		 * @param {KeyboardEvent} event
@@ -323,7 +325,7 @@ export function createSessionPane({ refs, api, getClientId, refreshClient, menuD
 			for (const [target, type, listener] of bindings) target?.removeEventListener(type, listener);
 			if (workingIntervalId) clearInterval(workingIntervalId);
 			workingIntervalId = null;
-			if (menuCtrl.isOpen()) menuCtrl.close();
+			menuCtrl.destroy();
 			extensionUi.reset();
 			sessionCtrl.destroy();
 		},

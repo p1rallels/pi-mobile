@@ -21,7 +21,7 @@ import { createViewport } from "./viewport.js";
  *   onGeometryCommit?: (id: string, rect: Rect) => void,
  *   onVisibilityChange?: (id: string, visible: boolean) => void,
  *   onCameraSettle?: (camera: Camera) => void,
- *   onEscape?: (id: string) => void,
+ *   onEscape?: (id: string, event: KeyboardEvent) => void,
  * }} options
  */
 export function createCanvas(options) {
@@ -132,7 +132,7 @@ export function createCanvas(options) {
 		if (!focused) return;
 		if (event.key === "Escape") {
 			if (event.isComposing || event.defaultPrevented) return;
-			options.onEscape?.(focused);
+			options.onEscape?.(focused, event);
 			return;
 		}
 		// typing with nothing focused (after a click on the hud, say) goes to the focused tile's composer
