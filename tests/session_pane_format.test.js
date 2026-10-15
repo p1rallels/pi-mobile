@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { buildSessionMetrics, composerPlaceholder, footerLines, formatTokens, roleBadge, workingLabel } from "../public/app/session/pane_format.js";
+import {
+	buildSessionMetrics,
+	composerPlaceholder,
+	elsewhereFooterNote,
+	elsewherePlaceholder,
+	footerLines,
+	formatTokens,
+	roleBadge,
+	workingLabel,
+} from "../public/app/session/pane_format.js";
 
 const state = {
 	sessionId: "01a13e79-69dc-7292-83ad-302f96344ac8",
@@ -54,5 +63,32 @@ describe("session pane text", () => {
 		expect(workingLabel({ kind: "compacting", reason: "threshold" })).toBe("Compacting context (threshold)...");
 		expect(workingLabel({ kind: "compacting", reason: "manual" })).toBe("Compacting context...");
 		expect(workingLabel({ kind: "retrying", attempt: 2, maxAttempts: 3 })).toBe("Retrying (2/3)...");
+		expect(workingLabel({ kind: "elsewhere" })).toBe("Running elsewhere...");
+	});
+
+	test("a session another pi writes: footer note, placeholder and badge", () => {
+		const lastWrite = "2026-10-15T10:00:00.000Z";
+		const quietSince = new Date(lastWrite).toLocaleTimeString();
+		expect(elsewhereFooterNote(null)).toBe("");
+		expect(elsewhereFooterNote({ state: "running", writers: [41, 42] })).toBe(" · running elsewhere (pi 41, 42)");
+		expect(elsewhereFooterNote({ state: "running", writers: null })).toBe(" · running elsewhere");
+		expect(elsewhereFooterNote({ state: "quiet", lastWrite, writers: [41] })).toBe(` · elsewhere, quiet since ${quietSince} (pi 41)`);
+		expect(elsewhereFooterNote({ state: "stopped", writers: [] })).toBe(" · stopped mid-turn, nobody is writing it");
+		expect(elsewhereFooterNote({ state: "done", writers: [41] })).toBe(" · finished elsewhere, pi still open there (pi 41)");
+		expect(elsewhereFooterNote({ state: "done", writers: [] })).toBe(" · finished elsewhere");
+		expect(elsewhereFooterNote({ state: "hosted", writers: [] })).toBe("");
+		expect(footerLines(state, { baseUrl: "x" }, { state: "running", writers: [41] }).line1).toBe("/Users/reddot/Desktop/cc/pi-web · running elsewhere (pi 41)");
+
+		expect(elsewherePlaceholder(null)).toBe("Running elsewhere, read-only — Esc stops it");
+		expect(elsewherePlaceholder({ state: "running" })).toBe("Running elsewhere, read-only — Esc stops it");
+		expect(elsewherePlaceholder({ state: "quiet" })).toBe("No writes for a while — type or Take over to continue here");
+		expect(elsewherePlaceholder({ state: "stopped" })).toBe("Stopped mid-turn — type to continue here");
+		expect(elsewherePlaceholder({ state: "done" })).toBe("Finished elsewhere — type to continue here");
+
+		expect(roleBadge("viewer", "live", true, { state: "running" })).toEqual({ text: "elsewhere", kind: "elsewhere" });
+		expect(roleBadge("viewer", "live", true, { state: "quiet" })).toEqual({ text: "quiet", kind: "elsewhere" });
+		expect(roleBadge("viewer", "live", true, { state: "done" })).toEqual({ text: "finished", kind: "elsewhere" });
+		expect(roleBadge("viewer", "live", true, { state: "something new" })).toEqual({ text: "elsewhere", kind: "elsewhere" });
+		expect(roleBadge("viewer", "reconnecting", true, { state: "running" })).toEqual({ text: "reconnecting", kind: "offline" });
 	});
 });
