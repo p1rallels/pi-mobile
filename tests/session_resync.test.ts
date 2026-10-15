@@ -137,4 +137,33 @@ describe("session resync", () => {
 
 		await runtime.release(sessionId, { clientId });
 	});
+
+	test("gives a windowed viewer only the tail, and a fresh tail when it missed more than that", async () => {
+		const { runtime, sessionId, clientId, events, frames } = await startFauxSession([
+			fauxAssistantMessage("one"),
+			fauxAssistantMessage("two"),
+			fauxAssistantMessage("three"),
+		]);
+		const settled = () => agentEventTypes(events).filter((type) => type === "agent_settled").length;
+		await runtime.handleCommand(sessionId, { type: "prompt", clientId, text: "first" });
+		await waitFor(() => settled() === 1);
+		const cursor = frames.findLast(({ id }) => id !== undefined)?.id;
+		for (const [index, text] of ["second", "third"].entries()) {
+			await runtime.handleCommand(sessionId, { type: "prompt", clientId, text });
+			await waitFor(() => settled() === index + 2);
+		}
+
+		const tail = runtime.connectClient(sessionId, viewer("tile").client, undefined, { limit: 2 }).init.transcript;
+		expect(tail.mode).toBe("replace");
+		expect(tail.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		expect(tail.mode === "replace" && tail.hasOlder).toBe(true);
+		expect(runtime.connectClient(sessionId, viewer("phone").client).init.transcript.messages).toHaveLength(6);
+
+		const behind = runtime.connectClient(sessionId, viewer("back").client, cursor, { limit: 2 }).init.transcript;
+		expect(behind.mode).toBe("replace");
+		expect(behind.messages).toHaveLength(2);
+		expect(runtime.connectClient(sessionId, viewer("back-wide").client, cursor, { limit: 10 }).init.transcript.mode).toBe("append");
+
+		await runtime.release(sessionId, { clientId });
+	});
 });

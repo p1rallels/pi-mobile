@@ -19,6 +19,8 @@ export function createSessionController({
 	onSidebarRefresh,
 	extensionUi = { applySnapshot() {}, handleEvent: () => false, reset() {} },
 	createSession = (payload) => api.postJson("/api/sessions", payload),
+	// canvas tiles show the tail of a transcript: { unfocused, focused } entries kept, pageSize per older page
+	transcriptWindow = null,
 }) {
 	let activeSessionId = null;
 	let activeState = null;
@@ -42,12 +44,37 @@ export function createSessionController({
 	let recoveryAttempt = 0;
 	let cursor = null;
 	let lastFrameAtMs = 0;
+	let focused = false;
+	let lastScrollTop = 0;
 
-	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
-	msgsEl.addEventListener("scroll", () => maybeLoadOlderMessages(), { passive: true });
+	const chatView = createChatView({
+		msgsEl,
+		queuedEl,
+		pillEl,
+		onTrim: (oldest) => {
+			hasOlderMessages = true;
+			oldestEntryId = oldest;
+			syncOlderControl();
+		},
+	});
+	chatView.setWindow(windowSize());
+	msgsEl.addEventListener("scroll", onScroll, { passive: true });
 	const staleTimer = setInterval(() => {
 		if (connection === "live" && isStale()) reconnectNow();
 	}, STALE_CHECK_MS);
+
+	/** Entries a windowed pane keeps (Infinity on the phone). */
+	function windowSize() {
+		if (!transcriptWindow) return Infinity;
+		return focused ? transcriptWindow.focused : transcriptWindow.unfocused;
+	}
+
+	function onScroll() {
+		const top = msgsEl.scrollTop;
+		const scrolledUp = top < lastScrollTop;
+		lastScrollTop = top;
+		maybeLoadOlderMessages({ scrolledUp });
+	}
 
 	function closeEvents() {
 		if (eventSource) {
@@ -87,7 +114,8 @@ export function createSessionController({
 		closeEvents();
 		setConnection("connecting");
 		const since = renderedSessionId === sessionId ? cursor : null;
-		const source = api.eventSource(sessionUrl(sessionId, "events", { since }));
+		const limit = transcriptWindow ? String(windowSize()) : null;
+		const source = api.eventSource(sessionUrl(sessionId, "events", { since, limit }));
 		eventSource = source;
 		lastFrameAtMs = Date.now();
 		source.onopen = () => {
@@ -191,8 +219,14 @@ export function createSessionController({
 		chatView.setOlderControl(hasOlderMessages && oldestEntryId ? state : "none", () => void loadOlderMessages());
 	}
 
-	function maybeLoadOlderMessages() {
-		if (hasOlderMessages && !olderLoading && chatView.isNearTop()) void loadOlderMessages();
+	/**
+	 * The phone loads earlier pages whenever the reader is near the top. A windowed pane only does when
+	 * focused and the reader scrolls up themselves; otherwise its "earlier messages" button does.
+	 */
+	function maybeLoadOlderMessages({ scrolledUp = false } = {}) {
+		if (!hasOlderMessages || olderLoading || !chatView.isNearTop()) return;
+		if (transcriptWindow && !(focused && scrolledUp && !chatView.isPinned())) return;
+		void loadOlderMessages();
 	}
 
 	async function loadOlderMessages() {
@@ -202,8 +236,9 @@ export function createSessionController({
 		olderLoading = true;
 		syncOlderControl();
 		try {
+			const pageLimit = transcriptWindow ? `&limit=${transcriptWindow.pageSize}` : "";
 			const page = await api.getJson(
-				`/api/sessions/${encodeURIComponent(sessionId)}/transcript?before=${encodeURIComponent(oldestEntryId)}`,
+				`/api/sessions/${encodeURIComponent(sessionId)}/transcript?before=${encodeURIComponent(oldestEntryId)}${pageLimit}`,
 			);
 			if (sessionId !== activeSessionId || generation !== renderGeneration) return;
 			const messages = Array.isArray(page?.messages) ? page.messages : [];
@@ -770,6 +805,12 @@ export function createSessionController({
 		renderGeneration += 1;
 	}
 
+	/** A focused canvas tile keeps more of its transcript and loads earlier pages as you scroll up. */
+	function setFocused(next) {
+		focused = Boolean(next);
+		chatView.setWindow(windowSize());
+	}
+
 	function openSessionId(sessionId) {
 		stopRecovery();
 		resetTripwireAlerts();
@@ -802,5 +843,7 @@ export function createSessionController({
 		suspend,
 		resume,
 		destroy,
+		setFocused,
+		getShownEntryCount: () => chatView.entryCount(),
 	};
 }

@@ -26,24 +26,35 @@ function freePort() {
 	});
 }
 
-async function writeSessionFile(root, cwd, id, user, reply) {
+/** A session file with one user/assistant pair per turn; entry ids are u<turn><id tail> and a<turn><id tail>. */
+async function writeSessionTurns(root, cwd, id, turns) {
 	const dir = join(root, "agent", "sessions", `--${cwd.replace(/^\//, "").replace(/[/\\:]/g, "-")}--`);
 	await mkdir(dir, { recursive: true });
 	const path = join(dir, `2026-10-15T10-00-00-000Z_${id}.jsonl`);
-	const lines = [
-		{ type: "session", version: 3, id, timestamp: "2026-10-15T10:00:00.000Z", cwd },
-		{ type: "message", id: `u${id.slice(-7)}`, parentId: null, timestamp: "2026-10-15T10:00:01.000Z", message: { role: "user", content: [{ type: "text", text: user }], timestamp: 1 } },
-		{
-			type: "message",
-			id: `a${id.slice(-7)}`,
-			parentId: `u${id.slice(-7)}`,
-			timestamp: "2026-10-15T10:00:02.000Z",
-			message: { role: "assistant", content: [{ type: "text", text: reply }], api: "anthropic-messages", provider: "anthropic", model: "m", usage, stopReason: "stop", timestamp: 2 },
-		},
-	];
+	const tail = id.slice(-7);
+	const lines = [{ type: "session", version: 3, id, timestamp: "2026-10-15T10:00:00.000Z", cwd }];
+	let parentId = null;
+	for (const [index, [user, reply]] of turns.entries()) {
+		const turn = index === 0 ? "" : String(index);
+		const userId = `u${turn}${tail}`;
+		const replyId = `a${turn}${tail}`;
+		lines.push(
+			{ type: "message", id: userId, parentId, timestamp: "2026-10-15T10:00:01.000Z", message: { role: "user", content: [{ type: "text", text: user }], timestamp: index * 2 + 1 } },
+			{
+				type: "message",
+				id: replyId,
+				parentId: userId,
+				timestamp: "2026-10-15T10:00:02.000Z",
+				message: { role: "assistant", content: [{ type: "text", text: reply }], api: "anthropic-messages", provider: "anthropic", model: "m", usage, stopReason: "stop", timestamp: index * 2 + 2 },
+			},
+		);
+		parentId = replyId;
+	}
 	await writeFile(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
 	return path;
 }
+
+const writeSessionFile = (root, cwd, id, user, reply) => writeSessionTurns(root, cwd, id, [[user, reply]]);
 
 async function startServer(root, port) {
 	const proc = spawn(process.env.BUN_BINARY || "bun", ["src/server.ts"], { stdio: "ignore", env: sandboxServerEnv(root, { PI_WEB_PORT: String(port) }) });
@@ -214,6 +225,73 @@ test("offscreen tiles drop their stream, unmount later, and come back from their
 		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
 		await expect(tile(page, S2).locator(".assistant-block .md")).toHaveText("reply two");
 		await expect.poll(() => page.evaluate(() => window.__openEventSources)).toBe(2);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+/** @param {import("@playwright/test").Locator} tileLocator */
+const shownEntries = (tileLocator) =>
+	tileLocator.locator(".msgs").evaluate((msgs) => [...new Set([...msgs.children].map((child) => child.dataset.entryId).filter(Boolean))]);
+
+test("tiles keep the newest entries of a long transcript and page back on request", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "repo");
+	await mkdir(cwd);
+	const turns = Array.from({ length: 30 }, (_, i) => [`question ${i}`, `answer ${i}\n`.repeat(3)]);
+	const path = await writeSessionTurns(root, cwd, S1, turns);
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (resumeSessionPath) => {
+			const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+			const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, resumeSessionPath }) });
+			if (!res.ok) throw new Error(`start failed: ${res.status}`);
+		}, path);
+
+		const requests = [];
+		page.on("request", (request) => {
+			const url = new URL(request.url());
+			if (url.pathname.endsWith("/events") || url.pathname.endsWith("/transcript")) requests.push(url);
+		});
+		await page.goto(`${base}/?ui=canvas`);
+		const t = tile(page, S1);
+		await expect(t.locator(".user-msg").first()).toHaveText("question 20");
+		expect(await shownEntries(t)).toHaveLength(20);
+		await expect(t.locator(".load-older")).toHaveText("↑ earlier messages");
+		const events = requests.find((url) => url.pathname.endsWith("/events"));
+		expect(events?.searchParams.get("limit")).toBe("20");
+
+		// the toggle pages back (and focuses the tile, which keeps more)
+		await t.locator(".load-older").click();
+		await expect(t.locator(".user-msg").first()).toHaveText("question 0");
+		expect(await shownEntries(t)).toHaveLength(60);
+		await expect(t.locator(".load-older")).toHaveCount(0);
+		const older = requests.find((url) => url.pathname.endsWith("/transcript"));
+		expect(older?.searchParams.get("before")).toBe(`u20${S1.slice(-7)}`);
+		expect(older?.searchParams.get("limit")).toBe("50");
+
+		// following the bottom again, an unfocused tile goes back to its window
+		await t.locator(".msgs").evaluate((msgs) => {
+			msgs.scrollTop = msgs.scrollHeight;
+		});
+		await page.waitForTimeout(100);
+		await page.evaluate(() => window.__canvas.canvas.tiles.focusTile(null));
+		await expect.poll(() => shownEntries(t).then((ids) => ids.length)).toBe(20);
+		await expect(t.locator(".user-msg").first()).toHaveText("question 20");
+		await expect(t.locator(".load-older")).toHaveText("↑ earlier messages");
+		await expect(t.locator(".user-msg").last()).toHaveText("question 29");
+
+		// paging back again after a trim fetches what was dropped, without duplicates
+		await t.locator(".load-older").click();
+		await expect(t.locator(".user-msg").first()).toHaveText("question 0");
+		expect(await shownEntries(t)).toHaveLength(60);
+		await expect(t.locator(".user-msg")).toHaveCount(30);
 	} finally {
 		server.kill("SIGTERM");
 		await new Promise((resolve) => server.once("exit", resolve));

@@ -9,6 +9,8 @@ const LONG_TASK_MS = 50;
 const HEAP_SLACK_MB = Number(process.env.PI_WEB_PERF_HEAP_MB || 2);
 // e.g. PI_WEB_PERF_QUERY="tiles=60&streaming=30&rate=60&offscreen=stream" for a stress run
 const PERF_QUERY = process.env.PI_WEB_PERF_QUERY || "tiles=30&streaming=10&rate=30";
+// the same with the shipped session pane on a fake api (mock-ui/real_panes.js); window=0 turns windowing off
+const REAL_PERF_QUERY = process.env.PI_WEB_PERF_REAL_QUERY || "panes=real&tiles=30&streaming=10&rate=30";
 
 test.describe.configure({ mode: "serial" });
 
@@ -122,20 +124,36 @@ async function metrics(cdp) {
 	return { heapMB: byName.JSHeapUsedSize / 2 ** 20, nodes: byName.Nodes, listeners: byName.JSEventListeners };
 }
 
-test("30 tiles with 10 streaming: pan and zoom stay under the frame budget", async ({ page }, testInfo) => {
-	await openMock(page, PERF_QUERY);
+/** @param {import("@playwright/test").Page} page @param {import("@playwright/test").TestInfo} testInfo @param {string} query @param {string} label */
+async function measurePanZoom(page, testInfo, query, label) {
+	await openMock(page, query);
 	await page.evaluate(() => window.__canvasMock.canvas.viewport.setCamera({ x: 40, y: 40, scale: 0.35 }));
 	await page.waitForTimeout(1500);
 	const visible = await page.locator(".cv-tile:not(.cv-offscreen)").count();
 	await startSampling(page);
 	await scriptedGesture(page, { x: 1200, y: 450 });
-	const report = { query: PERF_QUERY, visibleAtStart: visible, ...(await stopSampling(page)) };
+	const report = { query, visibleAtStart: visible, ...(await stopSampling(page)) };
 	const longest = Math.max(0, ...report.longTasks);
-	console.log(`[canvas perf] frames ${report.frames} p50 ${report.p50.toFixed(1)}ms p95 ${report.p95.toFixed(1)}ms p99 ${report.p99.toFixed(1)}ms max ${report.max.toFixed(1)}ms long tasks ${report.longTasks.length} (longest ${longest.toFixed(0)}ms)`);
-	await testInfo.attach("canvas-perf.json", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
+	console.log(`[${label}] frames ${report.frames} p50 ${report.p50.toFixed(1)}ms p95 ${report.p95.toFixed(1)}ms p99 ${report.p99.toFixed(1)}ms max ${report.max.toFixed(1)}ms long tasks ${report.longTasks.length} (longest ${longest.toFixed(0)}ms)`);
+	await testInfo.attach(`${label.replaceAll(" ", "-")}.json`, { body: JSON.stringify(report, null, 2), contentType: "application/json" });
 	expect(report.frames).toBeGreaterThan(60);
 	expect(report.p95).toBeLessThan(P95_BUDGET_MS);
 	expect(report.longTasks.filter((d) => d > LONG_TASK_MS)).toEqual([]);
+}
+
+test("30 tiles with 10 streaming: pan and zoom stay under the frame budget", async ({ page }, testInfo) => {
+	await measurePanZoom(page, testInfo, PERF_QUERY, "canvas perf");
+});
+
+test("30 real session panes with 10 streaming: pan and zoom stay under the frame budget, transcripts stay windowed", async ({ page }, testInfo) => {
+	await measurePanZoom(page, testInfo, REAL_PERF_QUERY, "canvas perf, real panes");
+	const shown = await page.evaluate(() => {
+		const mock = window.__canvasMock;
+		return mock.tileIds().map((id) => mock.shownEntries(id));
+	});
+	const window = await page.evaluate(() => window.__canvasMock.knobs.window);
+	console.log(`[canvas perf, real panes] entries shown per tile: max ${Math.max(...shown)} (window ${window?.unfocused ?? "off"})`);
+	if (window) expect(Math.max(...shown)).toBeLessThanOrEqual(window.unfocused);
 });
 
 test("pan and zoom write one world transform per frame and never touch tile dom", async ({ page }) => {
@@ -178,32 +196,37 @@ test("pan and zoom write one world transform per frame and never touch tile dom"
 	expect(counts.world).toBeLessThanOrEqual(counts.frames + 4);
 });
 
-test("opening and closing 100 streaming tiles returns heap, dom and listeners to baseline", async ({ page }, testInfo) => {
-	await openMock(page, "tiles=0&streaming=0&rate=60");
-	const cdp = await page.context().newCDPSession(page);
-	await cdp.send("Performance.enable");
-	await page.waitForTimeout(500);
-	const baseline = await metrics(cdp);
-	const sourcesBefore = await page.evaluate(() => window.__openEventSources ?? 0);
-	for (let round = 0; round < 10; round += 1) {
-		await page.evaluate(async () => {
-			const mock = window.__canvasMock;
-			const ids = Array.from({ length: 10 }, () => mock.addTile());
-			await new Promise((resolve) => setTimeout(resolve, 120));
-			for (const id of ids) mock.removeTile(id);
-		});
-	}
-	await page.waitForTimeout(300);
-	const after = await metrics(cdp);
-	const sourcesAfter = await page.evaluate(() => window.__openEventSources ?? 0);
-	const report = { baseline, after, sourcesBefore, sourcesAfter, panes: await page.evaluate(() => window.__canvasMock.paneCount()) };
-	console.log(
-		`[canvas leaks] heap ${baseline.heapMB.toFixed(2)} -> ${after.heapMB.toFixed(2)} MB, nodes ${baseline.nodes} -> ${after.nodes}, listeners ${baseline.listeners} -> ${after.listeners}, event sources ${sourcesBefore} -> ${sourcesAfter}`,
-	);
-	await testInfo.attach("canvas-leaks.json", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
-	expect(report.panes).toBe(0);
-	expect(after.nodes).toBeLessThanOrEqual(baseline.nodes + 50);
-	expect(after.listeners).toBeLessThanOrEqual(baseline.listeners + 10);
-	expect(after.heapMB).toBeLessThan(baseline.heapMB + HEAP_SLACK_MB);
-	expect(sourcesAfter).toBe(sourcesBefore);
-});
+for (const [label, query] of [
+	["fake panes", "tiles=0&streaming=0&rate=60"],
+	["real panes", "panes=real&tiles=0&streaming=0&rate=60"],
+]) {
+	test(`opening and closing 100 streaming tiles (${label}) returns heap, dom, listeners and streams to baseline`, async ({ page }, testInfo) => {
+		await openMock(page, query);
+		const cdp = await page.context().newCDPSession(page);
+		await cdp.send("Performance.enable");
+		await page.waitForTimeout(500);
+		const baseline = await metrics(cdp);
+		const sourcesBefore = await page.evaluate(() => (window.__openEventSources ?? 0) + window.__canvasMock.openFakeStreams());
+		for (let round = 0; round < 10; round += 1) {
+			await page.evaluate(async () => {
+				const mock = window.__canvasMock;
+				const ids = Array.from({ length: 10 }, () => mock.addTile());
+				await new Promise((resolve) => setTimeout(resolve, 120));
+				for (const id of ids) mock.removeTile(id);
+			});
+		}
+		await page.waitForTimeout(300);
+		const after = await metrics(cdp);
+		const sourcesAfter = await page.evaluate(() => (window.__openEventSources ?? 0) + window.__canvasMock.openFakeStreams());
+		const report = { baseline, after, sourcesBefore, sourcesAfter, panes: await page.evaluate(() => window.__canvasMock.paneCount()) };
+		console.log(
+			`[canvas leaks, ${label}] heap ${baseline.heapMB.toFixed(2)} -> ${after.heapMB.toFixed(2)} MB, nodes ${baseline.nodes} -> ${after.nodes}, listeners ${baseline.listeners} -> ${after.listeners}, streams ${sourcesBefore} -> ${sourcesAfter}`,
+		);
+		await testInfo.attach(`canvas-leaks-${label.replace(" ", "-")}.json`, { body: JSON.stringify(report, null, 2), contentType: "application/json" });
+		expect(report.panes).toBe(0);
+		expect(after.nodes).toBeLessThanOrEqual(baseline.nodes + 50);
+		expect(after.listeners).toBeLessThanOrEqual(baseline.listeners + 10);
+		expect(after.heapMB).toBeLessThan(baseline.heapMB + HEAP_SLACK_MB);
+		expect(sourcesAfter).toBe(sourcesBefore);
+	});
+}

@@ -19,15 +19,17 @@ export async function bootCanvas() {
 	const DEFAULT_CAMERA = { x: 48, y: 64, scale: 0.6 };
 	const knobs = new URL(window.location.href).searchParams;
 	/** @param {string} name @param {number} fallback */
-	const msKnob = (name, fallback) => {
+	const intKnob = (name, fallback) => {
 		const value = Number.parseInt(knobs.get(name) ?? "", 10);
 		return Number.isFinite(value) && value >= 0 ? value : fallback;
 	};
 	// offscreen tiles: drop the stream after SUSPEND_GRACE_MS, unmount the dom after UNMOUNT_AFTER_MS
 	// beyond the KEEP_MOUNTED_OFFSCREEN most recently seen (?suspendMs= / ?unmountMs= for tests)
-	const SUSPEND_GRACE_MS = msKnob("suspendMs", 8_000);
-	const UNMOUNT_AFTER_MS = msKnob("unmountMs", 90_000);
-	const KEEP_MOUNTED_OFFSCREEN = msKnob("keepMounted", 8);
+	const SUSPEND_GRACE_MS = intKnob("suspendMs", 8_000);
+	const UNMOUNT_AFTER_MS = intKnob("unmountMs", 90_000);
+	const KEEP_MOUNTED_OFFSCREEN = intKnob("keepMounted", 8);
+	// transcript entries a tile keeps: the newest 20 (50 while focused, plus older pages you scroll to)
+	const TRANSCRIPT_WINDOW = { unfocused: intKnob("window", 20), focused: intKnob("focusedWindow", 50), pageSize: 50 };
 	const SWEEP_MS = Math.min(15_000, Math.max(250, UNMOUNT_AFTER_MS / 2));
 
 	/**
@@ -96,9 +98,7 @@ export async function bootCanvas() {
 		camera: loadCamera(window.localStorage, api.getBaseUrl()) ?? DEFAULT_CAMERA,
 		onNewTile: () => void addRunningSessions({ reveal: true }),
 		onEmptyDoubleClick: () => void addRunningSessions({ reveal: true }),
-		onFocusChange: (id) => {
-			if (id) wake(id);
-		},
+		onFocusChange: (id) => onFocusChange(id),
 		focusComposer: (id) => focusComposer(id),
 		onCloseRequest: (id) => removeSessionTile(id),
 		onGeometryCommit: () => scheduleSave(),
@@ -106,6 +106,18 @@ export async function bootCanvas() {
 		onVisibilityChange: (id, visible) => onTileVisibility(id, visible),
 		onEscape: (id, event) => entries.get(id)?.pane.handleEscape(event),
 	});
+
+	/** @type {string | null} */
+	let focusedTileId = null;
+	/** @param {string | null} id */
+	function onFocusChange(id) {
+		const previous = focusedTileId ? entries.get(focusedTileId) : null;
+		if (previous?.mounted) previous.pane.setFocused(false);
+		focusedTileId = id;
+		const next = id ? entries.get(id) : null;
+		if (next?.mounted) next.pane.setFocused(true);
+		if (id) wake(id);
+	}
 
 	/** A composer that can't take input yet (dormant tile, session still loading) gets focus once it can. @param {string} id */
 	function focusComposer(id) {
@@ -254,9 +266,11 @@ export async function bootCanvas() {
 			menuDom,
 			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 			onStateChange: () => renderTileChrome(entry.id),
+			transcriptWindow: TRANSCRIPT_WINDOW,
 		});
 		entry.mounted = true;
 		entry.opened = false;
+		if (focusedTileId === entry.id) entry.pane.setFocused(true);
 		entry.pane.render();
 		if (entry.dormant) entry.pane.appendNotice("Not running. Click this tile to resume it here.");
 	}

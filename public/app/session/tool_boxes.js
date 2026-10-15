@@ -214,6 +214,14 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 		else delete entry.box.dataset.provisional;
 	}
 
+	/** A live box whose assistant message was persisted: no longer provisional, and part of that entry. */
+	function confirm(toolCallId, entryId) {
+		const entry = toolBoxes.get(toolCallId);
+		if (!entry) return;
+		delete entry.box.dataset.provisional;
+		if (entryId) entry.box.dataset.entryId = entryId;
+	}
+
 	function prune() {
 		toolBoxes = new Map([...toolBoxes].filter(([, entry]) => entry.box.isConnected));
 	}
@@ -237,6 +245,7 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 		clear,
 		ensure,
 		prune,
+		confirm,
 		setProvisional,
 		has: (toolCallId) => toolBoxes.has(toolCallId),
 		setCall,

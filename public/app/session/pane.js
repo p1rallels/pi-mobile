@@ -59,9 +59,22 @@ export function autoResize(el) {
  *   onStateChange?: () => void,
  *   onSidebarClose?: () => void,
  *   onSidebarRefresh?: () => void,
+ *   transcriptWindow?: { unfocused: number, focused: number, pageSize: number } | null,
  * }} options
+ * `transcriptWindow` keeps only the newest entries of the transcript (canvas tiles); the phone keeps them all.
  */
-export function createSessionPane({ refs, api, getClientId, refreshClient, menuDom, getHost, onStateChange, onSidebarClose, onSidebarRefresh }) {
+export function createSessionPane({
+	refs,
+	api,
+	getClientId,
+	refreshClient,
+	menuDom,
+	getHost,
+	onStateChange,
+	onSidebarClose,
+	onSidebarRefresh,
+	transcriptWindow = null,
+}) {
 	const { input } = refs;
 	/** @type {ReturnType<typeof setInterval> | null} */
 	let workingIntervalId = null;
@@ -106,6 +119,7 @@ export function createSessionPane({ refs, api, getClientId, refreshClient, menuD
 		onSidebarRefresh: () => onSidebarRefresh?.(),
 		extensionUi,
 		createSession,
+		transcriptWindow,
 	});
 
 	const menuCtrl = createMenu({
@@ -293,6 +307,9 @@ export function createSessionPane({ refs, api, getClientId, refreshClient, menuD
 		resumeIfStale: () => sessionCtrl.resumeIfStale(),
 		suspend: () => sessionCtrl.suspend(),
 		resume: () => sessionCtrl.resume(),
+		/** @param {boolean} focused */
+		setFocused: (focused) => sessionCtrl.setFocused(focused),
+		getShownEntryCount: () => sessionCtrl.getShownEntryCount(),
 		sendPromptFromInput,
 		abort,
 		takeOver,

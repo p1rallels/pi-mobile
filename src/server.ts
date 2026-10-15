@@ -1142,8 +1142,11 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			};
 
 			const since = resolveResumeCursor(req.headers.get("last-event-id"), url.searchParams.get("since"));
+			const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
 			try {
-				const { init, cursor } = runtime.connectClient(sessionId, clientSession, since);
+				const { init, cursor } = runtime.connectClient(sessionId, clientSession, since, {
+					limit: Number.isFinite(limitParam) ? limitParam : undefined,
+				});
 				stream.send(init, cursor);
 			} catch (error) {
 				stream.close();

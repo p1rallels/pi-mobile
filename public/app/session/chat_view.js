@@ -96,16 +96,46 @@ function toolEventsFromLive(tool) {
 	return events;
 }
 
-export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
+const UNPINNED_WINDOW_MIN = 200;
+
+/** Distinct entry ids of the top-level transcript nodes, oldest first (an assistant block and its tool boxes share one). */
+export function entryIdsInOrder(nodes) {
+	const ids = [];
+	const seen = new Set();
+	for (const node of nodes) {
+		const id = node?.dataset?.entryId;
+		if (!id || seen.has(id)) continue;
+		seen.add(id);
+		ids.push(id);
+	}
+	return ids;
+}
+
+/** The entry the window starts at when it keeps the newest `max` entries, or null when everything fits. */
+export function windowStart(ids, max) {
+	if (!Number.isFinite(max) || ids.length <= max) return null;
+	return ids[ids.length - Math.max(1, Math.floor(max))] ?? null;
+}
+
+/**
+ * @param {{ msgsEl: HTMLElement, queuedEl: HTMLElement | null, pillEl?: HTMLElement | null, onTrim?: (oldestEntryId: string) => void }} options
+ * `onTrim` hears about entries a windowed view dropped from its top, so "earlier messages" can fetch them again.
+ */
+export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () => {} }) {
 	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking, shownText, shownThinking }
 	let renderedEntryIds = new Set();
+	let entryOrder = []; // rendered entry ids in display order, including ones that draw nothing of their own
 	let appendedUserMessageKeys = new Set();
 	let expandedCompactionIds = new Set();
 	let appendedCompactionIds = new Set();
 	const streamingBlocks = new Set();
+	const pendingToolOutput = new Map(); // toolCallId -> { toolName, result }: partial results, drawn once per frame
 	let frameRequested = false;
 	let mountTarget = null;
+	let mountEntryId = null;
 	let olderControl = null;
+	let windowMax = Infinity;
+	let trimPending = false;
 
 	const follower = createScrollFollower({ scrollEl: msgsEl, pillEl });
 
@@ -120,10 +150,22 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		}
 	}
 
+	function writePendingToolOutput() {
+		for (const [toolCallId, { toolName, result }] of pendingToolOutput) {
+			if (tools.has(toolCallId)) tools.setText(toolCallId, toolName, toolResultToText(result));
+		}
+		pendingToolOutput.clear();
+	}
+
 	function flush() {
 		frameRequested = false;
+		writePendingToolOutput();
 		for (const block of streamingBlocks) writeStreamingBlock(block);
 		streamingBlocks.clear();
+		if (trimPending) {
+			trimPending = false;
+			trimWindow();
+		}
 		follower.sync();
 	}
 
@@ -145,7 +187,84 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 	}
 
 	function mount(el) {
+		if (mountEntryId) el.dataset.entryId = mountEntryId;
 		(mountTarget || msgsEl).appendChild(el);
+	}
+
+	/** A newly drawn entry at the bottom: the window may have to give up its oldest one. */
+	function noteEntry(entryId) {
+		if (!entryId) return;
+		renderedEntryIds.add(entryId);
+		entryOrder.push(entryId);
+		if (Number.isFinite(windowMax)) {
+			trimPending = true;
+			scheduleFrame();
+		}
+	}
+
+	/** Drops what a top-level node registered for dedupe, so the same entry can be drawn again later. */
+	function forgetNode(node) {
+		if (!(node instanceof HTMLElement)) return;
+		if (node.dataset.compactionId) appendedCompactionIds.delete(node.dataset.compactionId);
+		if (node.dataset.userKey) appendedUserMessageKeys.delete(node.dataset.userKey);
+		if (currentAssistant && currentAssistant.block === node) currentAssistant = null;
+		for (const block of streamingBlocks) {
+			if (block.block === node) streamingBlocks.delete(block);
+		}
+	}
+
+	/**
+	 * Removes every top-level node above the first node of `keepFrom` (notices without an entry go with
+	 * them) and forgets the dropped entries, so they can be fetched and drawn again.
+	 */
+	function dropAbove(keepFrom) {
+		let node = msgsEl.firstChild;
+		while (node && !(node instanceof HTMLElement && node.dataset.entryId === keepFrom)) {
+			const next = node.nextSibling;
+			if (node !== olderControl) {
+				forgetNode(node);
+				node.remove();
+			}
+			node = next;
+		}
+		const cut = entryOrder.indexOf(keepFrom);
+		if (cut > 0) {
+			for (const id of entryOrder.slice(0, cut)) renderedEntryIds.delete(id);
+			entryOrder = entryOrder.slice(cut);
+		}
+		tools.prune();
+	}
+
+	/**
+	 * Windowed views (canvas tiles) keep the newest `windowMax` entries while they follow the bottom. A
+	 * reader scrolled up keeps far more, and their place, so new output never yanks what they read.
+	 */
+	function trimWindow() {
+		if (!Number.isFinite(windowMax)) return;
+		const pinned = follower.isPinned();
+		const keepFrom = windowStart(entryIdsInOrder(msgsEl.children), pinned ? windowMax : Math.max(UNPINNED_WINDOW_MIN, windowMax * 4));
+		if (!keepFrom) return;
+		if (pinned) {
+			dropAbove(keepFrom);
+		} else {
+			const top = msgsEl.scrollTop;
+			const height = msgsEl.scrollHeight;
+			dropAbove(keepFrom);
+			follower.restore(Math.max(0, top - (height - msgsEl.scrollHeight)));
+		}
+		onTrim(keepFrom);
+	}
+
+	/** @param {number} max entries to keep (Infinity: no window, the phone) */
+	function setWindow(max) {
+		const next = Number.isFinite(max) && max > 0 ? Math.floor(max) : Infinity;
+		if (next === windowMax) return;
+		const shrinking = next < windowMax;
+		windowMax = next;
+		if (shrinking) {
+			trimPending = true;
+			scheduleFrame();
+		}
 	}
 
 	function clear() {
@@ -153,8 +272,10 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		olderControl = null;
 		currentAssistant = null;
 		streamingBlocks.clear();
+		pendingToolOutput.clear();
 		tools.clear();
 		renderedEntryIds = new Set();
+		entryOrder = [];
 		appendedUserMessageKeys = new Set();
 		expandedCompactionIds = new Set();
 		appendedCompactionIds = new Set();
@@ -277,6 +398,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		block.appendChild(el);
 		mount(block);
 		scheduleFrame();
+		return block;
 	}
 
 	function formatTokenCount(n) {
@@ -285,9 +407,9 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 	}
 
 	function appendCompactionSummary(message) {
-		if (!message || typeof message !== "object") return;
+		if (!message || typeof message !== "object") return null;
 		const tokensBefore = typeof message.tokensBefore === "number" ? message.tokensBefore : 0;
-		appendSummaryCard(message, {
+		return appendSummaryCard(message, {
 			kind: "compaction",
 			label: "[compaction]",
 			line: `Compacted from ${formatTokenCount(tokensBefore)} tokens `,
@@ -304,7 +426,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		const summary = typeof message.summary === "string" ? message.summary : "";
 		const timestamp = typeof message.timestamp === "number" ? message.timestamp : Date.now();
 		const id = `${kind}:${timestamp}:${cardKey}:${summary.length}`;
-		if (appendedCompactionIds.has(id)) return;
+		if (appendedCompactionIds.has(id)) return null;
 		appendedCompactionIds.add(id);
 		const expanded = expandedCompactionIds.has(id);
 
@@ -347,6 +469,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 		mount(card);
 		scheduleFrame();
+		return card;
 	}
 
 	function renderAllCompactions() {
@@ -379,9 +502,9 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 	function appendCustomMessage(message) {
 		const text = extractTextContent(message.content);
-		if (!text) return;
+		if (!text) return null;
 		const type = typeof message.customType === "string" && message.customType ? `[${message.customType}] ` : "";
-		appendNotice(`${type}${text}`, "custom");
+		return appendNotice(`${type}${text}`, "custom");
 	}
 
 	function appendBashExecution(message, index) {
@@ -393,72 +516,116 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		tools.setText(id, "bash", message.cancelled ? `${output}\n(cancelled)`.trim() : output);
 	}
 
-	/** Renders persisted messages, skipping entries already on screen so resyncs can overlap safely. */
-	function renderHistory(messages) {
+	/**
+	 * Draws persisted messages, skipping entries already on screen so resyncs can overlap safely. Every
+	 * node gets its entry's id, so a windowed view can drop whole entries from the top.
+	 * @returns {string[]} the entries drawn, in order
+	 */
+	function renderMessages(messages) {
 		const seen = new Set(renderedEntryIds);
-		for (const [index, m] of orderMessagesForDisplay(messages).entries()) {
-			if (!m || typeof m !== "object") continue;
-			if (typeof m.entryId === "string") {
-				if (seen.has(m.entryId)) continue;
-				renderedEntryIds.add(m.entryId);
+		const drawn = [];
+		try {
+			for (const [index, m] of orderMessagesForDisplay(messages).entries()) {
+				if (!m || typeof m !== "object") continue;
+				const entryId = typeof m.entryId === "string" ? m.entryId : null;
+				if (entryId) {
+					if (seen.has(entryId)) continue;
+					seen.add(entryId);
+					renderedEntryIds.add(entryId);
+					if (!drawn.includes(entryId)) drawn.push(entryId);
+				}
+				mountEntryId = entryId;
+				renderMessage(m, index);
 			}
-			if (m.role === "user") {
+		} finally {
+			mountEntryId = null;
+		}
+		return drawn;
+	}
+
+	function renderHistory(messages) {
+		const drawn = renderMessages(messages);
+		entryOrder.push(...drawn);
+		if (drawn.length > 0 && Number.isFinite(windowMax)) {
+			trimPending = true;
+			scheduleFrame();
+		}
+	}
+
+	function renderAssistantHistory(m) {
+		const block = appendAssistantBlock();
+		const parsed = parseAssistantContent(m.content);
+		if (parsed.thinking) {
+			block.thinking.style.display = "";
+			block.thinking.classList.add("shown");
+			block.thinking.textContent = parsed.thinking;
+			block.rawThinking = parsed.thinking;
+		}
+		if (parsed.text) {
+			block.rawText = parsed.text;
+			renderMarkdown(block.text, parsed.text);
+		}
+		const notice = stopReasonNotice(m);
+		if (notice) {
+			const err = document.createElement("div");
+			err.className = "notice-text error";
+			err.textContent = notice;
+			block.block.appendChild(err);
+		}
+		for (const call of parsed.toolCalls) {
+			tools.setCall(call.id, call.name, call.arguments);
+		}
+		currentAssistant = null;
+	}
+
+	function renderToolResultHistory(m) {
+		const toolCallId = typeof m.toolCallId === "string" ? m.toolCallId : safeRandomUUID();
+		const toolName = typeof m.toolName === "string" ? m.toolName : "tool";
+		const isError = Boolean(m.isError);
+		const contentText = extractTextContent(m.content);
+		if (!tools.has(toolCallId)) {
+			tools.ensure(toolCallId, toolName, isError ? "error" : "success");
+		}
+		tools.setStatus(toolCallId, isError ? "error" : "success");
+		tools.setText(toolCallId, toolName, contentText || safeStringify(m.content));
+		tools.setImages(toolCallId, imageBlocks(m.content));
+		for (const call of Array.isArray(m.nestedCalls?.calls) ? m.nestedCalls.calls : []) {
+			tools.setNested(toolCallId, {
+				id: call.id,
+				name: call.name,
+				args: call.arguments ?? {},
+				status: call.status === "ok" ? "success" : call.status === "error" ? "error" : "pending",
+				durationMs: call.durationMs,
+				error: call.error,
+			});
+		}
+	}
+
+	function renderMessage(m, index) {
+		switch (m.role) {
+			case "user": {
 				const text = extractTextContent(m.content);
 				if (text) appendUserMessage(text);
-			} else if (m.role === "assistant") {
-				const block = appendAssistantBlock();
-				const parsed = parseAssistantContent(m.content);
-				if (parsed.thinking) {
-					block.thinking.style.display = "";
-					block.thinking.classList.add("shown");
-					block.thinking.textContent = parsed.thinking;
-					block.rawThinking = parsed.thinking;
-				}
-				if (parsed.text) {
-					block.rawText = parsed.text;
-					renderMarkdown(block.text, parsed.text);
-				}
-				const notice = stopReasonNotice(m);
-				if (notice) {
-					const err = document.createElement("div");
-					err.className = "notice-text error";
-					err.textContent = notice;
-					block.block.appendChild(err);
-				}
-				for (const call of parsed.toolCalls) {
-					tools.setCall(call.id, call.name, call.arguments);
-				}
-				currentAssistant = null;
-			} else if (m.role === "compactionSummary") {
-				appendCompactionSummary(m);
-			} else if (m.role === "branchSummary") {
-				appendBranchSummary(m);
-			} else if (m.role === "custom") {
-				appendCustomMessage(m);
-			} else if (m.role === "bashExecution") {
-				appendBashExecution(m, index);
-			} else if (m.role === "toolResult") {
-				const toolCallId = typeof m.toolCallId === "string" ? m.toolCallId : safeRandomUUID();
-				const toolName = typeof m.toolName === "string" ? m.toolName : "tool";
-				const isError = Boolean(m.isError);
-				const contentText = extractTextContent(m.content);
-				if (!tools.has(toolCallId)) {
-					tools.ensure(toolCallId, toolName, isError ? "error" : "success");
-				}
-				tools.setStatus(toolCallId, isError ? "error" : "success");
-				tools.setText(toolCallId, toolName, contentText || safeStringify(m.content));
-				tools.setImages(toolCallId, imageBlocks(m.content));
-				for (const call of Array.isArray(m.nestedCalls?.calls) ? m.nestedCalls.calls : []) {
-					tools.setNested(toolCallId, {
-						id: call.id,
-						name: call.name,
-						args: call.arguments ?? {},
-						status: call.status === "ok" ? "success" : call.status === "error" ? "error" : "pending",
-						durationMs: call.durationMs,
-						error: call.error,
-					});
-				}
+				return;
 			}
+			case "assistant":
+				renderAssistantHistory(m);
+				return;
+			case "compactionSummary":
+				appendCompactionSummary(m);
+				return;
+			case "branchSummary":
+				appendBranchSummary(m);
+				return;
+			case "custom":
+				appendCustomMessage(m);
+				return;
+			case "bashExecution":
+				appendBashExecution(m, index);
+				return;
+			case "toolResult":
+				renderToolResultHistory(m);
+				return;
 		}
 	}
 
@@ -467,7 +634,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		const liveAssistant = currentAssistant;
 		mountTarget = fragment;
 		try {
-			renderHistory(messages);
+			entryOrder = [...renderMessages(messages), ...entryOrder];
 		} finally {
 			mountTarget = null;
 			currentAssistant = liveAssistant;
@@ -541,8 +708,8 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 	function confirmAssistant(block, message, entryId) {
 		if (block) confirmNode(block.block, entryId);
-		for (const call of parseAssistantContent(message.content).toolCalls) tools.setProvisional(call.id, false);
-		if (entryId) renderedEntryIds.add(entryId);
+		for (const call of parseAssistantContent(message.content).toolCalls) tools.confirm(call.id, entryId);
+		noteEntry(entryId);
 	}
 
 	function renderReleased({ cliCommand }) {
@@ -638,17 +805,17 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 				const el = maybeAppendUserMessage(msg);
 				if (entryId) {
 					confirmNode(el, entryId);
-					renderedEntryIds.add(entryId);
+					noteEntry(entryId);
 				}
 				return;
 			}
 			if (msg.role === "custom") {
-				if (msg.display !== false) appendCustomMessage(msg);
-				if (entryId) renderedEntryIds.add(entryId);
+				if (msg.display !== false) confirmNode(appendCustomMessage(msg), entryId);
+				noteEntry(entryId);
 				return;
 			}
 			if (msg.role === "toolResult") {
-				if (entryId) renderedEntryIds.add(entryId);
+				noteEntry(entryId);
 				return;
 			}
 			if (msg.role === "assistant") {
@@ -706,6 +873,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		}
 
 		if (event.type === "tool_execution_start") {
+			pendingToolOutput.delete(event.toolCallId);
 			if (tools.has(event.toolCallId)) {
 				tools.setStatus(event.toolCallId, "pending");
 			} else {
@@ -718,11 +886,13 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 		if (event.type === "tool_execution_update") {
 			if (!tools.has(event.toolCallId)) return;
-			tools.setText(event.toolCallId, event.toolName, toolResultToText(event.partialResult));
+			pendingToolOutput.set(event.toolCallId, { toolName: event.toolName, result: event.partialResult });
+			scheduleFrame();
 			return;
 		}
 
 		if (event.type === "tool_execution_end") {
+			pendingToolOutput.delete(event.toolCallId);
 			if (!tools.has(event.toolCallId)) {
 				tools.ensure(event.toolCallId, event.toolName, event.isError ? "error" : "success");
 			}
@@ -744,9 +914,11 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		appendNotice,
 		appendCompactionSummary: (message, entryId) => {
 			if (entryId && renderedEntryIds.has(entryId)) return;
-			if (entryId) renderedEntryIds.add(entryId);
-			appendCompactionSummary(message);
+			confirmNode(appendCompactionSummary(message), entryId);
+			noteEntry(entryId);
 		},
+		setWindow,
+		entryCount: () => entryIdsInOrder(msgsEl.children).length,
 		dropProvisional,
 		renderLive,
 		prependHistory,

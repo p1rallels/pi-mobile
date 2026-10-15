@@ -30,7 +30,7 @@ import {
 	type ProjectTrustMode,
 } from "./project-trust.ts";
 import { createSessionIndex, type SessionSummary } from "./session-index.ts";
-import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
+import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptLimits, type TranscriptPage } from "./transcript.ts";
 import { TripwireService, type TripwireMode } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
 import type {
@@ -235,16 +235,22 @@ function safeQueuedMessagesSnapshot(session: AgentSession): ApiSessionState["que
 
 const INITIAL_TRANSCRIPT_LIMITS = { maxMessages: INITIAL_TRANSCRIPT_MESSAGES, maxBytes: INITIAL_TRANSCRIPT_BYTES };
 
+/** A viewer that only shows the tail of a transcript (a canvas tile) can ask for a smaller first page. */
+function initialTranscriptLimits(limit: number | undefined): TranscriptLimits {
+	if (limit === undefined || !Number.isFinite(limit)) return INITIAL_TRANSCRIPT_LIMITS;
+	return { ...INITIAL_TRANSCRIPT_LIMITS, maxMessages: Math.min(Math.max(1, Math.floor(limit)), INITIAL_TRANSCRIPT_MESSAGES) };
+}
+
 function buildState(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust): ApiSessionState {
 	const transcript = transcriptPage(session.sessionManager.getBranch(), INITIAL_TRANSCRIPT_LIMITS);
 	return { ...buildStatus(session, cwd, projectTrust), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
 }
 
-function buildResyncTranscript(session: AgentSession, since: string | undefined): ApiResyncTranscript {
+function buildResyncTranscript(session: AgentSession, since: string | undefined, limits: TranscriptLimits): ApiResyncTranscript {
 	const branch = session.sessionManager.getBranch();
-	const missing = since === undefined ? null : transcriptSince(branch, since, INITIAL_TRANSCRIPT_LIMITS);
+	const missing = since === undefined ? null : transcriptSince(branch, since, limits);
 	if (since !== undefined && missing !== null) return { mode: "append", since, messages: missing };
-	const page = transcriptPage(branch, INITIAL_TRANSCRIPT_LIMITS);
+	const page = transcriptPage(branch, limits);
 	return { mode: "replace", messages: page.messages, hasOlder: page.hasOlder };
 }
 
@@ -706,13 +712,18 @@ export class PiWebRuntime {
 	 * Registers a viewer and builds its init event in one synchronous step, after delivering queued events
 	 * to the existing viewers, so the snapshot and the live stream that follows neither overlap nor leave a gap.
 	 */
-	connectClient(sessionId: string, client: SessionClient, since?: string): { init: InitSseEvent; cursor: string | undefined } {
+	connectClient(
+		sessionId: string,
+		client: SessionClient,
+		since?: string,
+		options: { limit?: number } = {},
+	): { init: InitSseEvent; cursor: string | undefined } {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
 			throw new Error("session_not_running");
 		}
 		this.flushOutbox(runtime);
-		const transcript = buildResyncTranscript(runtime.session, since);
+		const transcript = buildResyncTranscript(runtime.session, since, initialTranscriptLimits(options.limit));
 		const cursor = runtime.session.sessionManager.getLeafId();
 		const live = runtime.live;
 		const { role, controllerClientId } = this.addClient(sessionId, client);

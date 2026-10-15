@@ -1,11 +1,15 @@
 // Canvas prototype: the real canvas engine (public/app/canvas) with fake panes that stream like
 // working sessions. Knobs: ?tiles=N&streaming=K&rate=R (deltas/s per streaming tile)
-// &offscreen=stream (keep streaming offscreen tiles)&fps=0 (hide the meter)&seed=S&reset=1.
-// Deltas are batched per animation frame across all panes; each pane keeps a window of messages.
+// &offscreen=stream (keep streaming offscreen tiles)&fps=0 (hide the meter)&seed=S&reset=1
+// &panes=real (the shipped session pane on a fake api, see real_panes.js)&window=W (entries an
+// unfocused real pane keeps, 0 = all). Fake panes batch deltas per animation frame across all panes
+// and keep a window of messages.
 import { createCanvas } from "/public/app/canvas/canvas.js";
 import { createFpsMeter } from "/public/app/canvas/fps_meter.js";
 import { gridSlot, nextFreeSlot, rectCenteredAt } from "/public/app/canvas/layout.js";
 import { nextPinnedState } from "/public/app/session/scroll_follow.js";
+import { MODELS, REPOS, TITLES, USER_ASKS, createTextSource, mulberry32 } from "./fake_text.js";
+import { createRealPane, openFakeStreams } from "./real_panes.js";
 
 const params = new URLSearchParams(location.search);
 /** @param {string} name @param {number} fallback @param {number} min @param {number} max */
@@ -21,35 +25,11 @@ const SHOW_FPS = params.get("fps") !== "0";
 const SEED = intParam("seed", 1, 0, 2 ** 30);
 const WINDOW_UNFOCUSED = 20;
 const WINDOW_FOCUSED = 50;
+const REAL_PANES = params.get("panes") === "real";
+const REAL_WINDOW = intParam("window", WINDOW_UNFOCUSED, 0, 10_000);
+const TRANSCRIPT_WINDOW = REAL_WINDOW > 0 ? { unfocused: REAL_WINDOW, focused: Math.max(REAL_WINDOW, WINDOW_FOCUSED), pageSize: 50 } : null;
 const CAMERA_KEY = "pi-web.mock.canvas.camera";
 
-/** @param {number} seed */
-function mulberry32(seed) {
-	let a = seed >>> 0;
-	return () => {
-		a = (a + 0x6d2b79f5) >>> 0;
-		let t = a;
-		t = Math.imul(t ^ (t >>> 15), t | 1);
-		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-	};
-}
-
-const REPOS = ["pi-web", "infinite", "libs", "cc", "pi-mono", "marbles", "lookup", "pdoom"];
-const TITLES = ["canvas camera + tests", "fix reconnect cursor", "sse batching", "layout endpoint", "glow tuning", "tool output windowing", "launcher flow", "perf harness", "review sidebar", "release notes"];
-const MODELS = ["opus 5.5 · max", "opus 5.5 · high", "sonnet 5 · medium", "gpt-5.5 · high"];
-const WORDS =
-	"the camera keeps one transform on the world layer so tiles never reflow while zooming and only the streaming block re-renders per frame which keeps the main thread quiet even with ten panes working at once while offscreen tiles drop their streams".split(
-		" ",
-	);
-const CODE = [
-	"const next = zoomAt(camera, anchor, scale);",
-	"world.style.transform = cameraTransform(next);",
-	"if (!tile.visible) return;",
-	"await runtime.attachIfNeeded(sessionId);",
-	"for (const tile of dirty) writeGeometry(tile);",
-	"expect(screenToWorld(zoomed, anchor)).toEqual(before);",
-];
 const TOOLS = [
 	["read", "public/app/canvas/viewport.js"],
 	["$", "bun test tests/canvas_camera.test.js"],
@@ -57,7 +37,6 @@ const TOOLS = [
 	["$", "rg isEvictable src/"],
 	["write", "mock-ui/canvas.js"],
 ];
-const USER_ASKS = ["make the glow subtler", "why does the tile blur after zooming?", "run the perf harness again", "ship it", "add a test for the launcher", "check the reconnect path"];
 
 /** @template {keyof HTMLElementTagNameMap} K @param {K} tag @param {string} [className] @param {string} [text] */
 function el(tag, className, text) {
@@ -94,9 +73,7 @@ function requestFlush(pane) {
  * @param {boolean} streaming
  */
 function createFakePane(tile, index, streaming) {
-	const rand = mulberry32(SEED * 7919 + index * 104729);
-	/** @template T @param {readonly T[]} list @returns {T} */
-	const pick = (list) => list[Math.floor(rand() * list.length)];
+	const { rand, pick, token, sentence, toolLines } = createTextSource(mulberry32(SEED * 7919 + index * 104729));
 	const repo = REPOS[index % REPOS.length];
 	const model = pick(MODELS);
 	tile.titleEl.textContent = `${repo} · ${pick(TITLES)}`;
@@ -133,18 +110,6 @@ function createFakePane(tile, index, streaming) {
 	let pinned = true;
 	let lastTop = 0;
 
-	const token = () => {
-		const roll = rand();
-		if (roll < 0.04) return `\n${pick(CODE)}\n`;
-		if (roll < 0.08) return "\n\n";
-		return `${pick(WORDS)} `;
-	};
-	const sentence = (/** @type {number} */ chars) => {
-		let text = "";
-		while (text.length < chars) text += token();
-		return text.trim();
-	};
-
 	function setRunning(/** @type {boolean} */ next) {
 		running = next;
 		pill.textContent = next ? "working" : "idle";
@@ -180,7 +145,6 @@ function createFakePane(tile, index, streaming) {
 		if (done) box.append(el("div", "tool-out", toolLines().join("\n")));
 		return box;
 	}
-	const toolLines = () => Array.from({ length: 2 + Math.floor(rand() * 5) }, () => (rand() < 0.5 ? pick(CODE) : sentence(40)));
 
 	function planTurn() {
 		script.push({ kind: "user" }, { kind: "think", chars: 80 + rand() * 200 });
@@ -375,7 +339,13 @@ function addFakeTile(rect, streaming) {
 	created += 1;
 	const id = `mock-${index}`;
 	const tile = canvas.tiles.addTile({ id, rect });
-	panes.set(id, createFakePane(tile, index, streaming));
+	const text = createTextSource(mulberry32(SEED * 7919 + index * 104729));
+	panes.set(
+		id,
+		REAL_PANES
+			? createRealPane(tile, { index, streaming, text, streamOffscreen: STREAM_OFFSCREEN, transcriptWindow: TRANSCRIPT_WINDOW })
+			: createFakePane(tile, index, streaming),
+	);
 	return id;
 }
 
@@ -398,10 +368,16 @@ Object.assign(window, {
 	__canvasMock: {
 		canvas,
 		meter,
-		knobs: { tiles: TILES, streaming: STREAMING, rate: RATE, streamOffscreen: STREAM_OFFSCREEN },
+		knobs: { tiles: TILES, streaming: STREAMING, rate: RATE, streamOffscreen: STREAM_OFFSCREEN, realPanes: REAL_PANES, window: TRANSCRIPT_WINDOW },
 		addTile: () => addFakeTile(nextFreeSlot(canvas.tiles.rects()), true),
 		removeTile: closeTile,
 		tileIds: () => canvas.tiles.ids(),
 		paneCount: () => panes.size,
+		openFakeStreams,
+		/** @param {string} id */
+		shownEntries: (id) => {
+			const pane = panes.get(id);
+			return pane && "shownEntries" in pane ? pane.shownEntries() : null;
+		},
 	},
 });
