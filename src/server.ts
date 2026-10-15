@@ -4,6 +4,7 @@ import { join, resolve, sep } from "node:path";
 import { VERSION as PI_VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { CANVAS_LAYOUT_BODY_LIMIT, createCanvasLayoutStore } from "./canvas-layout.ts";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
+import { isTypedPath, listDirectories } from "./directories.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { FaceIdService } from "./faceid.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
@@ -20,6 +21,7 @@ import type {
 	ApiCommandRequest,
 	ApiCommandResponse,
 	ApiCreateSessionRequest,
+	ApiDirectoryListing,
 	ApiErrorResponse,
 	ApiListHostsResponse,
 	ApiListModelsResponse,
@@ -27,6 +29,7 @@ import type {
 	ApiListSessionsResponse,
 	ApiOkResponse,
 	ApiProjectTrustRequiredResponse,
+	ApiRepoSuggestionsResponse,
 	ApiReleaseRequest,
 	ApiRunningElsewhereResponse,
 	ApiSessionFileTranscriptResponse,
@@ -985,6 +988,19 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			return json(body, 200);
 		}
 
+		if (req.method === "GET" && url.pathname === "/api/repos/suggestions") {
+			const body: ApiRepoSuggestionsResponse = { suggestions: await runtime.listRepoSuggestions() };
+			return json(body, 200);
+		}
+
+		// folder completion for the launcher; read-only, so any live Face ID session will do
+		if (req.method === "GET" && url.pathname === "/api/dirs") {
+			const typed = url.searchParams.get("path") ?? "";
+			if (!isTypedPath(typed)) return errorResponse("path must start with / or ~/", 400);
+			const body: ApiDirectoryListing = await listDirectories(typed);
+			return json(body, 200);
+		}
+
 		// one stream for the whole canvas: which sessions run, work or wait, so idle tiles can let go of theirs
 		if (req.method === "GET" && url.pathname === "/api/canvas/status") {
 			const stream = createSseStream(req.signal);
@@ -1061,7 +1077,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				if (!raw.cwd || typeof raw.cwd !== "string") {
 					return errorResponse("Missing cwd", 400);
 				}
-				const body: ApiAddRepoResponse = { ok: true, cwd: await runtime.addRepo(raw.cwd) };
+				const body: ApiAddRepoResponse = { ok: true, cwd: await runtime.addRepo(raw.cwd, { create: raw.create === true }) };
 				return json(body, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

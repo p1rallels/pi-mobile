@@ -1,4 +1,5 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { DirectoryListing } from "./directories.ts";
 import type { ApiExtensionUiSnapshot, ExtensionUiEvent } from "./extension-ui.ts";
 import type { LiveSnapshot } from "./live-snapshot.ts";
 import type { ElsewhereState } from "./outside-writers.ts";
@@ -26,6 +27,18 @@ export interface ApiListReposResponse {
 	repos: string[];
 }
 
+/** A folder pi sessions ran in that isn't a saved repo. */
+export interface ApiRepoSuggestion {
+	cwd: string;
+	/** The newest session file's last write. */
+	modified: string;
+	sessions: number;
+}
+
+export interface ApiRepoSuggestionsResponse {
+	suggestions: ApiRepoSuggestion[];
+}
+
 export interface ApiHostRecord {
 	id: string;
 	label: string;
@@ -42,7 +55,12 @@ export interface ApiListHostsResponse {
 
 export interface ApiAddRepoRequest {
 	cwd: string;
+	/** Make the folder first: one new folder, inside the home folder, whose parent exists. */
+	create?: boolean;
 }
+
+/** GET /api/dirs?path=: what a typed /path or ~/path could continue with. */
+export type ApiDirectoryListing = DirectoryListing;
 
 export interface ApiAddRepoResponse {
 	ok: true;

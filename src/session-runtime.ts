@@ -17,8 +17,8 @@ import {
 import { existsSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
+import { createFolderInHome, isDirectory, normalizeCwd } from "./directories.ts";
 import { createExtensionUiBridge, type ApiExtensionUiResponse, type ExtensionUiBridge } from "./extension-ui.ts";
 import { EMPTY_LIVE_SNAPSHOT, reduceLiveSnapshot, type LiveSnapshot } from "./live-snapshot.ts";
 import {
@@ -42,7 +42,8 @@ import {
 	type PiProcess,
 } from "./outside-writers.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
-import { createSessionIndex, sessionDirForCwd, type SessionSummary } from "./session-index.ts";
+import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";
+import { createSessionFolders, createSessionIndex, sessionDirForCwd, type SessionFolder, type SessionSummary } from "./session-index.ts";
 import { isOpenTurn, turnOfEntries, type Turn } from "./session-turn.ts";
 import {
 	announcedEntryId,
@@ -63,6 +64,7 @@ import type {
 	ApiFollowState,
 	ApiPromptDisposition,
 	ApiModelInfo,
+	ApiRepoSuggestion,
 	ApiResyncTranscript,
 	ApiSessionState,
 	ApiSessionStatus,
@@ -75,6 +77,8 @@ import type {
 	SseEvent,
 } from "./types.ts";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
+
+export { normalizeCwd };
 
 export interface SessionClient {
 	connectionId: string;
@@ -141,6 +145,8 @@ interface PiWebRuntimeOptions {
 	followPollMs?: number;
 	/** `pfs ls --all --json` for a repo root, for fork labels; tests pass a fake. */
 	listForks?: (root: string) => Promise<string | null>;
+	/** Folders whose sessions are never suggested as repos (default: the temp roots); tests pass their own. */
+	scratchRoots?: string[];
 }
 
 const DEFAULT_FOLLOW_POLL_MS = 700;
@@ -396,14 +402,6 @@ async function ensureDirectory(path: string): Promise<void> {
 	}
 }
 
-/** An absolute folder path; a leading ~ means the home folder of the user running pi-web. */
-export function normalizeCwd(input: string, home = homedir()): string {
-	const trimmed = input.trim();
-	if (trimmed === "~") return resolve(home);
-	if (trimmed.startsWith("~/")) return resolve(home, trimmed.slice(2));
-	return resolve(trimmed);
-}
-
 function parseCompactCommandText(text: string): string | null {
 	const trimmed = text.trim();
 	if (trimmed === "/compact") return "";
@@ -484,6 +482,8 @@ export class PiWebRuntime {
 	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
 	private sessionIndex = createSessionIndex(join(this.agentDir, "sessions"));
+	private sessionFolders = createSessionFolders(join(this.agentDir, "sessions"));
+	private scratchRoots: string[];
 	private detachedStorePath = join(this.agentDir, "pi-web", "detached-sessions.json");
 	private detachedWrites: Promise<void> = Promise.resolve();
 	private modelRuntimePromise: Promise<ModelRuntime>;
@@ -505,6 +505,7 @@ export class PiWebRuntime {
 
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.forkLabels = createForkLabels(options.listForks);
+		this.scratchRoots = options.scratchRoots ?? defaultScratchRoots();
 		this.piProcesses = createProcessCache(options.listPiProcesses ?? (() => listPiProcesses()), options.processCacheMs);
 		this.stopPiProcess = options.stopPiProcess ?? ((proc) => stopProcess(proc));
 		this.followPollMs = options.followPollMs ?? DEFAULT_FOLLOW_POLL_MS;
@@ -636,9 +637,9 @@ export class PiWebRuntime {
 		return [...repos].sort((a, b) => a.localeCompare(b));
 	}
 
-	/** Saves a folder sessions may start in; returns it as saved (absolute, ~ expanded). */
-	async addRepo(rawCwd: string): Promise<string> {
-		const cwd = normalizeCwd(rawCwd);
+	/** Saves a folder sessions may start in (made first with create: one new folder inside home); returns it as saved (absolute, ~ expanded). */
+	async addRepo(rawCwd: string, options: { create?: boolean } = {}): Promise<string> {
+		const cwd = options.create ? await createFolderInHome(rawCwd) : normalizeCwd(rawCwd);
 		await ensureDirectory(cwd);
 
 		const repos = new Set(await this.loadReposFromDisk());
@@ -649,6 +650,17 @@ export class PiWebRuntime {
 			runtime.tripwireAllowedRoots.add(cwd);
 		}
 		return cwd;
+	}
+
+	/** Folders pi sessions ran in that aren't saved: not scratch, still there, newest session first. */
+	async listRepoSuggestions(limit = REPO_SUGGESTION_LIMIT): Promise<ApiRepoSuggestion[]> {
+		const [folders, saved] = await Promise.all([this.sessionFolders.list(), this.listRepos()]);
+		const candidates = pickRepoSuggestions(folders, new Set(saved), this.scratchRoots);
+		const present = await Promise.all(candidates.map(async (folder) => (await isDirectory(folder.cwd)) ? folder : null));
+		return present
+			.filter((folder): folder is SessionFolder => folder !== null)
+			.slice(0, limit)
+			.map((folder) => ({ cwd: folder.cwd, modified: toIso(folder.lastWriteMs), sessions: folder.sessions }));
 	}
 
 	/** What the canvas needs to know about every running session, cheap enough to send on each change. */

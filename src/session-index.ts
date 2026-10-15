@@ -272,6 +272,64 @@ async function listSessionDirs(sessionsDir: string): Promise<string[]> {
 	}
 }
 
+/** A folder pi sessions ran in, from the session files' headers. */
+export interface SessionFolder {
+	cwd: string;
+	/** The newest session file's last write. */
+	lastWriteMs: number;
+	sessions: number;
+}
+
+const HEADER_BYTES = 16 * 1024;
+
+/** The cwd a session file's header names; complete is false while the header line isn't written out yet. */
+async function readHeaderCwd(path: string): Promise<{ cwd: string | null; complete: boolean }> {
+	const head = new Uint8Array(await Bun.file(path).slice(0, HEADER_BYTES).arrayBuffer());
+	const end = head.indexOf(NEWLINE);
+	if (end === -1) return { cwd: null, complete: head.length >= HEADER_BYTES };
+	const cwd = headerOf(head.subarray(0, end))?.header.cwd;
+	return { cwd: typeof cwd === "string" && cwd ? cwd : null, complete: true };
+}
+
+/**
+ * Which folders pi sessions ran in, newest first. Headers never change, so each file's is read once; every call stats the
+ * files for their last write.
+ */
+export function createSessionFolders(sessionsDir: string) {
+	const cwdByPath = new Map<string, string | null>();
+
+	async function cwdOf(path: string): Promise<string | null> {
+		const known = cwdByPath.get(path);
+		if (known !== undefined) return known;
+		const { cwd, complete } = await readHeaderCwd(path);
+		if (complete) cwdByPath.set(path, cwd);
+		return cwd;
+	}
+
+	async function list(): Promise<SessionFolder[]> {
+		const paths = (await Promise.all((await listSessionDirs(sessionsDir)).map(listJsonl))).flat();
+		const present = new Set(paths);
+		for (const path of [...cwdByPath.keys()].filter((known) => !present.has(known))) cwdByPath.delete(path);
+		const files = await mapLimited(paths, SCAN_CONCURRENCY, async (path) => {
+			try {
+				const [info, cwd] = await Promise.all([stat(path), cwdOf(path)]);
+				return cwd ? { cwd, mtimeMs: info.mtimeMs } : null;
+			} catch {
+				return null;
+			}
+		});
+		const folders = new Map<string, SessionFolder>();
+		for (const file of files) {
+			if (!file) continue;
+			const seen = folders.get(file.cwd);
+			folders.set(file.cwd, { cwd: file.cwd, lastWriteMs: Math.max(seen?.lastWriteMs ?? 0, file.mtimeMs), sessions: (seen?.sessions ?? 0) + 1 });
+		}
+		return [...folders.values()].sort((a, b) => b.lastWriteMs - a.lastWriteMs);
+	}
+
+	return { list };
+}
+
 export function sessionDirForCwd(sessionsDir: string, cwd: string): string {
 	return join(sessionsDir, `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
 }

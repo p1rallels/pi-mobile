@@ -1,7 +1,7 @@
 // The canvas shell (?ui=canvas) against an isolated pi-web server with two sessions on disk.
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,8 +56,8 @@ async function writeSessionTurns(root, cwd, id, turns) {
 
 const writeSessionFile = (root, cwd, id, user, reply) => writeSessionTurns(root, cwd, id, [[user, reply]]);
 
-async function startServer(root, port) {
-	const proc = spawn(process.env.BUN_BINARY || "bun", ["src/server.ts"], { stdio: "ignore", env: sandboxServerEnv(root, { PI_WEB_PORT: String(port) }) });
+async function startServer(root, port, env = {}) {
+	const proc = spawn(process.env.BUN_BINARY || "bun", ["src/server.ts"], { stdio: "ignore", env: sandboxServerEnv(root, { PI_WEB_PORT: String(port), ...env }) });
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
 		try {
@@ -564,13 +564,15 @@ test("the launcher lists a directory's sessions, resumes one in place, starts ne
 	}
 });
 
-test("the launcher adds a directory typed as a path and opens it, and says why when the path isn't a folder", async ({ page }) => {
+test("the launcher browses folders from a typed path: tab drills in, enter adds and opens, a new name makes one folder inside home", async ({ page }, testInfo) => {
 	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
-	const cwd = join(root, "typed-repo");
-	await mkdir(cwd);
+	const home = join(root, "me");
+	const code = join(home, "code");
+	for (const name of ["alpha", "alps", "beta", ".hidden"]) await mkdir(join(code, name), { recursive: true });
+	await writeFile(join(code, "notes.txt"), "a file, not a folder");
 	const port = await freePort();
 	const base = `http://127.0.0.1:${port}`;
-	const server = await startServer(root, port);
+	const server = await startServer(root, port, { HOME: home });
 	try {
 		await page.setViewportSize({ width: 1440, height: 900 });
 		await page.goto(`${base}/?ui=canvas`);
@@ -581,29 +583,113 @@ test("the launcher adds a directory typed as a path and opens it, and says why w
 		const launcher = page.locator(".cv-tile.cv-launcher");
 		const search = launcher.locator(".cv-launch-search");
 		const rows = launcher.locator(".cv-launch-row");
-		const foot = launcher.locator(".cv-launch-foot");
+		const row = (key) => launcher.locator(`.cv-launch-row[data-key="${key}"]`);
+		const crumb = launcher.locator(".cv-launch-crumb");
+		const notes = launcher.locator(".cv-launch-note");
 		await expect(search).toBeFocused();
-		await expect(search).toHaveAttribute("placeholder", /type a \/path to add one/);
+		await expect(search).toHaveAttribute("placeholder", /type a \/path or ~\/path/);
 
-		await search.fill(join(root, "missing"));
+		// the folder itself first, then its subfolders: no files, no hidden ones until a dot
+		await search.fill("~/code/");
+		await expect(rows).toHaveCount(4);
+		await expect(rows.first()).toHaveAttribute("data-key", "add-repo");
+		await expect(rows.nth(1)).toHaveAttribute("data-key", `dir:${join(code, "alpha")}`);
+		await expect(rows.nth(1).locator(".cv-launch-secondary")).toHaveText("~/code/alpha");
+		await expect(rows.nth(3)).toHaveAttribute("data-key", `dir:${join(code, "beta")}`);
+		await search.fill("~/code/.");
+		await expect(rows).toHaveCount(1);
+		await expect(row(`dir:${join(code, ".hidden")}`)).toHaveCount(1);
+
+		// a half-typed name lists what it starts; making a new folder by that name comes last
+		await search.fill("~/code/al");
+		await expect(rows).toHaveCount(3);
+		await expect(rows.first()).toHaveAttribute("data-key", `dir:${join(code, "alpha")}`);
+		await expect(rows.last()).toHaveAttribute("data-key", "create-dir");
+		await launcher.screenshot({ path: testInfo.outputPath("launcher-path.png") });
+		await testInfo.attach("launcher-path", { path: testInfo.outputPath("launcher-path.png"), contentType: "image/png" });
+		await search.press("ArrowDown");
+		await search.press("Tab");
+		await expect(search).toHaveValue("~/code/alps/");
+		await expect(search).toBeFocused();
 		await expect(rows.first()).toHaveAttribute("data-key", "add-repo");
 		await search.press("Enter");
-		await expect(foot).toHaveText(/Couldn't add the directory: cwd does not exist/);
-		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("open a session \u00b7 pick a directory");
-
-		await search.fill(`${cwd}/`);
-		await expect(foot).not.toHaveClass(/is-error/);
-		await expect(rows.first()).toContainText("+ add directory");
-		await search.press("Enter");
-		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("typed-repo \u00b7 pick a session");
+		await expect(crumb).toHaveText("alps \u00b7 pick a session");
 		await expect(rows.first()).toHaveText(/new session/);
-		const repos = await page.evaluate(async () => (await (await fetch("/api/repos")).json()).repos);
-		expect(repos).toContain(cwd);
+		expect(await page.evaluate(async () => (await (await fetch("/api/repos")).json()).repos)).toContain(join(code, "alps"));
+
+		// saved folders say so, and open instead of adding again
+		await page.keyboard.press("Escape");
+		await search.fill("~/code/al");
+		await expect(row(`dir:${join(code, "alps")}`).locator(".cv-launch-badge")).toHaveText("saved");
+		await search.fill(join(code, "alps"));
+		await expect(row(`repo:${join(code, "alps")}`)).toHaveCount(1);
+		await expect(row("add-repo")).toHaveCount(0);
+
+		// a name nothing starts with: enter makes it, saves it and opens it
+		await search.fill("~/code/newproj");
+		await expect(rows).toHaveCount(1);
+		await expect(rows.first()).toHaveAttribute("data-key", "create-dir");
+		await expect(rows.first()).toContainText("+ create folder");
+		await search.press("Enter");
+		await expect(crumb).toHaveText("newproj \u00b7 pick a session");
+		expect((await stat(join(code, "newproj"))).isDirectory()).toBe(true);
+		expect(await page.evaluate(async () => (await (await fetch("/api/repos")).json()).repos)).toContain(join(code, "newproj"));
+
+		// nothing to offer outside home or under a missing folder, and the launcher says why
+		await page.keyboard.press("Escape");
+		await search.fill(join(root, "elsewhere"));
+		await expect(notes).toHaveText("new folders go inside your home folder");
+		await expect(rows).toHaveCount(0);
+		await search.fill("~/nope/deeper");
+		await expect(notes).toHaveText("no folder at ~/nope/");
+		await search.press("Enter");
+		await expect(crumb).toHaveText("open a session \u00b7 pick a directory");
+		await expect(stat(join(root, "elsewhere"))).rejects.toThrow();
+		await expect(stat(join(home, "nope"))).rejects.toThrow();
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the launcher suggests folders pi has been used in, and picking one adds it", async ({ page }, testInfo) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	// temp dirs are never suggested, so the used folder lives in this test's output dir
+	const used = testInfo.outputPath("used-repo");
+	await mkdir(used, { recursive: true });
+	const scratch = join(root, "scratch");
+	await mkdir(scratch);
+	await writeSessionFile(root, used, S1, "hello from a folder", "hi there");
+	await writeSessionFile(root, scratch, S2, "scratch work", "ok");
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=canvas`);
+		await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
+
+		await page.mouse.dblclick(700, 450);
+		const launcher = page.locator(".cv-tile.cv-launcher");
+		const search = launcher.locator(".cv-launch-search");
+		const suggested = launcher.locator(`.cv-launch-row[data-key="suggest:${used}"]`);
+		await expect(suggested.locator(".cv-launch-badge")).toHaveText("not added");
+		await expect(suggested.locator(".cv-launch-secondary")).toContainText(used);
+		await launcher.screenshot({ path: testInfo.outputPath("launcher-suggestions.png") });
+		await testInfo.attach("launcher-suggestions", { path: testInfo.outputPath("launcher-suggestions.png"), contentType: "image/png" });
+		await expect(launcher.locator(`.cv-launch-row[data-key="suggest:${scratch}"]`)).toHaveCount(0);
+
+		await search.fill("used-repo");
+		await expect(launcher.locator(".cv-launch-row")).toHaveCount(1);
+		await search.press("Enter");
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("used-repo \u00b7 pick a session");
+		await expect(launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`)).toContainText("hello from a folder");
+		expect(await page.evaluate(async () => (await (await fetch("/api/repos")).json()).repos)).toContain(used);
 
 		await page.keyboard.press("Escape");
-		await search.fill(cwd);
-		await expect(launcher.locator('.cv-launch-row[data-key="add-repo"]')).toHaveCount(0);
-		await expect(launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`)).toHaveCount(1);
+		await expect(launcher.locator(`.cv-launch-row[data-key="repo:${used}"]`)).toHaveCount(1);
+		await expect(suggested).toHaveCount(0);
 	} finally {
 		server.kill("SIGTERM");
 		await new Promise((resolve) => server.once("exit", resolve));

@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { addableDirectory, elsewhereBadge, isListable, matchesQuery, relativeTime, repoName, sessionLabel } from "../public/app/canvas/launcher.js";
+import {
+	addableDirectory,
+	elsewhereBadge,
+	filterDirEntries,
+	isCreatableName,
+	isListable,
+	isPathQuery,
+	matchesQuery,
+	readListing,
+	relativeTime,
+	repoName,
+	sessionLabel,
+	splitPathQuery,
+} from "../public/app/canvas/launcher.js";
 
 describe("canvas launcher", () => {
 	test("labels a session by name, else its first line, else its id", () => {
@@ -52,5 +65,50 @@ describe("canvas launcher", () => {
 		expect(addableDirectory("app", repos)).toBeNull();
 		expect(addableDirectory("~app", repos)).toBeNull();
 		expect(addableDirectory("", repos)).toBeNull();
+	});
+
+	test("a path query names a folder on the host; it lists through its last slash", () => {
+		expect(isPathQuery("/Users")).toBe(true);
+		expect(isPathQuery(" ~ ")).toBe(true);
+		expect(isPathQuery("~/code")).toBe(true);
+		expect(isPathQuery("~code")).toBe(false);
+		expect(isPathQuery("pi-web")).toBe(false);
+		expect(splitPathQuery("~/code/al")).toEqual({ prefix: "~/code/", leaf: "al" });
+		expect(splitPathQuery("~/code/")).toEqual({ prefix: "~/code/", leaf: "" });
+		expect(splitPathQuery("~")).toEqual({ prefix: "~/", leaf: "" });
+		expect(splitPathQuery("/")).toEqual({ prefix: "/", leaf: "" });
+		expect(isCreatableName("new-app")).toBe(true);
+		for (const bad of ["", ".", "..", "a/b"]) expect(isCreatableName(bad)).toBe(false);
+	});
+
+	test("subfolders narrow by prefix in any case, hidden ones only after a dot", () => {
+		const entries = [".git", "Alpha", "alps", "beta"].map((name) => ({ name, path: `/r/${name}` }));
+		expect(filterDirEntries(entries, "al").map((entry) => entry.name)).toEqual(["Alpha", "alps"]);
+		expect(filterDirEntries(entries, "").map((entry) => entry.name)).toEqual(["Alpha", "alps", "beta"]);
+		expect(filterDirEntries(entries, ".").map((entry) => entry.name)).toEqual([".git"]);
+	});
+
+	test("a listing answers its own query exactly and narrows for more typing in the same folder", () => {
+		const listing = {
+			query: "~/code/a",
+			path: "/me/code/a",
+			exists: false,
+			parent: "/me/code",
+			parentExists: true,
+			insideHome: true,
+			canCreate: true,
+			entries: [
+				{ name: "alpha", path: "/me/code/alpha" },
+				{ name: "alps", path: "/me/code/alps" },
+			],
+			truncated: false,
+		};
+		expect(readListing(listing, "~/code/a")).toEqual({ fresh: true, path: "/me/code/a", exists: false, canCreate: true, entries: listing.entries });
+		expect(readListing(listing, "~/code/alpha")).toEqual({ fresh: false, path: "/me/code/alpha", exists: true, canCreate: false, entries: [listing.entries[0]] });
+		expect(readListing(listing, "~/code/alx")).toEqual({ fresh: false, path: "/me/code/alx", exists: false, canCreate: true, entries: [] });
+		expect(readListing(listing, "~/code/")).toMatchObject({ fresh: false, path: "/me/code", exists: true, canCreate: false });
+		expect(readListing({ ...listing, insideHome: false, canCreate: false }, "~/code/alx")?.canCreate).toBe(false);
+		expect(readListing(listing, "~/other/a")).toBeNull();
+		expect(readListing(null, "~/code/a")).toBeNull();
 	});
 });

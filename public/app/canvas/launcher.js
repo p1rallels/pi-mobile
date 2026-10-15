@@ -1,14 +1,21 @@
-// The launcher tile: pick a directory (saved repos + the server's cwd, or type a path to add one), then a
-// session from it (newest first) or a new one. The host turns the launcher into that session's tile in place, or flies to the
-// tile when the session is already on the canvas. Answers a project trust prompt inline.
+// The launcher tile: pick a directory (saved repos + the server's cwd, folders pi has been used in, or a typed /path or ~/path
+// that browses the host's folders and adds or creates one), then a session from it (newest first) or a new one. The host turns
+// the launcher into that session's tile in place, or flies to the tile when the session is already on the canvas. Answers a
+// project trust prompt inline.
 import { createSessionWithTrust } from "../session/project_trust.js";
 
 const SESSION_LIMIT = 100;
+/** Typing within one folder waits this long before asking the host again; a new folder is asked for right away. */
+const DIR_DEBOUNCE_MS = 120;
 
 /**
  * @typedef {{ id: string, path: string | null, cwd: string, name?: string, firstMessage?: string, modified?: string, isRunning?: boolean, elsewhere?: { state: string }, forkLabel?: string }} SessionSummary
  * @typedef {{ kind: "created", sessionId: string, cwd: string } | { kind: "session", session: SessionSummary }} LauncherPick
- * @typedef {{ key: string, primary: string, secondary: string, badge?: string, pick: () => void }} Row
+ * @typedef {{ key: string, primary: string, secondary: string, badge?: string, muted?: boolean, pick: () => void, complete?: string }} Row
+ * @typedef {{ name: string, path: string }} DirEntry
+ * @typedef {{ query: string, path: string, exists: boolean, parent: string, parentExists: boolean, insideHome: boolean, canCreate: boolean, entries: DirEntry[], truncated: boolean }} DirListing
+ * @typedef {{ fresh: boolean, path: string, exists: boolean, canCreate: boolean, entries: DirEntry[] }} TypedFolder
+ * @typedef {{ cwd: string, modified?: string, sessions?: number }} RepoSuggestion
  */
 
 /** @param {string} cwd */
@@ -55,16 +62,76 @@ export function relativeTime(iso, now) {
 	return `${Math.round(hours / 24)}d ago`;
 }
 
+/** A directory query that names a folder on the host (/…, ~ or ~/…) instead of filtering the listed ones. @param {string} query */
+export const isPathQuery = (query) => /^(\/|~(\/|$))/.test(query.trim());
+
 /**
  * The folder a directory query asks to add: a path (/… or ~…) that isn't saved yet, else null.
  * @param {string} query @param {string[]} repos
  */
 export function addableDirectory(query, repos) {
 	const path = query.trim();
-	if (!/^(\/|~(\/|$))/.test(path)) return null;
+	if (!isPathQuery(path)) return null;
 	const bare = path.length > 1 ? path.replace(/\/+$/, "") : path;
 	return repos.includes(bare) ? null : path;
 }
+
+/**
+ * Where a typed path gets listed: the folder as typed through its last slash ("~" lists home), and the name typed after it.
+ * @param {string} query @returns {{ prefix: string, leaf: string }}
+ */
+export function splitPathQuery(query) {
+	const text = query.trim() === "~" ? "~/" : query.trim();
+	const cut = text.lastIndexOf("/") + 1;
+	return { prefix: text.slice(0, cut), leaf: text.slice(cut) };
+}
+
+/** A name the host can make one folder with (it checks again). @param {string} name */
+export const isCreatableName = (name) => name.length > 0 && name.length <= 255 && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
+
+/** Subfolders starting with the typed name in any case; hidden ones only once it starts with a dot. @param {DirEntry[]} entries @param {string} leaf */
+export function filterDirEntries(entries, leaf) {
+	const lower = leaf.toLowerCase();
+	return entries.filter((entry) => (leaf.startsWith(".") || !entry.name.startsWith(".")) && entry.name.toLowerCase().startsWith(lower));
+}
+
+/**
+ * What the last listing says about a path typed in the same folder: exact when it answered this very query, else narrowed on
+ * the spot so the rows keep up with typing until the host answers. Null when it listed another folder.
+ * @param {DirListing | null} listing @param {string} query @returns {TypedFolder | null}
+ */
+export function readListing(listing, query) {
+	const typed = query.trim();
+	if (!listing) return null;
+	const { prefix, leaf } = splitPathQuery(typed);
+	if (splitPathQuery(listing.query).prefix !== prefix) return null;
+	const entries = filterDirEntries(listing.entries, leaf);
+	if (listing.query === typed) return { fresh: true, path: listing.path, exists: listing.exists, canCreate: listing.canCreate, entries };
+	const exists = leaf === "" ? listing.parentExists : listing.entries.some((entry) => entry.name === leaf);
+	const path = leaf === "" ? listing.parent : `${listing.parent.replace(/\/+$/, "")}/${leaf}`;
+	return { fresh: false, path, exists, canCreate: !exists && listing.parentExists && listing.insideHome && isCreatableName(leaf), entries };
+}
+
+/** @param {string} query @param {any} data @returns {DirListing} */
+function toListing(query, data) {
+	const entries = Array.isArray(data?.entries) ? data.entries : [];
+	return {
+		query,
+		path: typeof data?.path === "string" ? data.path : "",
+		exists: data?.exists === true,
+		parent: typeof data?.parent === "string" ? data.parent : "",
+		parentExists: data?.parentExists === true,
+		insideHome: data?.insideHome === true,
+		canCreate: data?.canCreate === true,
+		entries: entries
+			.filter((/** @type {any} */ entry) => typeof entry?.name === "string" && typeof entry?.path === "string")
+			.map((/** @type {DirEntry} */ entry) => ({ name: entry.name, path: entry.path })),
+		truncated: data?.truncated === true,
+	};
+}
+
+/** @param {string} path */
+const withSlash = (path) => (path.endsWith("/") ? path : `${path}/`);
 
 /** Every word of the query appears somewhere in the text (case-insensitive). @param {string} query @param {string} text */
 export function matchesQuery(query, text) {
@@ -116,12 +183,23 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 	let view = { step: "repos" };
 	/** @type {string[]} */
 	let repos = [];
+	let reposLoaded = false;
+	/** @type {RepoSuggestion[]} */
+	let suggestions = [];
+	/** @type {DirListing | null} */
+	let dirs = null;
+	let dirsPending = false;
+	let dirSeq = 0;
+	/** @type {ReturnType<typeof setTimeout> | null} */
+	let dirTimer = null;
 	/** @type {SessionSummary[]} */
 	let sessions = [];
 	let hasMore = false;
 	/** @type {Row[]} */
 	let rows = [];
 	let active = 0;
+	/** Arrow keys moved the highlight since the query last changed, so answers from the host keep it on that row. */
+	let navigated = false;
 	let loading = false;
 	let busy = false;
 	let generation = 0;
@@ -139,7 +217,79 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 
 	function hint() {
 		if (view.step === "trust") return "enter answers · esc cancels";
-		return view.step === "repos" ? "↑↓ · enter opens · a /path adds it · esc closes" : "↑↓ · enter opens · esc goes back";
+		if (view.step === "sessions") return "↑↓ · enter opens · esc goes back";
+		return isPathQuery(search.value) ? "↑↓ · enter opens · tab completes · esc closes" : "↑↓ · enter opens · / or ~/ browses folders · esc closes";
+	}
+
+	/** @param {string} cwd @param {string} typed */
+	const savedFolderRow = (cwd, typed) => ({ key: `repo:${cwd}`, primary: repoName(cwd), secondary: cwd, badge: "saved", pick: () => void openRepo(cwd), complete: withSlash(typed) });
+
+	/** @param {string} typed */
+	const addRow = (typed) => ({ key: "add-repo", primary: "+ add directory", secondary: typed, pick: () => void saveDirectory(typed, false), complete: withSlash(typed) });
+
+	/** @param {DirEntry} entry @param {string} prefix @returns {Row} */
+	function folderRow(entry, prefix) {
+		const saved = repos.includes(entry.path);
+		return {
+			key: `dir:${entry.path}`,
+			primary: entry.name,
+			secondary: `${prefix}${entry.name}`,
+			badge: saved ? "saved" : undefined,
+			pick: () => void (saved ? openRepo(entry.path) : saveDirectory(entry.path, false)),
+			complete: `${prefix}${entry.name}/`,
+		};
+	}
+
+	/**
+	 * A typed path: the folder itself first (open it when saved, add it when it exists), then the subfolders that continue it,
+	 * then "+ create folder" when it could be made, so enter on a half-typed name picks the folder it starts, never a new one.
+	 * @param {string} query @returns {Row[]}
+	 */
+	function pathRows(query) {
+		const { prefix, leaf } = splitPathQuery(query);
+		// "." and ".." are the start of a hidden name or a step up, not a folder to add
+		const namesFolder = leaf !== "." && leaf !== "..";
+		const found = readListing(dirs, query);
+		if (!found) {
+			const addable = addableDirectory(query, repos);
+			if (!namesFolder) return [];
+			return [addable === null ? savedFolderRow(query.length > 1 ? query.replace(/\/+$/, "") : query, query) : addRow(addable)];
+		}
+		const self = found.exists && namesFolder ? (repos.includes(found.path) ? savedFolderRow(found.path, query) : addRow(query)) : null;
+		const children = found.entries.filter((entry) => !(self && entry.name === leaf)).map((entry) => folderRow(entry, prefix));
+		const create = found.canCreate ? [{ key: "create-dir", primary: "+ create folder", secondary: query, pick: () => void saveDirectory(query, true) }] : [];
+		return [...(self ? [self] : []), ...children, ...create];
+	}
+
+	/** What the rows can't say about a typed path. @param {string} query @param {number} shown */
+	function pathNote(query, shown) {
+		const found = readListing(dirs, query);
+		if (!dirs || !found?.fresh) return dirsPending && shown === 0 ? "looking…" : "";
+		const { prefix, leaf } = splitPathQuery(query);
+		if (!dirs.parentExists) return `no folder at ${prefix}`;
+		if (!found.exists && !found.canCreate && !dirs.insideHome && isCreatableName(leaf)) return "new folders go inside your home folder";
+		if (dirs.truncated) return `showing the first ${String(dirs.entries.length)}; keep typing to narrow down`;
+		return "";
+	}
+
+	/** Saved folders, then folders pi has been used in that aren't saved yet. @param {string} query @returns {Row[]} */
+	function folderRows(query) {
+		const now = Date.now();
+		const saved = repos
+			.filter((cwd) => matchesQuery(query, cwd))
+			.map((cwd) => ({ key: `repo:${cwd}`, primary: repoName(cwd), secondary: cwd, pick: () => void openRepo(cwd), complete: withSlash(cwd) }));
+		const used = suggestions
+			.filter((suggestion) => !repos.includes(suggestion.cwd) && matchesQuery(query, suggestion.cwd))
+			.map((suggestion) => ({
+				key: `suggest:${suggestion.cwd}`,
+				primary: repoName(suggestion.cwd),
+				secondary: [relativeTime(suggestion.modified, now), suggestion.cwd].filter(Boolean).join(" · "),
+				badge: "not added",
+				muted: true,
+				pick: () => void saveDirectory(suggestion.cwd, false),
+				complete: withSlash(suggestion.cwd),
+			}));
+		return [...saved, ...used];
 	}
 
 	/** @returns {Row[]} */
@@ -153,14 +303,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 				pick: () => answerTrust(option.choice),
 			}));
 		}
-		if (view.step === "repos") {
-			const addable = addableDirectory(query, repos);
-			const add = addable === null ? [] : [{ key: "add-repo", primary: "+ add directory", secondary: addable, pick: () => void addDirectory(addable) }];
-			const saved = repos
-				.filter((cwd) => matchesQuery(query, cwd))
-				.map((cwd) => ({ key: `repo:${cwd}`, primary: repoName(cwd), secondary: cwd, pick: () => void openRepo(cwd) }));
-			return [...add, ...saved];
-		}
+		if (view.step === "repos") return isPathQuery(query) ? pathRows(query) : folderRows(query);
 		const { cwd } = view;
 		const now = Date.now();
 		const fresh = { key: "new", primary: "+ new session", secondary: cwd, pick: () => void startSession(cwd) };
@@ -176,15 +319,31 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		return [fresh, ...listed];
 	}
 
+	/** @param {number} shown */
+	function notes(shown) {
+		const query = search.value.trim();
+		if (view.step === "repos" && isPathQuery(query)) {
+			const note = pathNote(query, shown);
+			return note ? [note] : shown === 0 ? ["nothing matches"] : [];
+		}
+		const waiting = view.step === "repos" ? !reposLoaded : loading;
+		const found = waiting ? ["loading…"] : shown === 0 ? [query ? "nothing matches" : "nothing here yet"] : [];
+		const more = view.step === "sessions" && hasMore && !loading ? [`showing the newest ${SESSION_LIMIT}; filter to narrow down`] : [];
+		return [...found, ...more];
+	}
+
+	/** Rebuilds the rows; the highlight is the first row unless arrow keys moved it, then it stays on that row while it's listed. */
 	function render() {
 		if (destroyed) return;
 		back.hidden = view.step === "repos";
 		crumb.textContent = view.step === "repos" ? "open a session · pick a directory" : view.step === "trust" ? "trust this folder?" : `${repoName(view.cwd)} · pick a session`;
 		crumb.title = view.step === "repos" ? "" : view.cwd;
-		search.placeholder = view.step === "repos" ? "filter directories, or type a /path to add one" : view.step === "trust" ? "" : "filter sessions";
+		search.placeholder = view.step === "repos" ? "filter directories, or type a /path or ~/path" : view.step === "trust" ? "" : "filter sessions";
 		search.hidden = view.step === "trust";
+		const activeKey = navigated ? rows[active]?.key : undefined;
 		rows = buildRows();
-		active = Math.min(Math.max(0, active), Math.max(0, rows.length - 1));
+		const kept = activeKey === undefined ? -1 : rows.findIndex((row) => row.key === activeKey);
+		active = kept >= 0 ? kept : navigated ? Math.min(Math.max(0, active), Math.max(0, rows.length - 1)) : 0;
 		const nodes = rows.map((row, index) => {
 			const button = h("button", `cv-launch-row${index === active ? " is-active" : ""}`);
 			button.type = "button";
@@ -196,7 +355,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 			text.append(h("span", "cv-launch-primary", row.primary));
 			if (row.secondary) text.append(h("span", "cv-launch-secondary", row.secondary));
 			button.append(text);
-			if (row.badge) button.append(h("span", "cv-launch-badge", row.badge));
+			if (row.badge) button.append(h("span", `cv-launch-badge${row.muted ? " is-muted" : ""}`, row.badge));
 			button.addEventListener("click", () => row.pick());
 			return button;
 		});
@@ -206,9 +365,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		} else {
 			list.replaceChildren(...nodes);
 		}
-		if (loading) list.append(h("div", "cv-launch-note", "loading…"));
-		else if (rows.length === 0) list.append(h("div", "cv-launch-note", search.value.trim() ? "nothing matches" : "nothing here yet"));
-		if (view.step === "sessions" && hasMore && !loading) list.append(h("div", "cv-launch-note", `showing the newest ${SESSION_LIMIT}; filter to narrow down`));
+		list.append(...notes(rows.length).map((text) => h("div", "cv-launch-note", text)));
 		if (!foot.classList.contains("is-error")) setFoot(hint());
 	}
 
@@ -216,51 +373,114 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 	const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
 	async function loadRepos() {
-		const mine = ++generation;
-		loading = true;
-		render();
+		void loadSuggestions();
 		try {
 			const data = await api.getJson("/api/repos");
-			if (mine !== generation) return;
+			if (destroyed) return;
 			repos = Array.isArray(data?.repos) ? data.repos.filter((/** @type {unknown} */ cwd) => typeof cwd === "string") : [];
-			setFoot(hint());
 		} catch (error) {
-			if (mine !== generation) return;
+			if (destroyed) return;
 			setFoot(`Couldn't list directories: ${messageOf(error)}`, "error");
 		} finally {
-			if (mine === generation) {
-				loading = false;
-				render();
-			}
+			reposLoaded = true;
+			render();
 		}
 	}
 
-	/** Saves a typed folder on the host, then opens it like a saved one. @param {string} path */
-	async function addDirectory(path) {
+	async function loadSuggestions() {
+		try {
+			const data = await api.getJson("/api/repos/suggestions");
+			if (destroyed) return;
+			suggestions = (Array.isArray(data?.suggestions) ? data.suggestions : []).filter((/** @type {any} */ suggestion) => typeof suggestion?.cwd === "string");
+			render();
+		} catch {
+			// only suggestions: the saved folders list without them
+		}
+	}
+
+	/** @param {string} query */
+	async function loadDirs(query) {
+		const mine = ++dirSeq;
+		try {
+			const data = await api.getJson(`/api/dirs?${new URLSearchParams({ path: query }).toString()}`);
+			if (mine !== dirSeq || destroyed) return;
+			dirs = toListing(query, data);
+			dirsPending = false;
+		} catch (error) {
+			if (mine !== dirSeq || destroyed) return;
+			dirsPending = false;
+			setFoot(`Couldn't list ${query}: ${messageOf(error)}`, "error");
+		}
+		render();
+	}
+
+	function cancelDirs() {
+		if (dirTimer) clearTimeout(dirTimer);
+		dirTimer = null;
+		dirSeq += 1;
+		dirsPending = false;
+	}
+
+	/** Asks the host about a typed path: right away for a new folder, after a pause for more of a name in the same one. */
+	function scheduleDirs() {
+		const query = search.value.trim();
+		if (view.step !== "repos" || !isPathQuery(query) || dirs?.query === query) {
+			cancelDirs();
+			return;
+		}
+		if (dirTimer) clearTimeout(dirTimer);
+		dirTimer = null;
+		dirsPending = true;
+		if (readListing(dirs, query) === null) {
+			void loadDirs(query);
+			return;
+		}
+		dirTimer = setTimeout(() => {
+			dirTimer = null;
+			void loadDirs(query);
+		}, DIR_DEBOUNCE_MS);
+	}
+
+	function queryChanged() {
+		active = 0;
+		navigated = false;
+		if (foot.classList.contains("is-error")) setFoot(hint());
+		scheduleDirs();
+		render();
+	}
+
+	/**
+	 * Saves a folder on the host (making it first with create: one new folder inside home), then opens it like a saved one.
+	 * @param {string} path @param {boolean} create
+	 */
+	async function saveDirectory(path, create) {
 		if (busy) return;
 		busy = true;
-		setFoot("adding the directory…");
+		setFoot(create ? "creating the folder…" : "adding the directory…");
 		render();
 		try {
-			const result = await api.postJson("/api/repos", { cwd: path });
+			const result = await api.postJson("/api/repos", create ? { cwd: path, create: true } : { cwd: path });
 			if (destroyed) return;
 			const cwd = typeof result?.cwd === "string" ? result.cwd : path;
 			if (!repos.includes(cwd)) repos = [...repos, cwd].sort((a, b) => a.localeCompare(b));
+			dirs = null;
 			busy = false;
 			await openRepo(cwd);
 		} catch (error) {
 			if (destroyed) return;
 			busy = false;
-			setFoot(`Couldn't add the directory: ${messageOf(error)}`, "error");
+			setFoot(`Couldn't ${create ? "create the folder" : "add the directory"}: ${messageOf(error)}`, "error");
 			render();
 		}
 	}
 
 	/** @param {string} cwd */
 	async function openRepo(cwd) {
+		cancelDirs();
 		view = { step: "sessions", cwd };
 		search.value = "";
 		active = 0;
+		navigated = false;
 		sessions = [];
 		hasMore = false;
 		onTitle(`${repoName(cwd)} · new tile`);
@@ -296,6 +516,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		};
 		view = { step: "trust", cwd };
 		active = 0;
+		navigated = false;
 		busy = false;
 		render();
 		return new Promise((resolve) => {
@@ -344,8 +565,11 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		view = { step: "repos" };
 		search.value = "";
 		active = 0;
+		navigated = false;
 		generation += 1;
 		loading = false;
+		cancelDirs();
+		dirs = null;
 		onTitle("new tile");
 		setFoot(hint());
 		render();
@@ -355,6 +579,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 	/** @param {number} delta */
 	function move(delta) {
 		if (rows.length === 0) return;
+		navigated = true;
 		active = (active + delta + rows.length) % rows.length;
 		for (const [index, node] of [...list.querySelectorAll(".cv-launch-row")].entries()) {
 			node.classList.toggle("is-active", index === active);
@@ -363,11 +588,17 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		}
 	}
 
-	search.addEventListener("input", () => {
-		active = 0;
-		if (foot.classList.contains("is-error")) setFoot(hint());
-		render();
-	});
+	/** Tab puts the highlighted folder in the box (with a trailing slash) to list what's inside it. @param {KeyboardEvent} event */
+	function complete(event) {
+		const completion = rows[active]?.complete;
+		if (!completion && !isPathQuery(search.value)) return;
+		event.preventDefault();
+		if (!completion || completion === search.value) return;
+		search.value = completion;
+		queryChanged();
+	}
+
+	search.addEventListener("input", queryChanged);
 	search.addEventListener("keydown", (event) => {
 		if (event.isComposing) return;
 		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -376,6 +607,8 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		} else if (event.key === "Enter") {
 			event.preventDefault();
 			if (!busy) rows[active]?.pick();
+		} else if (event.key === "Tab" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && view.step === "repos") {
+			complete(event);
 		} else if (event.key === "Backspace" && !search.value && view.step === "sessions") {
 			event.preventDefault();
 			goBack();
@@ -406,6 +639,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		destroy() {
 			destroyed = true;
 			generation += 1;
+			cancelDirs();
 			answerTrust(null);
 		},
 	};

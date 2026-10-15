@@ -215,6 +215,7 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
 .cv-launch-primary, .cv-launch-secondary { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .cv-launch-secondary { color: #707078; font-size: 11.5px; }
 .cv-launch-badge { flex: none; padding: 1px 7px; border: 1px solid #29403e; border-radius: 999px; color: #8abeb7; font-size: 10.5px; }
+.cv-launch-badge.is-muted { border-color: #2c2c34; color: #808088; }
 .cv-launch-note { padding: 6px 9px; color: #707078; font-size: 12px; white-space: pre-wrap; }
 .cv-launch-foot { flex: none; color: #505058; font-size: 11px; }
 .cv-launch-foot.is-error { color: #cc6666; }
