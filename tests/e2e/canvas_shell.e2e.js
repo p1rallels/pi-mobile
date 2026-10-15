@@ -350,7 +350,7 @@ async function writeMidTurnSession(root, cwd, id, prompt) {
 const toolResultLine = (id, parentId, text) =>
 	`${JSON.stringify({ type: "message", id, parentId, timestamp: new Date().toISOString(), message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text }], isError: false, timestamp: Date.now() } })}\n`;
 
-test("a session another pi is writing lands as a tile that follows it, keeps following after a trip offscreen, and stops it from the tile menu", async ({ page }) => {
+test("a session another pi is writing lands as a tile that follows it, keeps following after a trip offscreen, and stops it from the tile menu", async ({ page }, testInfo) => {
 	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
 	const cwd = join(root, "repo");
 	await mkdir(cwd);
@@ -374,9 +374,11 @@ test("a session another pi is writing lands as a tile that follows it, keeps fol
 		await expect(t.locator(".cv-pill")).toHaveText("elsewhere");
 		await expect(t).toHaveClass(/cv-working/);
 		await expect(t.locator("textarea")).toBeDisabled();
-		await expect(t.locator(".footer-line-1")).toContainText(`running elsewhere (pi ${writer.pid})`);
+		await expect(t.locator("textarea")).toHaveAttribute("placeholder", /Running elsewhere, read-only/);
 		await appendFile(path2, toolResultLine("t1", "a1", "1\n2\n3"));
 		await expect(t.locator(".tool-box")).toContainText("1\n2\n3");
+		await page.screenshot({ path: testInfo.outputPath("follow-tile.png") });
+		await testInfo.attach("follow-tile", { path: testInfo.outputPath("follow-tile.png"), contentType: "image/png" });
 
 		// offscreen it lets go of its stream; a status change on the host meanwhile must not turn it dormant
 		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: -100_000, y: 0, scale: 0.6 }));
@@ -394,6 +396,7 @@ test("a session another pi is writing lands as a tile that follows it, keeps fol
 		// the tile menu stops the pi writing it, then continues the session here
 		await t.locator(".cv-ctl-more").click();
 		await expect(page.locator(".menu-item .primary")).toHaveText(["Stop the pi writing it", "Remove from canvas"]);
+		await expect(page.locator(".menu-item", { hasText: "Stop the pi writing it" }).locator(".secondary")).toHaveText(`pi ${writer.pid} · same as esc`);
 		await page.locator(".menu-item", { hasText: "Stop the pi writing it" }).click();
 		await exited(writer);
 		await expect(t.locator(".notice-text").last()).toContainText(`Stopped pi (pid ${writer.pid})`);
