@@ -10,7 +10,7 @@ import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
-import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
+import { AmbiguousWritersError, PiWebRuntime, RunningElsewhereError, type FollowClient, type SessionClient } from "./session-runtime.ts";
 import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PING_INTERVAL_MS } from "./sse.ts";
 import type {
 	ApiActiveSessionsResponse,
@@ -26,10 +26,14 @@ import type {
 	ApiOkResponse,
 	ApiProjectTrustRequiredResponse,
 	ApiReleaseRequest,
+	ApiRunningElsewhereResponse,
 	ApiSessionState,
+	ApiStopElsewhereRequest,
+	ApiStopElsewhereResponse,
 	ApiTakeoverRequest,
 	ApiTranscriptPageResponse,
 	ApiTripwireAlertsResponse,
+	FollowSseEvent,
 	SseEvent,
 } from "./types.ts";
 
@@ -500,7 +504,7 @@ function createSseStream(signal: AbortSignal) {
 		keepAlive = null;
 	};
 
-	const send = (event: SseEvent, id?: string) => {
+	const send = (event: SseEvent | FollowSseEvent, id?: string) => {
 		if (!controller) return;
 		controller.enqueue(encoder.encode(sseEventFrame(event, id)));
 	};
@@ -570,7 +574,14 @@ function faceIdFreshnessFor(method: string, pathname: string): number | null {
 	const sessionRoute = parseSessionRoute(pathname);
 	if (!sessionRoute) return null;
 	if (sessionRoute.action === "release") return FACEID_FRESH_TTL_MS;
-	if (sessionRoute.action === "command" || sessionRoute.action === "takeover" || sessionRoute.action === "ui-response") return FACEID_COMMAND_TTL_MS;
+	if (
+		sessionRoute.action === "command" ||
+		sessionRoute.action === "takeover" ||
+		sessionRoute.action === "ui-response" ||
+		sessionRoute.action === "stop-elsewhere"
+	) {
+		return FACEID_COMMAND_TTL_MS;
+	}
 	return null;
 }
 
@@ -933,7 +944,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		}
 
 		if (req.method === "GET" && url.pathname === "/api/active-sessions") {
-			const sessions = runtime.listActiveSessions();
+			const sessions = await runtime.listActiveSessions();
 			const body: ApiActiveSessionsResponse = { sessions };
 			return json(body, 200);
 		}
@@ -1049,6 +1060,10 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 					const body: ApiProjectTrustRequiredResponse = { error: "Project trust required", projectTrust: error.prompt };
 					return json(body, 409);
 				}
+				if (error instanceof RunningElsewhereError) {
+					const body: ApiRunningElsewhereResponse = { error: "Another pi is still writing this session", elsewhere: error.elsewhere };
+					return json(body, 409);
+				}
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "too_many_active_sessions") return errorResponse("Too many active sessions", 429);
 				if (message === "session_already_running") return errorResponse("Session already running", 409);
@@ -1091,6 +1106,54 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "unknown_entry") return errorResponse("Unknown transcript entry", 404);
 				return errorResponse("Session not running", 404);
+			}
+		}
+
+		if (req.method === "GET" && action === "follow") {
+			if (!resolveClientCookie(req)) return errorResponse("Missing browser session. Reload the page.", 401);
+			const path = url.searchParams.get("path")?.trim();
+			if (!path) return errorResponse("Missing session path", 400);
+			const stream = createSseStream(req.signal);
+			const follower: FollowClient = { send: stream.send, close: stream.close };
+			const since = resolveResumeCursor(req.headers.get("last-event-id"), url.searchParams.get("since"));
+			try {
+				const { init, cursor, stop } = await runtime.followSession(sessionId, path, follower, since);
+				if (req.signal.aborted) {
+					stop();
+				} else {
+					req.signal.addEventListener("abort", stop, { once: true });
+				}
+				stream.send(init, cursor);
+			} catch (error) {
+				stream.close();
+				const message = error instanceof Error ? error.message : String(error);
+				if (message.startsWith("session_path_not_allowed")) return errorResponse("Session path not allowed", 403);
+				return errorResponse("Session file not found", 404);
+			}
+			return stream.response;
+		}
+
+		if (req.method === "POST" && action === "stop-elsewhere") {
+			const limited = commandLimiter.check(`command:${requesterId}`);
+			if (limited) return rateLimitResponse(limited);
+			if (!resolveClientCookie(req)) return errorResponse("Missing browser session. Reload the page.", 401);
+			try {
+				const raw = (await requireJsonBody(req, COMMAND_JSON_BODY_LIMIT)) as Partial<ApiStopElsewhereRequest>;
+				if (typeof raw.path !== "string" || !raw.path.trim()) return errorResponse("Missing session path", 400);
+				const { stopped } = await runtime.stopElsewhere(sessionId, raw.path);
+				const body: ApiStopElsewhereResponse = { ok: true, stopped };
+				return json(body, 200);
+			} catch (error) {
+				if (error instanceof AmbiguousWritersError) {
+					return errorResponse(`Several pi processes work in that folder (pids ${error.pids.join(", ")}); stop the one writing this session yourself.`, 409);
+				}
+				const message = error instanceof Error ? error.message : String(error);
+				if (message.startsWith("session_path_not_allowed")) return errorResponse("Session path not allowed", 403);
+				if (message === "session_hosted_here") return errorResponse("pi-web hosts this session; abort it instead", 409);
+				if (message === "writer_still_running") return errorResponse("The pi writing this session didn't stop", 409);
+				if (message === "processes_unavailable") return errorResponse("Can't list processes on this host", 409);
+				if (message === "session_file_missing" || message === "session_path_mismatch") return errorResponse("Session file not found", 404);
+				return errorResponse(message, 400);
 			}
 		}
 

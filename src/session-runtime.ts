@@ -10,11 +10,12 @@ import {
 	type AgentSessionEvent,
 	type InlineExtension,
 	type PromptOptions,
+	type SessionEntry,
 	type ToolCallEvent,
 	type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, statSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
 import { createExtensionUiBridge, type ApiExtensionUiResponse, type ExtensionUiBridge } from "./extension-ui.ts";
@@ -29,14 +30,28 @@ import {
 	type ApiProjectTrustChoice,
 	type ProjectTrustMode,
 } from "./project-trust.ts";
-import { createSessionIndex, type SessionSummary } from "./session-index.ts";
-import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
+import {
+	classifyElsewhere,
+	createProcessCache,
+	listPiProcesses,
+	stopProcess,
+	writersOf,
+	type ListPiProcesses,
+	type PiProcess,
+} from "./outside-writers.ts";
+import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
+import { createSessionIndex, sessionDirForCwd, type SessionSummary } from "./session-index.ts";
+import { isOpenTurn, turnOfEntries, type Turn } from "./session-turn.ts";
+import { announcedEntryId, entryTranscriptMessages, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
 import { TripwireService, type TripwireMode } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
 import type {
 	ApiCommandRequest,
 	ApiCommandResponse,
 	ApiCreateSessionRequest,
+	ApiElsewhere,
+	ApiFollowSession,
+	ApiFollowState,
 	ApiPromptDisposition,
 	ApiModelInfo,
 	ApiResyncTranscript,
@@ -46,6 +61,7 @@ import type {
 	ClientRole,
 	ApiSessionPatch,
 	ApiTripwireAlertsResponse,
+	FollowSseEvent,
 	SseEvent,
 } from "./types.ts";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
@@ -59,6 +75,25 @@ export interface SessionClient {
 }
 
 export type InitSseEvent = Extract<SseEvent, { type: "init" }>;
+
+export interface FollowClient {
+	send(event: FollowSseEvent, id?: string): void;
+	close(): void;
+}
+
+/** Refused resume: another process is writing the session and hasn't gone quiet. */
+export class RunningElsewhereError extends Error {
+	constructor(readonly elsewhere: ApiElsewhere) {
+		super("running_elsewhere");
+	}
+}
+
+/** Several pi processes work in the session's folder and nothing says which one writes it. */
+export class AmbiguousWritersError extends Error {
+	constructor(readonly pids: number[]) {
+		super("ambiguous_writers");
+	}
+}
 
 interface RunningSession {
 	session: AgentSession;
@@ -88,7 +123,17 @@ interface PiWebRuntimeOptions {
 	modelRuntime?: ModelRuntime;
 	projectTrustMode?: ProjectTrustMode;
 	tripwire?: TripwireMode;
+	/** pi processes outside pi-web, for sessions another process is writing; tests pass a fake. */
+	listPiProcesses?: ListPiProcesses;
+	stopPiProcess?: (proc: PiProcess) => Promise<"stopped" | "killed" | "alive">;
+	/** How long one process listing serves every caller. */
+	processCacheMs?: number;
+	followPollMs?: number;
 }
+
+const DEFAULT_FOLLOW_POLL_MS = 700;
+/** How often a follower re-checks who is left to write the file when nothing new arrived. */
+const FOLLOW_STATE_CHECK_MS = 2_000;
 
 interface DetachedSession {
 	sessionId: string;
@@ -240,12 +285,46 @@ function buildState(session: AgentSession, cwd: string, projectTrust: ApiProject
 	return { ...buildStatus(session, cwd, projectTrust), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
 }
 
-function buildResyncTranscript(session: AgentSession, since: string | undefined): ApiResyncTranscript {
-	const branch = session.sessionManager.getBranch();
+function resyncTranscript(branch: readonly SessionEntry[], since: string | undefined): ApiResyncTranscript {
 	const missing = since === undefined ? null : transcriptSince(branch, since, INITIAL_TRANSCRIPT_LIMITS);
 	if (since !== undefined && missing !== null) return { mode: "append", since, messages: missing };
 	const page = transcriptPage(branch, INITIAL_TRANSCRIPT_LIMITS);
 	return { mode: "replace", messages: page.messages, hasOlder: page.hasOlder };
+}
+
+function buildResyncTranscript(session: AgentSession, since: string | undefined): ApiResyncTranscript {
+	return resyncTranscript(session.sessionManager.getBranch(), since);
+}
+
+function sameFollowState(a: ApiFollowState, b: ApiFollowState): boolean {
+	return a.state === b.state && a.turn === b.turn && a.lastWrite === b.lastWrite && String(a.writers) === String(b.writers);
+}
+
+function pidsOf(writers: readonly PiProcess[] | null): number[] | null {
+	return writers === null ? null : writers.map((writer) => writer.pid);
+}
+
+async function listSessionFiles(dir: string): Promise<string[]> {
+	try {
+		return (await readdir(dir)).filter((name) => name.endsWith(".jsonl")).map((name) => join(dir, name));
+	} catch {
+		return [];
+	}
+}
+
+/** Files in `dir` written at or after `sinceMs`: only those can belong to a process that started then. */
+async function sessionFilesWrittenSince(dir: string, sinceMs: number): Promise<string[]> {
+	const files = await listSessionFiles(dir);
+	const recent = await Promise.all(
+		files.map(async (path) => {
+			try {
+				return (await stat(path)).mtimeMs >= sinceMs ? path : null;
+			} catch {
+				return null;
+			}
+		}),
+	);
+	return recent.filter((path): path is string => path !== null);
 }
 
 function buildStatus(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust): ApiSessionStatus {
@@ -358,7 +437,7 @@ function promptUntilAccepted(
 	});
 }
 
-function serializeSessionSummary(entry: SessionSummary, isRunning: boolean): ApiSessionSummary {
+function serializeSessionSummary(entry: SessionSummary, isRunning: boolean, elsewhere?: ApiElsewhere): ApiSessionSummary {
 	return {
 		id: entry.id,
 		path: entry.path,
@@ -369,6 +448,7 @@ function serializeSessionSummary(entry: SessionSummary, isRunning: boolean): Api
 		modified: entry.modified,
 		messageCount: entry.messageCount,
 		isRunning,
+		...(elsewhere ? { elsewhere } : {}),
 	};
 }
 
@@ -392,8 +472,15 @@ export class PiWebRuntime {
 	private projectTrustMode: ProjectTrustMode;
 	private tripwireMode: TripwireMode;
 	private trustStore = new ProjectTrustStore(this.agentDir);
+	private piProcesses: ReturnType<typeof createProcessCache>;
+	private stopPiProcess: (proc: PiProcess) => Promise<"stopped" | "killed" | "alive">;
+	private followPollMs: number;
+	private followers = new Set<{ stop(): void }>();
 
 	constructor(options: PiWebRuntimeOptions = {}) {
+		this.piProcesses = createProcessCache(options.listPiProcesses ?? (() => listPiProcesses()), options.processCacheMs);
+		this.stopPiProcess = options.stopPiProcess ?? ((proc) => stopProcess(proc));
+		this.followPollMs = options.followPollMs ?? DEFAULT_FOLLOW_POLL_MS;
 		this.maxRunningSessions = options.maxRunningSessions ?? 24;
 		this.maxClientsPerSession = options.maxClientsPerSession ?? 8;
 		this.idleSessionTtlMs = options.idleSessionTtlMs ?? DEFAULT_IDLE_SESSION_TTL_MS;
@@ -535,8 +622,53 @@ export class PiWebRuntime {
 		}
 	}
 
-	listActiveSessions(): ApiSessionSummary[] {
-		const sessions: ApiSessionSummary[] = [];
+	private isHostedPath(path: string): boolean {
+		const resolved = resolve(path);
+		return this.runningByPath.has(resolved) || this.resumingByPath.has(resolved);
+	}
+
+	/** Sessions pi-web isn't hosting whose last message left the turn open, with who may still be writing them. */
+	private async elsewhereOf(summaries: readonly SessionSummary[]): Promise<Map<string, ApiElsewhere>> {
+		const open = summaries.filter((summary) => isOpenTurn(summary.turn) && !this.isHostedPath(summary.path));
+		if (open.length === 0) return new Map();
+		const processes = await this.piProcesses.list();
+		const now = Date.now();
+		return new Map(
+			open.flatMap((summary): Array<[string, ApiElsewhere]> => {
+				const lastWriteMs = Date.parse(summary.lastWrite);
+				const writers = processes === null ? null : writersOf(processes, { cwd: summary.cwd, lastWriteMs });
+				const state = classifyElsewhere(summary.turn, lastWriteMs, writers, now);
+				return state ? [[summary.path, { state, turn: summary.turn, lastWrite: summary.lastWrite, writers: pidsOf(writers) }]] : [];
+			}),
+		);
+	}
+
+	/**
+	 * Sessions a pi outside pi-web is in the middle of: only the folders pi processes work in can hold one,
+	 * and only files written since the oldest of those processes started.
+	 */
+	private async listRunningElsewhere(): Promise<ApiSessionSummary[]> {
+		const processes = await this.piProcesses.list();
+		if (!processes || processes.length === 0) return [];
+		const sessionsDir = join(this.agentDir, "sessions");
+		const oldestStartByDir = new Map<string, number>();
+		for (const proc of processes) {
+			const dir = sessionDirForCwd(sessionsDir, proc.cwd);
+			oldestStartByDir.set(dir, Math.min(oldestStartByDir.get(dir) ?? Number.POSITIVE_INFINITY, proc.startedAtMs));
+		}
+		const paths = (await Promise.all([...oldestStartByDir].map(([dir, sinceMs]) => sessionFilesWrittenSince(dir, sinceMs - 5_000)))).flat();
+		const summaries = await this.sessionIndex.summarize(paths);
+		const elsewhere = await this.elsewhereOf(summaries);
+		return summaries.flatMap((summary) => {
+			const found = elsewhere.get(summary.path);
+			if (!found || found.state === "stopped") return [];
+			const modified = summary.modified > found.lastWrite ? summary.modified : found.lastWrite;
+			return [{ ...serializeSessionSummary(summary, false, found), modified }];
+		});
+	}
+
+	async listActiveSessions(): Promise<ApiSessionSummary[]> {
+		const sessions: ApiSessionSummary[] = await this.listRunningElsewhere().catch(() => []);
 		for (const runtime of this.runningById.values()) {
 			sessions.push({
 				id: runtime.session.sessionId,
@@ -556,10 +688,11 @@ export class PiWebRuntime {
 
 	async listSessions(options: { cwd?: string; limit?: number; offset?: number } = {}): Promise<{ sessions: ApiSessionSummary[]; hasMore: boolean }> {
 		const saved = await this.sessionIndex.list({ cwd: options.cwd }).catch(() => []);
+		const elsewhere = await this.elsewhereOf(saved);
 		const byId = new Map<string, ApiSessionSummary>();
 
 		for (const entry of saved) {
-			byId.set(entry.id, serializeSessionSummary(entry, this.runningByPath.has(resolve(entry.path))));
+			byId.set(entry.id, serializeSessionSummary(entry, this.runningByPath.has(resolve(entry.path)), elsewhere.get(entry.path)));
 		}
 
 		for (const [sessionId, runtime] of this.runningById.entries()) {
@@ -775,7 +908,9 @@ export class PiWebRuntime {
 		const clientId = request.clientId ?? randomUUID();
 
 		if (request.resumeSessionPath) {
-			const runtime = await this.resumeSession(this.assertAllowedResumePath(request.resumeSessionPath), clientId, { choice: request.projectTrust });
+			const path = this.assertAllowedResumePath(request.resumeSessionPath);
+			if (!this.isHostedPath(path)) await this.assertNotRunningElsewhere(path, request.takeOver === true);
+			const runtime = await this.resumeSession(path, clientId, { choice: request.projectTrust });
 			return { sessionId: runtime.session.sessionId };
 		}
 
@@ -787,6 +922,112 @@ export class PiWebRuntime {
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
 		const runtime = this.registerSession(session, ui, projectTrust, cwd, clientId, tripwireAllowedRoots);
 		return { sessionId: runtime.session.sessionId };
+	}
+
+	/**
+	 * A second copy of a session another process is writing would be a frozen snapshot, and typing into it
+	 * makes two writers on one file. Allowed once the turn closed, the writer is gone, or it went quiet and
+	 * the user asked to take over.
+	 */
+	private async assertNotRunningElsewhere(path: string, takeOver: boolean): Promise<void> {
+		const summaries = await this.sessionIndex.summarize([path]);
+		const elsewhere = (await this.elsewhereOf(summaries)).get(path);
+		if (!elsewhere || elsewhere.state === "stopped") return;
+		if (elsewhere.state === "quiet" && takeOver) return;
+		throw new RunningElsewhereError(elsewhere);
+	}
+
+	/** The pi process writing a session elsewhere, stopped so the session can be continued here. */
+	async stopElsewhere(sessionId: string, rawPath: string): Promise<{ stopped: number[] }> {
+		const path = this.assertAllowedResumePath(rawPath);
+		if (this.isHostedPath(path)) throw new Error("session_hosted_here");
+		const [summary] = await this.sessionIndex.summarize([path]);
+		if (!summary) throw new Error("session_file_missing");
+		if (summary.id !== sessionId) throw new Error("session_path_mismatch");
+		if (!isOpenTurn(summary.turn)) return { stopped: [] };
+		this.piProcesses.invalidate();
+		const processes = await this.piProcesses.list();
+		if (processes === null) throw new Error("processes_unavailable");
+		const writers = writersOf(processes, { cwd: summary.cwd, lastWriteMs: Date.parse(summary.lastWrite) });
+		if (writers.length > 1) throw new AmbiguousWritersError(writers.map((writer) => writer.pid));
+		const writer = writers[0];
+		if (!writer) return { stopped: [] };
+		const result = await this.stopPiProcess(writer);
+		this.piProcesses.invalidate();
+		if (result === "alive") throw new Error("writer_still_running");
+		return { stopped: [writer.pid] };
+	}
+
+	private async followState(path: string, cwd: string, turn: Turn, lastWriteMs: number): Promise<ApiFollowState> {
+		const lastWrite = new Date(lastWriteMs).toISOString();
+		if (this.isHostedPath(path)) return { state: "hosted", turn, lastWrite, writers: [] };
+		const processes = await this.piProcesses.list();
+		const writers = processes === null ? null : writersOf(processes, { cwd, lastWriteMs });
+		return { state: classifyElsewhere(turn, lastWriteMs, writers) ?? "done", turn, lastWrite, writers: pidsOf(writers) };
+	}
+
+	/**
+	 * Streams a session file pi-web isn't hosting: a snapshot, then each batch of whole entries appended to it,
+	 * and where the turn and its writer stand. Read-only: nothing here ever writes the file.
+	 */
+	async followSession(sessionId: string, rawPath: string, client: FollowClient, since?: string): Promise<{ init: FollowSseEvent; cursor: string | undefined; stop: () => void }> {
+		const path = this.assertAllowedResumePath(rawPath);
+		const snapshot = await readSessionSnapshot(path);
+		if (snapshot.sessionId !== sessionId) throw new Error("session_path_mismatch");
+		const { cwd } = snapshot;
+		let { offset, turn, info } = snapshot;
+		let lastWriteMs = snapshot.mtimeMs;
+		let follow = await this.followState(path, cwd, turn, lastWriteMs);
+		let checkedAtMs = Date.now();
+		let busy = false;
+		const describe = (): ApiFollowSession => ({ sessionId, path, cwd, sessionName: info.sessionName, model: info.model, thinkingLevel: info.thinkingLevel });
+
+		const tick = async () => {
+			const appended = await readAppended(path, offset);
+			if (appended === "rewritten") {
+				stop();
+				client.close();
+				return;
+			}
+			offset = appended.offset;
+			const grew = appended.entries.length > 0;
+			if (grew) {
+				turn = turnOfEntries(appended.entries, turn);
+				info = followInfo(appended.entries, info);
+				lastWriteMs = appended.mtimeMs;
+				const messages = appended.entries.flatMap(entryTranscriptMessages);
+				client.send({ type: "follow_entries", messages, session: describe() }, appended.entries.at(-1)?.id);
+			}
+			if (!grew && Date.now() - checkedAtMs < FOLLOW_STATE_CHECK_MS) return;
+			checkedAtMs = Date.now();
+			const next = await this.followState(path, cwd, turn, lastWriteMs);
+			if (sameFollowState(next, follow)) return;
+			follow = next;
+			client.send({ type: "follow_state", follow });
+		};
+		const timer = setInterval(() => {
+			if (busy) return;
+			busy = true;
+			tick()
+				.catch(() => {
+					stop();
+					client.close();
+				})
+				.finally(() => {
+					busy = false;
+				});
+		}, this.followPollMs);
+		timer.unref?.();
+		const follower = { stop };
+		const followers = this.followers;
+		function stop(): void {
+			clearInterval(timer);
+			followers.delete(follower);
+		}
+		followers.add(follower);
+
+		const init: FollowSseEvent = { type: "follow_init", session: describe(), transcript: resyncTranscript(snapshot.branch, since), follow, cursor: snapshot.leafId };
+		return { init, cursor: snapshot.leafId ?? undefined, stop };
 	}
 
 	/**
@@ -857,6 +1098,7 @@ export class PiWebRuntime {
 
 	/** Stops runs, records every session for re-attach after the restart, and disposes them. */
 	async shutdown(timeoutMs = 5_000): Promise<void> {
+		for (const follower of [...this.followers]) follower.stop();
 		const runtimes = [...this.runningById.values()];
 		const stopped = Promise.allSettled(
 			runtimes.map(async (runtime) => {

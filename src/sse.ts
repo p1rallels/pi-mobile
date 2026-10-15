@@ -1,4 +1,4 @@
-import type { SseEvent } from "./types.ts";
+import type { FollowSseEvent, SseEvent } from "./types.ts";
 
 /** Browsers retry a dropped EventSource after this delay and send the last frame id as Last-Event-ID. */
 export const SSE_RETRY_MS = 1_500;
@@ -15,7 +15,7 @@ export function ssePingFrame(now = Date.now()): string {
 	return `event: ping\ndata: ${String(now)}\n\n`;
 }
 
-export function sseEventFrame(event: SseEvent, id?: string): string {
+export function sseEventFrame(event: SseEvent | FollowSseEvent, id?: string): string {
 	const idLine = id !== undefined && CURSOR_PATTERN.test(id) ? `id: ${id}\n` : "";
 	return `${idLine}data: ${JSON.stringify(event)}\n\n`;
 }
