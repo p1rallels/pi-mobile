@@ -6,7 +6,7 @@ import { createSessionWithTrust } from "../session/project_trust.js";
 const SESSION_LIMIT = 100;
 
 /**
- * @typedef {{ id: string, path: string | null, cwd: string, name?: string, firstMessage?: string, modified?: string, isRunning?: boolean }} SessionSummary
+ * @typedef {{ id: string, path: string | null, cwd: string, name?: string, firstMessage?: string, modified?: string, isRunning?: boolean, elsewhere?: { state: string }, forkLabel?: string }} SessionSummary
  * @typedef {{ kind: "created", sessionId: string, cwd: string } | { kind: "session", session: SessionSummary }} LauncherPick
  * @typedef {{ key: string, primary: string, secondary: string, badge?: string, pick: () => void }} Row
  */
@@ -22,10 +22,23 @@ export function sessionLabel(session) {
 	return first && first !== "(no messages)" ? first.slice(0, 120) : session.id.slice(0, 8);
 }
 
-/** Sessions worth listing: running, named, or with a first message (like the phone's sidebar). @param {SessionSummary} session */
+/**
+ * What another pi is doing with a session this host doesn't run (the phone's sidebar says the same): "" when nothing.
+ * @param {SessionSummary} session
+ */
+export function elsewhereBadge(session) {
+	if (session.isRunning) return "";
+	const state = session.elsewhere?.state;
+	if (state === "running") return "running elsewhere";
+	if (state === "quiet") return "quiet elsewhere";
+	if (state === "stopped") return "stopped mid-turn";
+	return "";
+}
+
+/** Sessions worth listing: running here or elsewhere, named, or with a first message (like the phone's sidebar). @param {SessionSummary} session */
 export function isListable(session) {
 	if (!session || typeof session.id !== "string") return false;
-	if (session.isRunning || session.name?.trim()) return true;
+	if (session.isRunning || elsewhereBadge(session) || session.name?.trim()) return true;
 	const first = session.firstMessage?.trim();
 	return Boolean(first && first !== "(no messages)");
 }
@@ -143,7 +156,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 				key: `session:${session.id}`,
 				primary: sessionLabel(session),
 				secondary: [relativeTime(session.modified, now), session.id.slice(0, 8)].filter(Boolean).join(" · "),
-				badge: isOnCanvas(session.id) ? "on canvas" : session.isRunning ? "running" : undefined,
+				badge: isOnCanvas(session.id) ? "on canvas" : session.isRunning ? "running" : elsewhereBadge(session) || undefined,
 				pick: () => onPick({ kind: "session", session }),
 			}));
 		return [fresh, ...listed];
