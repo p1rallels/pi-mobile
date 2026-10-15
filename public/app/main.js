@@ -313,9 +313,13 @@ function updateWorkingIndicator() {
 }
 
 /** A followed session: Esc stops its writer, and typing or Take over continue it here once nobody writes it. */
+const ABORT_TITLE = btnAbort.title;
+const STOP_WRITER_TITLE = "Stop the pi writing this session (Esc)";
+
 function updateElsewhereControls() {
 	const canStop = sessionCtrl.canStopWriter();
 	const canResume = sessionCtrl.canResumeHere();
+	btnAbort.title = STOP_WRITER_TITLE;
 	btnAbort.disabled = !canStop;
 	btnTakeover.disabled = !canResume;
 	btnRelease.disabled = true;
@@ -340,6 +344,7 @@ function updateControls() {
 	}
 
 	const hasSession = Boolean(sessionCtrl.getActiveSessionId());
+	btnAbort.title = ABORT_TITLE;
 	const isController = hasSession && sessionCtrl.isController();
 	const activeState = sessionCtrl.getActiveState();
 	const compacting = Boolean(activeState && activeState.isCompacting);

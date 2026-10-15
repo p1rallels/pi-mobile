@@ -226,12 +226,12 @@ export function createSidebar({
 			meta.className = "si-meta";
 			const elsewhere = elsewhereLabel(s);
 			const rel = formatRelativeTime(elsewhere ? s.elsewhere.lastWrite : s.modified);
-			const badge = s.isRunning
-				? ` · <span class="si-run">running</span>`
-				: elsewhere
-					? ` · <span class="si-elsewhere ${escapeHtml(s.elsewhere.state)}">${escapeHtml(elsewhere)}</span>`
-					: "";
-			meta.innerHTML = `${rel} · ${escapeHtml(s.cwd)}${badge}`;
+			const cwd = escapeHtml(s.cwd);
+			if (elsewhere) {
+				meta.innerHTML = `${rel} · <span class="si-elsewhere ${escapeHtml(s.elsewhere.state)}">${escapeHtml(elsewhere)}</span> · ${cwd}`;
+			} else {
+				meta.innerHTML = `${rel} · ${cwd}${s.isRunning ? ` · <span class="si-run">running</span>` : ""}`;
+			}
 
 			row.appendChild(name);
 			row.appendChild(meta);
