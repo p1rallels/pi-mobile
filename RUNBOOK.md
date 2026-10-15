@@ -205,7 +205,11 @@ Remote unlock has three windows:
 - prompts, aborts, settings and take over need a check within the last 60 minutes (`PI_WEB_FACEID_COMMAND_MINUTES`)
 - starting sessions, adding repos and releasing need a check within the last 15 minutes (`PI_WEB_FACEID_FRESH_MINUTES`)
 
-The page asks when it loads, and again when you come back to it (tab, window or app) once the last check is older than the shortest of those windows, 15 minutes by default. Inside that window, switching away and back or reloading doesn't ask, and other tabs on the same browser count the same check. Phones and tablets cover the page while it's in the background so the app switcher doesn't show the session. After a cancelled check the page waits for Try again.
+The page locks when it loads, and again when you come back to it (tab, window or app) once the last check is older than the shortest of those windows, 15 minutes by default. Inside that window, switching away and back or reloading doesn't lock it, and other tabs on the same browser count the same check. A locked page swallows keystrokes, so nothing underneath acts until it's unlocked.
+
+- Laptops never start a check by themselves, because Chrome on macOS attaches the passkey sheet to the whole window and blocks every tab until it's answered. Press Unlock (or Enter) when you want in.
+- Phones and tablets ask right away, and cover the page while it's in the background so the app switcher doesn't show the session.
+- After a cancelled check the page waits for Try again.
 
 If a control action says fresh Face ID / Touch ID is required, the browser prompts again, and a prompt that was refused goes back into the composer.
 

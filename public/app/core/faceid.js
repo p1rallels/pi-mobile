@@ -54,16 +54,20 @@ export function isCheckFresh(verifiedAt, freshMs, now) {
 	return age >= 0 && age < freshMs;
 }
 
-function prefersCoverWhenAway() {
+function prefersTouch() {
 	return typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
 }
+
+const UNLOCK_TEXT = "Unlock to continue.";
 
 /**
  * Locks the page behind a Face ID / Touch ID check.
  * - A passed check stays good for the host's fresh window: coming back to the page or reloading it inside the
  *   window doesn't ask; coming back after it does. A request the host refused for want of a check always asks.
- * - It only prompts while the page has focus (browsers refuse WebAuthn otherwise); a locked page without focus
- *   prompts once it gets focus, or when the button is clicked.
+ * - Laptops never prompt by themselves: Chrome on macOS hangs the passkey sheet on the whole window, which
+ *   blocks every tab. The page locks and waits for Unlock (click or Enter). Phones prompt by themselves (Face ID
+ *   needs nothing from you), but only with focus, since browsers refuse WebAuthn otherwise.
+ * - A locked page swallows keys, so nothing underneath (esc aborts a run) acts while it's locked.
  * - After a failed or cancelled prompt it waits for "Try again" instead of prompting on every return.
  * - Touch devices cover the page while they're away, so the app switcher shows the card, not the session.
  */
@@ -72,7 +76,9 @@ export function installFaceIdGuard({
 	webauthn = loadSimpleWebAuthn,
 	now = () => Date.now(),
 	hasFocus = () => document.hasFocus(),
-	coverWhenAway = prefersCoverWhenAway(),
+	touch = prefersTouch(),
+	coverWhenAway = touch,
+	autoPrompt = touch,
 }) {
 	const ui = createOverlay();
 	let locked = false;
@@ -80,9 +86,11 @@ export function installFaceIdGuard({
 	let watching = false;
 	let failed = false;
 	let hostDemandsCheck = false;
+	let lockMessage = UNLOCK_TEXT;
 	let verifiedAt = null;
 	let freshMs = 0;
 	let initialUnlockResolve = null;
+	let focusBeforeLock = null;
 
 	function resolveInitialUnlock() {
 		const resolve = initialUnlockResolve;
@@ -91,18 +99,38 @@ export function installFaceIdGuard({
 	}
 
 	function setLocked(value) {
+		if (value && !locked) rememberFocus();
 		locked = value;
 		document.body.classList.toggle("faceid-locked", value);
 		ui.overlay.classList.toggle("open", value);
 	}
 
-	function setStatus(text, { showRetry = false } = {}) {
+	function rememberFocus() {
+		const active = document.activeElement;
+		focusBeforeLock = active && active !== document.body && !ui.overlay.contains(active) ? active : null;
+	}
+
+	/** Unlock moves the keyboard to its button; give it back to whatever had it, e.g. a tile's composer. */
+	function restoreFocus() {
+		const target = focusBeforeLock;
+		focusBeforeLock = null;
+		if (target && target.isConnected && typeof target.focus === "function") target.focus({ preventScroll: true });
+	}
+
+	/** The subtitle, and the button (with the keyboard, so Enter presses it) or none. */
+	function setStatus(text, { button = null } = {}) {
 		if (ui.subtitle) ui.subtitle.textContent = text;
-		if (ui.button) ui.button.hidden = !showRetry;
+		if (!ui.button) return;
+		ui.button.hidden = button === null;
+		if (button === null) return;
+		ui.button.textContent = button;
+		ui.button.focus({ preventScroll: true });
 	}
 
 	function unlock() {
+		const wasLocked = locked;
 		setLocked(false);
+		if (wasLocked) restoreFocus();
 		resolveInitialUnlock();
 	}
 
@@ -139,11 +167,14 @@ export function installFaceIdGuard({
 		await verifyChallenge(challenge.challengeId, assertion);
 	}
 
-	async function runCheck() {
+	/**
+	 * Unlocks when the host has a check on file that's still good (another tab may have passed one), otherwise
+	 * prompts: on a gesture, or by itself where that's allowed; else it offers Unlock and waits.
+	 */
+	async function runCheck({ gesture }) {
 		if (inFlight) return;
 		inFlight = true;
 		failed = false;
-		setStatus("Prompting Face ID…");
 		try {
 			if (!window.isSecureContext) {
 				throw new Error("Face ID requires a secure origin (HTTPS or localhost).");
@@ -156,6 +187,11 @@ export function installFaceIdGuard({
 				unlock();
 				return;
 			}
+			if (!gesture && !autoPrompt) {
+				setStatus(lockMessage, { button: "Unlock" });
+				return;
+			}
+			setStatus("Prompting Face ID…");
 			if (!status.enrolled) {
 				if (!status.canRegister) {
 					throw new Error(
@@ -169,24 +205,26 @@ export function installFaceIdGuard({
 			await runAuthentication();
 			verifiedAt = now();
 			hostDemandsCheck = false;
+			lockMessage = UNLOCK_TEXT;
 			unlock();
 		} catch (error) {
 			failed = true;
 			setLocked(true);
-			setStatus(normalizeErrorMessage(error), { showRetry: true });
+			setStatus(normalizeErrorMessage(error), { button: "Try again" });
 		} finally {
 			inFlight = false;
 		}
 	}
 
 	function requireCheck(message) {
+		lockMessage = message;
 		setLocked(true);
-		if (hasFocus()) {
-			setStatus(message);
-			void runCheck();
+		if (autoPrompt && !hasFocus()) {
+			setStatus(message, { button: "Unlock" });
 			return;
 		}
-		setStatus(message, { showRetry: true });
+		setStatus(message);
+		void runCheck({ gesture: false });
 	}
 
 	function onAway() {
@@ -198,13 +236,22 @@ export function installFaceIdGuard({
 	function onReturn() {
 		if (!watching || inFlight || failed) return;
 		if (hostDemandsCheck || !checkIsFresh()) {
-			requireCheck("Face ID is required to continue.");
+			requireCheck(hostDemandsCheck ? lockMessage : UNLOCK_TEXT);
 			return;
 		}
 		if (locked) unlock();
 	}
 
+	function swallowKeysWhileLocked(event) {
+		if (!locked) return;
+		event.stopImmediatePropagation();
+		const shortcut = event.metaKey || event.ctrlKey || event.altKey;
+		if (!shortcut && !ui.overlay.contains(event.target)) event.preventDefault();
+	}
+
 	function bindVisibilityHooks() {
+		window.addEventListener("keydown", swallowKeysWhileLocked, true);
+		window.addEventListener("keyup", swallowKeysWhileLocked, true);
 		window.addEventListener("blur", onAway);
 		window.addEventListener("focus", onReturn);
 		window.addEventListener("pageshow", onReturn);
@@ -226,9 +273,8 @@ export function installFaceIdGuard({
 
 		if (ui.button) {
 			ui.button.addEventListener("click", () => {
-				failed = false;
 				setLocked(true);
-				void runCheck();
+				void runCheck({ gesture: true });
 			});
 		}
 	}
@@ -249,7 +295,7 @@ export function installFaceIdGuard({
 				unlock();
 				return;
 			}
-			requireCheck("Prompting Face ID…");
+			requireCheck(UNLOCK_TEXT);
 			await unlocked;
 		},
 	};
