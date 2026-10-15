@@ -236,3 +236,18 @@ test("tiles outside the padded viewport skip rendering once the camera settles",
 	await page.evaluate(() => window.__canvasMock.canvas.viewport.setCamera({ x: 40, y: 64, scale: 1 }));
 	await expect(page.locator(".cv-tile.cv-offscreen")).toHaveCount(8);
 });
+
+test("working tiles breathe a glow on the compositor, idle and offscreen tiles don't", async ({ page }) => {
+	await openMock(page, "tiles=3&streaming=1&rate=30");
+	const glowAnimations = (id) =>
+		page.evaluate((tileId) => {
+			const glow = document.querySelector(`.cv-tile[data-tile-id="${tileId}"] .cv-glow`);
+			return glow ? glow.getAnimations().map((a) => a.animationName) : null;
+		}, id);
+	await expect(page.locator('.cv-tile[data-tile-id="mock-0"]')).toHaveClass(/cv-working/);
+	expect(await glowAnimations("mock-0")).toEqual(["cv-breathe"]);
+	expect(await glowAnimations("mock-1")).toEqual([]);
+	await page.evaluate(() => window.__canvasMock.canvas.viewport.setCamera({ x: -100_000, y: 0, scale: 1 }));
+	await expect(page.locator('.cv-tile[data-tile-id="mock-0"]')).toHaveClass(/cv-offscreen/);
+	expect(await glowAnimations("mock-0")).toEqual([]);
+});

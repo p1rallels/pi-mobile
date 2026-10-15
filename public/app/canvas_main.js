@@ -157,6 +157,7 @@ export async function bootCanvas() {
 			entry.pill.className = `cv-pill is-${pill.kind}`;
 			tile.el.classList.toggle("cv-working", pill.kind === "working");
 		}
+		tile.el.classList.toggle("cv-waiting", !entry.dormant && entry.pane.extensionUi.isOpen());
 	}
 
 	/** @param {HTMLElement} anchor @param {TileEntry} entry */

@@ -149,6 +149,7 @@ function createFakePane(tile, index, streaming) {
 		running = next;
 		pill.textContent = next ? "working" : "idle";
 		pill.className = `cv-pill ${next ? "is-working" : "is-idle"}`;
+		tile.el.classList.toggle("cv-working", next);
 	}
 
 	/** @param {HTMLElement} node */

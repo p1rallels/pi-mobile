@@ -48,6 +48,32 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
 }
 .cv-tile.cv-offscreen .cv-frame { content-visibility: hidden; }
 
+/* ── Glow: breathing while a session works, steady while it waits on you ──
+   A sibling of the frame (whose paint containment would clip it) with a static shadow;
+   only its opacity animates, so it stays on the compositor. Paused offscreen. */
+.cv-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(138, 190, 183, 0.5), 0 0 26px 3px rgba(138, 190, 183, 0.3);
+}
+.cv-tile.cv-working .cv-glow { animation: cv-breathe 2.8s ease-in-out infinite; }
+.cv-tile.cv-waiting .cv-glow {
+  opacity: 0.85;
+  animation: none;
+  box-shadow: 0 0 0 1px rgba(240, 198, 116, 0.55), 0 0 26px 3px rgba(240, 198, 116, 0.28);
+}
+.cv-tile.cv-offscreen .cv-glow { animation: none; opacity: 0; }
+@keyframes cv-breathe {
+  0%, 100% { opacity: 0.12; }
+  50% { opacity: 0.65; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cv-tile.cv-working .cv-glow { animation: none; opacity: 0.4; }
+}
+
 /* ── Title bar ─────────────────────────────────────────── */
 .cv-bar {
   flex: none;

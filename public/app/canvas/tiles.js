@@ -131,7 +131,7 @@ export function createTileLayer({ world, viewport, onFocusChange, onCloseRequest
 		bar.append(close, titleEl, statusEl, controlsEl);
 		const body = make(doc, "div", "cv-body");
 		frameEl.append(bar, body);
-		el.append(frameEl, make(doc, "div", "cv-grip cv-grip-e"), make(doc, "div", "cv-grip cv-grip-s"), make(doc, "div", "cv-grip cv-grip-se"));
+		el.append(make(doc, "div", "cv-glow"), frameEl, make(doc, "div", "cv-grip cv-grip-e"), make(doc, "div", "cv-grip cv-grip-s"), make(doc, "div", "cv-grip cv-grip-se"));
 		/** @type {Tile} */
 		const tile = { id, rect: sanitizeRect(rect), el, frame: frameEl, bar, titleEl, statusEl, controlsEl, body, visible: true, written: null };
 		el.style.zIndex = String(++zTop);
