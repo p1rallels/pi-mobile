@@ -320,6 +320,8 @@ export function createSessionPane({
 		resume: () => sessionCtrl.resume(),
 		/** @param {boolean} focused */
 		setFocused: (focused) => sessionCtrl.setFocused(focused),
+		/** @param {{ messages: unknown[] }} page @param {string} [notice] */
+		showReadOnly: (page, notice) => sessionCtrl.showReadOnly(page, notice),
 		getShownEntryCount: () => sessionCtrl.getShownEntryCount(),
 		sendPromptFromInput,
 		abort,

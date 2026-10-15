@@ -133,6 +133,9 @@ export interface ApiSessionState extends ApiSessionStatus {
 
 export type ApiTranscriptPageResponse = TranscriptPage;
 
+/** GET /api/session-transcript?path=&limit=&before=: a page of a session file, no runtime attached. */
+export type ApiSessionFileTranscriptResponse = TranscriptPage & { sessionId: string };
+
 export type ApiLiveSnapshot = LiveSnapshot;
 
 /** What a connecting viewer is missing: everything after its cursor, or a fresh last page. */

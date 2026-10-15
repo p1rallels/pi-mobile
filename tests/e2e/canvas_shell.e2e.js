@@ -126,6 +126,10 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		expect(await page.evaluate((id) => window.__canvas.canvas.tiles.get(id).rect, S1)).toEqual(rect);
 		await expect(tile(page, S2).locator(".cv-pill")).toHaveText("not running");
 		await expect(tile(page, S2).locator(".notice-text")).toContainText("Not running");
+		// a dormant tile shows the tail of its session file, without attaching it on the host
+		await expect(tile(page, S2).locator(".user-msg")).toHaveText("second session");
+		await expect(tile(page, S2).locator(".assistant-block .md")).toHaveText("reply two");
+		expect(await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.map((s) => s.id))).not.toContain(S2);
 
 		await tile(page, S2).locator(".msgs").click();
 		await expect(tile(page, S2).locator(".user-msg")).toHaveText("second session");

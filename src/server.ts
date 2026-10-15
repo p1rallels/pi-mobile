@@ -27,6 +27,7 @@ import type {
 	ApiOkResponse,
 	ApiProjectTrustRequiredResponse,
 	ApiReleaseRequest,
+	ApiSessionFileTranscriptResponse,
 	ApiSessionState,
 	ApiTakeoverRequest,
 	ApiTranscriptPageResponse,
@@ -928,6 +929,24 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				offset: Number.isFinite(offset) ? offset : 0,
 			});
 			return json(body, 200);
+		}
+
+		if (req.method === "GET" && url.pathname === "/api/session-transcript") {
+			const path = url.searchParams.get("path")?.trim();
+			if (!path) return errorResponse("Missing session path", 400);
+			const limit = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+			try {
+				const body: ApiSessionFileTranscriptResponse = runtime.readTranscriptFile(path, {
+					before: url.searchParams.get("before")?.trim() || undefined,
+					limit: Number.isFinite(limit) ? limit : undefined,
+				});
+				return json(body, 200);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message.startsWith("session_path_not_allowed")) return errorResponse("Session path not allowed", 403);
+				if (message === "unknown_entry") return errorResponse("Unknown transcript entry", 404);
+				return errorResponse("Session file not found", 404);
+			}
 		}
 
 		if (req.method === "GET" && url.pathname === "/api/models") {

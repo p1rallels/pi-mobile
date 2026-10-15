@@ -805,6 +805,23 @@ export function createSessionController({
 		renderGeneration += 1;
 	}
 
+	/**
+	 * The tail of a session that isn't running, read from its file (no stream, no paging): a dormant
+	 * canvas tile shows what the session was doing until you resume it.
+	 */
+	function showReadOnly(page, notice) {
+		if (activeSessionId) return;
+		renderGeneration += 1;
+		chatView.clear();
+		chatView.renderHistory(Array.isArray(page?.messages) ? page.messages : []);
+		hasOlderMessages = false;
+		oldestEntryId = null;
+		syncOlderControl();
+		if (notice) chatView.appendNotice(notice);
+		chatView.flush();
+		chatView.pin();
+	}
+
 	/** A focused canvas tile keeps more of its transcript and loads earlier pages as you scroll up. */
 	function setFocused(next) {
 		focused = Boolean(next);
@@ -844,6 +861,7 @@ export function createSessionController({
 		resume,
 		destroy,
 		setFocused,
+		showReadOnly,
 		getShownEntryCount: () => chatView.entryCount(),
 	};
 }

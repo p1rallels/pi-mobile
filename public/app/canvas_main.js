@@ -31,6 +31,7 @@ export async function bootCanvas() {
 	const KEEP_MOUNTED_OFFSCREEN = intKnob("keepMounted", 8);
 	// transcript entries a tile keeps: the newest 20 (50 while focused, plus older pages you scroll to)
 	const TRANSCRIPT_WINDOW = { unfocused: intKnob("window", 20), focused: intKnob("focusedWindow", 50), pageSize: 50 };
+	const DORMANT_NOTICE = "Not running. Click this tile to resume it here.";
 	const SWEEP_MS = Math.min(15_000, Math.max(250, UNMOUNT_AFTER_MS / 2));
 
 	/**
@@ -50,6 +51,7 @@ export async function bootCanvas() {
 	 *   hiddenAt: number,
 	 *   lastVisibleAt: number,
 	 *   extTitle: string | null,
+	 *   readOnly: "none" | "loading" | "shown",
 	 *   shown: { title: string, pill: string },
 	 * }} TileEntry
 	 */
@@ -371,9 +373,35 @@ export async function bootCanvas() {
 		});
 		entry.mounted = true;
 		entry.opened = false;
+		entry.readOnly = "none";
 		if (focusedTileId === entry.id) entry.pane.setFocused(true);
 		entry.pane.render();
-		if (entry.dormant) entry.pane.appendNotice("Not running. Click this tile to resume it here.");
+		if (entry.dormant) {
+			entry.pane.appendNotice(DORMANT_NOTICE);
+			showDormantTail(entry);
+		}
+	}
+
+	/**
+	 * A dormant tile on screen shows the tail of its session file (no runtime attached on the host); hosts
+	 * without GET /api/session-transcript leave the notice alone.
+	 * @param {TileEntry} entry
+	 */
+	function showDormantTail(entry) {
+		if (!entry.dormant || !entry.mounted || !entry.visible || !entry.path || entry.readOnly !== "none") return;
+		entry.readOnly = "loading";
+		const pane = entry.pane;
+		const query = new URLSearchParams({ path: entry.path, limit: String(TRANSCRIPT_WINDOW.unfocused || 20) });
+		api.getJson(`/api/session-transcript?${query.toString()}`).then(
+			(/** @type {any} */ page) => {
+				if (entry.pane !== pane || !entry.dormant || !entry.mounted) return;
+				entry.readOnly = "shown";
+				pane.showReadOnly(page, DORMANT_NOTICE);
+			},
+			() => {
+				if (entry.pane === pane) entry.readOnly = "shown";
+			},
+		);
 	}
 
 	/** @param {TileEntry} entry */
@@ -410,6 +438,7 @@ export async function bootCanvas() {
 			if (!entry.mounted) mountPane(entry);
 			if (entry.opened) entry.pane.resume();
 			else openIfReady(entry);
+			showDormantTail(entry);
 			renderTileChrome(id);
 			return;
 		}
@@ -476,6 +505,7 @@ export async function bootCanvas() {
 			hiddenAt: tile.visible ? 0 : Date.now(),
 			lastVisibleAt: tile.visible ? Date.now() : 0,
 			extTitle: null,
+			readOnly: "none",
 			shown: { title: "", pill: "" },
 		};
 		entries.set(id, entry);

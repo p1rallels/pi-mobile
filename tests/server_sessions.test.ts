@@ -115,6 +115,32 @@ describe("server canvas layout", () => {
 	});
 });
 
+describe("server session files", () => {
+	test("GET /api/session-transcript reads a session that isn't running without attaching it", async () => {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));
+		tempDirs.push(root);
+		const cwd = join(root, "repo");
+		await mkdir(cwd);
+		const { path, id } = await writeSessionFile(root, cwd);
+		const port = await freePort();
+		const base = `http://127.0.0.1:${String(port)}`;
+		await startServer(root, port);
+
+		const read = (query: string) => fetch(`${base}/api/session-transcript?${query}`);
+		const tail = await read(`path=${encodeURIComponent(path)}&limit=1`);
+		expect(tail.status).toBe(200);
+		expect(await tail.json()).toEqual({ sessionId: id, messages: [expect.objectContaining({ role: "assistant", entryId: "a0000001" })], hasOlder: true });
+		const older = (await (await read(`path=${encodeURIComponent(path)}&before=a0000001`)).json()) as { messages: Array<{ entryId: string }>; hasOlder: boolean };
+		expect(older.messages.map((message) => message.entryId)).toEqual(["u0000001"]);
+		expect(older.hasOlder).toBe(false);
+		expect(((await (await fetch(`${base}/api/active-sessions`)).json()) as { sessions: unknown[] }).sessions).toEqual([]);
+
+		expect((await read(`path=${encodeURIComponent(join(root, "elsewhere.jsonl"))}`)).status).toBe(403);
+		expect((await read(`path=${encodeURIComponent(path.replace(".jsonl", "-gone.jsonl"))}`)).status).toBe(404);
+		expect((await read("")).status).toBe(400);
+	});
+});
+
 describe("server sessions", () => {
 	test("resumes, pages, lists, and re-attaches a session across a graceful restart", async () => {
 		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));

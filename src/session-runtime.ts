@@ -143,6 +143,7 @@ const INITIAL_TRANSCRIPT_BYTES = 600_000;
 const TRANSCRIPT_PAGE_MESSAGES = 200;
 const MAX_TRANSCRIPT_PAGE_MESSAGES = 500;
 const TRANSCRIPT_PAGE_BYTES = 1_000_000;
+const TRANSCRIPT_FILE_CACHE = 4;
 
 const STATE_PATCH_EVENTS: ReadonlySet<AgentSessionEvent["type"]> = new Set<AgentSessionEvent["type"]>([
 	"agent_start",
@@ -381,6 +382,7 @@ function serializeSessionSummary(entry: SessionSummary, isRunning: boolean): Api
 export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
+	private transcriptFiles = new Map<string, { mtimeMs: number; size: number; sessionId: string; entries: ReturnType<SessionManager["getBranch"]> }>();
 	private resumingByPath = new Map<string, Promise<RunningSession>>();
 	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
@@ -673,6 +675,30 @@ export class PiWebRuntime {
 			maxMessages: limit,
 			maxBytes: TRANSCRIPT_PAGE_BYTES,
 		});
+	}
+
+	/**
+	 * A page of a session that isn't running, read straight from its file: canvas tiles show the tail of
+	 * a dormant session without attaching a runtime. The newest few parsed files are kept until they change.
+	 */
+	readTranscriptFile(rawPath: string, request: { before?: string; limit?: number }): TranscriptPage & { sessionId: string } {
+		const path = this.assertAllowedResumePath(rawPath);
+		const runningId = this.runningByPath.get(path);
+		const running = runningId ? this.runningById.get(runningId) : undefined;
+		const limit = Math.min(Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_MESSAGES)), MAX_TRANSCRIPT_PAGE_MESSAGES);
+		const options = { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES };
+		if (running) return { sessionId: running.session.sessionId, ...transcriptPage(running.session.sessionManager.getBranch(), options) };
+		if (!existsSync(path)) throw new Error("session_file_missing");
+		const { mtimeMs, size } = statSync(path);
+		let parsed = this.transcriptFiles.get(path);
+		if (!parsed || parsed.mtimeMs !== mtimeMs || parsed.size !== size) {
+			const manager = SessionManager.open(path);
+			parsed = { mtimeMs, size, sessionId: manager.getSessionId(), entries: manager.getBranch() };
+		}
+		this.transcriptFiles.delete(path);
+		this.transcriptFiles.set(path, parsed);
+		for (const stale of [...this.transcriptFiles.keys()].slice(0, Math.max(0, this.transcriptFiles.size - TRANSCRIPT_FILE_CACHE))) this.transcriptFiles.delete(stale);
+		return { sessionId: parsed.sessionId, ...transcriptPage(parsed.entries, options) };
 	}
 
 	async getTripwireAlerts(sessionId: string, clientId: string): Promise<ApiTripwireAlertsResponse> {
