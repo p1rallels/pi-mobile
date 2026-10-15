@@ -45,7 +45,7 @@ export function createSessionController({
 
 	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
 	msgsEl.addEventListener("scroll", () => maybeLoadOlderMessages(), { passive: true });
-	setInterval(() => {
+	const staleTimer = setInterval(() => {
 		if (connection === "live" && isStale()) reconnectNow();
 	}, STALE_CHECK_MS);
 
@@ -743,6 +743,15 @@ export function createSessionController({
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/release`, { clientId: getClientId() });
 	}
 
+	/** For panes that go away (canvas tiles): stop timers and the stream; late async work sees no session. */
+	function destroy() {
+		clearInterval(staleTimer);
+		closeEvents();
+		stopRecovery();
+		activeSessionId = null;
+		renderGeneration += 1;
+	}
+
 	function openSessionId(sessionId) {
 		stopRecovery();
 		resetTripwireAlerts();
@@ -772,5 +781,6 @@ export function createSessionController({
 		takeOver,
 		release,
 		openSessionId,
+		destroy,
 	};
 }

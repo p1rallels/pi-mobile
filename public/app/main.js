@@ -1,51 +1,56 @@
+// The phone shell: header, sidebar and one session pane on the static markup in index.html.
 import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
-import { createSessionController } from "./session/controller.js";
-import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./session/project_trust.js";
-import { createExtensionUi } from "./ui/extension_ui.js";
-import { createMenu } from "./ui/menu.js";
+import { createSessionPane } from "./session/pane.js";
 import { createSidebar } from "./ui/sidebar.js";
 
 const sessionsList = document.getElementById("sessions-list");
 const msgs = document.getElementById("msgs");
-const jumpLatest = document.getElementById("jump-latest");
-const queuedPanel = document.getElementById("queued-panel");
-const input = document.getElementById("inp");
-const workingIndicator = document.getElementById("working");
-const workingSpin = document.getElementById("work-spin");
-const workingText = document.querySelector(".work-text");
-
-const footerLine1 = document.getElementById("footer-line-1");
-const footerLeft2 = document.getElementById("footer-left-2");
-const footerRight2 = document.getElementById("footer-right-2");
-
-const rolePill = document.getElementById("role-pill");
-const btnModel = document.getElementById("btn-model");
-const btnThinking = document.getElementById("btn-thinking");
-const lblModel = document.getElementById("lbl-model");
-const lblThinking = document.getElementById("lbl-thinking");
 
 const sidebarLabel = document.getElementById("sidebar-label");
 const btnSidebarLeft = document.getElementById("btn-sidebar-left");
 const btnSidebarRight = document.getElementById("btn-sidebar-right");
 
-const btnTakeover = document.getElementById("btn-takeover");
-const btnAbort = document.getElementById("btn-abort");
-const btnRelease = document.getElementById("btn-release");
-
-const menuOverlay = document.getElementById("menu-overlay");
-const menuScrim = document.getElementById("menu-scrim");
-const menuPanel = document.getElementById("menu-panel");
+const menuDom = {
+	menuOverlay: document.getElementById("menu-overlay"),
+	menuScrim: document.getElementById("menu-scrim"),
+	menuPanel: document.getElementById("menu-panel"),
+};
 
 const sidebar = document.querySelector(".sidebar");
 const sidebarOverlay = document.getElementById("sidebar-overlay");
 
 const kbMenu = document.getElementById("kb-menu");
-const kbEsc = document.getElementById("kb-esc");
-const kbTakeover = document.getElementById("kb-takeover");
-const kbRelease = document.getElementById("kb-release");
-const kbEnter = document.getElementById("kb-enter");
+
+/** @type {import("./session/pane.js").PaneRefs} */
+const paneRefs = {
+	msgs,
+	jumpLatest: document.getElementById("jump-latest"),
+	queuedPanel: document.getElementById("queued-panel"),
+	input: document.getElementById("inp"),
+	working: document.getElementById("working"),
+	workingSpin: document.getElementById("work-spin"),
+	workingText: document.querySelector(".work-text"),
+	footerLine1: document.getElementById("footer-line-1"),
+	footerLeft2: document.getElementById("footer-left-2"),
+	footerRight2: document.getElementById("footer-right-2"),
+	footerExtStatus: document.getElementById("footer-ext-status"),
+	extAbove: document.getElementById("ext-widgets-above"),
+	extBelow: document.getElementById("ext-widgets-below"),
+	rolePill: document.getElementById("role-pill"),
+	btnModel: document.getElementById("btn-model"),
+	btnThinking: document.getElementById("btn-thinking"),
+	lblModel: document.getElementById("lbl-model"),
+	lblThinking: document.getElementById("lbl-thinking"),
+	btnTakeover: document.getElementById("btn-takeover"),
+	btnAbort: document.getElementById("btn-abort"),
+	btnRelease: document.getElementById("btn-release"),
+	kbEsc: document.getElementById("kb-esc"),
+	kbTakeover: document.getElementById("kb-takeover"),
+	kbRelease: document.getElementById("kb-release"),
+	kbEnter: document.getElementById("kb-enter"),
+};
 
 const replayName = new URL(window.location.href).searchParams.get("replay")?.trim() || null;
 const initialHost = {
@@ -132,14 +137,12 @@ async function loadHosts() {
 async function switchHost(host) {
 	const origin = hostOrigin(host);
 	if (origin === api.getBaseUrl()) return;
-	menuCtrl?.close();
+	pane.closeMenu();
 	api.setBaseUrl(origin);
 	activeHost = { ...host, url: origin };
 	try {
 		await ensureClientSession();
-		sessionCtrl.reset();
-		updateFooter();
-		updateControls();
+		pane.reset();
 		await sidebarCtrl.refresh();
 	} catch (error) {
 		showFatalError(error);
@@ -156,185 +159,7 @@ try {
 const shouldUseFaceId = !isLoopbackBrowserHost(window.location.hostname);
 const faceIdGuard = shouldUseFaceId ? installFaceIdGuard({ api }) : null;
 
-let workingIntervalId = null;
-let workingFrame = 0;
-
 let sidebarCtrl = null;
-let menuCtrl = null;
-
-function formatTokens(n) {
-	const num = Number(n || 0);
-	if (!Number.isFinite(num) || num <= 0) return "0";
-	if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-	if (num >= 10_000) return `${Math.round(num / 1_000)}k`;
-	if (num >= 1_000) return `${(num / 1_000).toFixed(1)}k`;
-	return String(Math.round(num));
-}
-
-function formatCost(cost) {
-	const num = Number(cost || 0);
-	if (!Number.isFinite(num) || num <= 0) return null;
-	return `$${num.toFixed(3)}`;
-}
-
-function buildSessionMetrics(state) {
-	if (!state || typeof state !== "object") return "";
-
-	const parts = [];
-	const stats = state.stats && typeof state.stats === "object" ? state.stats : null;
-	const tokens = stats && stats.tokens && typeof stats.tokens === "object" ? stats.tokens : null;
-
-	const inputTokens = tokens && typeof tokens.input === "number" ? tokens.input : 0;
-	const outputTokens = tokens && typeof tokens.output === "number" ? tokens.output : 0;
-	const cacheRead = tokens && typeof tokens.cacheRead === "number" ? tokens.cacheRead : 0;
-	const cacheWrite = tokens && typeof tokens.cacheWrite === "number" ? tokens.cacheWrite : 0;
-	const cost = stats && typeof stats.cost === "number" ? stats.cost : 0;
-
-	if (inputTokens) parts.push(`↑${formatTokens(inputTokens)}`);
-	if (outputTokens) parts.push(`↓${formatTokens(outputTokens)}`);
-	if (cacheRead) parts.push(`R${formatTokens(cacheRead)}`);
-	if (cacheWrite) parts.push(`W${formatTokens(cacheWrite)}`);
-
-	const costStr = formatCost(cost);
-	if (costStr) parts.push(costStr);
-
-	const usage = state.contextUsage && typeof state.contextUsage === "object" ? state.contextUsage : null;
-	const cw = usage && typeof usage.contextWindow === "number" ? usage.contextWindow : 0;
-	if (cw > 0) {
-		const percent = typeof usage.percent === "number" ? usage.percent : null;
-		const auto = state.autoCompactionEnabled ? " (auto)" : "";
-		if (percent === null) {
-			parts.push(`?/${formatTokens(cw)}${auto}`);
-		} else {
-			parts.push(`${Math.round(percent)}%/${formatTokens(cw)}${auto}`);
-		}
-	}
-
-	return parts.join(" ");
-}
-
-function updateFooter() {
-	const activeState = sessionCtrl.getActiveState();
-	if (!activeState) {
-		footerLine1.textContent = activeHost?.label ? `host: ${activeHost.label}` : "—";
-		footerLeft2.textContent = "—";
-		footerRight2.textContent = api.getBaseUrl();
-		return;
-	}
-
-	const trust = activeState.projectTrust;
-	const untrusted = trust && trust.gated && !trust.trusted ? " · project .pi resources skipped (untrusted)" : "";
-	footerLine1.textContent = `${activeState.cwd || "—"}${untrusted}`;
-
-	const model = activeState.model ? `${activeState.model.provider}/${activeState.model.id}` : "(no model)";
-	const metrics = buildSessionMetrics(activeState);
-	const leftParts = [];
-	if (metrics) leftParts.push(metrics);
-	leftParts.push(activeState.sessionId.slice(0, 8));
-	footerLeft2.textContent = leftParts.join(" • ");
-	footerRight2.textContent = `${model} • ${activeState.thinkingLevel}`;
-}
-
-function updateRolePill() {
-	const role = sessionCtrl.getRole();
-	const connection = sessionCtrl.getConnection();
-	const offline = Boolean(sessionCtrl.getActiveSessionId()) && (connection === "reconnecting" || connection === "gone");
-	rolePill.textContent = offline ? (connection === "gone" ? "ended" : "reconnecting") : role;
-	rolePill.classList.remove("controller", "viewer", "offline");
-	rolePill.classList.add(offline ? "offline" : role);
-}
-
-function updateTopSelectors() {
-	const activeState = sessionCtrl.getActiveState();
-	const model = activeState?.model ? `${activeState.model.provider}/${activeState.model.id}` : "—";
-	if (lblModel) {
-		lblModel.textContent = model;
-		lblModel.title = model;
-	}
-	const thinking = activeState?.thinkingLevel ? String(activeState.thinkingLevel) : "—";
-	if (lblThinking) {
-		lblThinking.textContent = thinking;
-		lblThinking.title = thinking;
-	}
-}
-
-function workingLabel(status) {
-	if (status.kind === "compacting") return status.reason && status.reason !== "manual" ? `Compacting context (${status.reason})...` : "Compacting context...";
-	if (status.kind === "retrying") return `Retrying (${status.attempt}/${status.maxAttempts})...`;
-	return "Working...";
-}
-
-function updateWorkingIndicator() {
-	if (!workingIndicator) return;
-	const status = sessionCtrl.getRunStatus();
-	const show = isPhoneLike() && status.kind !== "idle";
-	workingIndicator.classList.toggle("open", show);
-	if (workingText) workingText.textContent = workingLabel(status);
-
-	const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-	const updateFrame = () => {
-		if (workingSpin) workingSpin.textContent = frames[workingFrame % frames.length];
-		workingFrame = (workingFrame + 1) % frames.length;
-	};
-
-	if (show) {
-		if (!workingIntervalId) {
-			workingFrame = 0;
-			updateFrame();
-			workingIntervalId = setInterval(updateFrame, 80);
-		}
-	} else if (workingIntervalId) {
-		clearInterval(workingIntervalId);
-		workingIntervalId = null;
-	}
-}
-
-function updateControls() {
-	updateRolePill();
-
-	const hasSession = Boolean(sessionCtrl.getActiveSessionId());
-	const isController = hasSession && sessionCtrl.isController();
-	const activeState = sessionCtrl.getActiveState();
-	const compacting = Boolean(activeState && activeState.isCompacting);
-	const streaming = Boolean(activeState && activeState.isStreaming);
-	const busy = streaming || compacting;
-	const phone = isPhoneLike();
-	const canChangeSettings = hasSession && isController && !busy;
-
-	btnAbort.disabled = !hasSession;
-	btnTakeover.disabled = !hasSession || isController;
-	btnRelease.disabled = !hasSession || !isController;
-	input.disabled = !hasSession || !isController || compacting;
-	if (btnModel) btnModel.disabled = !canChangeSettings;
-	if (btnThinking) btnThinking.disabled = !canChangeSettings;
-
-	if (kbEsc) kbEsc.disabled = !hasSession;
-	if (kbTakeover) kbTakeover.disabled = !hasSession || isController;
-	if (kbRelease) kbRelease.disabled = !hasSession || !isController;
-	if (kbEnter) kbEnter.disabled = !hasSession || !isController || compacting;
-
-	if (!hasSession) {
-		input.placeholder = "";
-	} else if (compacting) {
-		input.placeholder = "Compacting context…";
-	} else if (isController) {
-		input.placeholder = phone
-			? "Type a prompt (Enter steers, /queue waits)"
-			: streaming
-				? "Streaming… (Enter steers, /queue waits)"
-				: "Type a prompt (Enter to send, Shift+Enter for newline)";
-	} else {
-		input.placeholder = "Viewer mode — Take over to type";
-	}
-
-	updateTopSelectors();
-	updateWorkingIndicator();
-}
-
-function autoResize(el) {
-	el.style.height = "auto";
-	el.style.height = Math.min(el.scrollHeight, 200) + "px";
-}
 
 function fillBorders() {
 	const chat = document.querySelector(".chat");
@@ -347,62 +172,15 @@ function fillBorders() {
 	});
 }
 
-function restoreComposerText(text) {
-	input.value = input.value.trim() ? `${text}\n${input.value}` : text;
-	autoResize(input);
-}
-
-async function sendPromptFromInput() {
-	if (input.disabled) return;
-	const text = input.value;
-	if (!text.trim()) return;
-	input.value = "";
-	autoResize(input);
-	input.focus();
-	try {
-		await sessionCtrl.sendPrompt(text);
-	} catch (error) {
-		restoreComposerText(text);
-		sessionCtrl.appendNotice(`Not sent: ${error instanceof Error ? error.message : String(error)}`, "error");
-	}
-}
-
-const extensionUi = createExtensionUi({
-	api,
-	getSessionId: () => sessionCtrl.getActiveSessionId(),
-	onNotice: (text, kind) => sessionCtrl.appendNotice(text, kind),
-	onEditorText: (text) => {
-		input.value = text;
-		autoResize(input);
-	},
-	statusEl: document.getElementById("footer-ext-status"),
-	aboveEl: document.getElementById("ext-widgets-above"),
-	belowEl: document.getElementById("ext-widgets-below"),
-});
-
-async function askProjectTrust(prompt) {
-	const response = await extensionUi.askLocal(trustPromptRequest(prompt));
-	return response.cancelled ? null : choiceForLabel(prompt, response.value);
-}
-
-const createSession = (payload) => createSessionWithTrust({ api, payload, ask: askProjectTrust });
-
-const sessionCtrl = createSessionController({
-	msgsEl: msgs,
-	queuedEl: queuedPanel,
-	pillEl: jumpLatest,
+const pane = createSessionPane({
+	refs: paneRefs,
 	api,
 	getClientId: () => clientId,
-	onRefreshClient: refreshClientSession,
-	onStateChange: () => {
-		updateFooter();
-		updateControls();
-	},
-	onCloseMenu: () => menuCtrl?.close(),
+	refreshClient: refreshClientSession,
+	menuDom,
+	getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 	onSidebarClose: () => sidebarCtrl?.setOpen(false),
 	onSidebarRefresh: () => sidebarCtrl?.refresh(),
-	extensionUi,
-	createSession,
 });
 
 sidebarCtrl = createSidebar({
@@ -414,96 +192,41 @@ sidebarCtrl = createSidebar({
 	btnSidebarRight,
 	api,
 	getClientId: () => clientId,
-	onNotice: sessionCtrl.appendNotice,
-	getActiveSessionId: () => sessionCtrl.getActiveSessionId(),
-	onSelectSession: (session) => sessionCtrl.selectSession(session),
-	onSessionIdSelected: (sessionId) => {
-		sessionCtrl.openSessionId(sessionId);
-		updateControls();
-	},
+	onNotice: pane.appendNotice,
+	getActiveSessionId: () => pane.getSessionId(),
+	onSelectSession: (session) => pane.selectSession(session),
+	onSessionIdSelected: (sessionId) => pane.openSessionId(sessionId),
 	getHosts: () => hosts,
 	getActiveHost: () => activeHost,
 	onSelectHost: switchHost,
-	createSession,
+	createSession: pane.createSession,
 });
-
-menuCtrl = createMenu({
-	menuOverlay,
-	menuScrim,
-	menuPanel,
-	btnModel,
-	btnThinking,
-	api,
-	getClientId: () => clientId,
-	onNotice: sessionCtrl.appendNotice,
-	getActiveSessionId: () => sessionCtrl.getActiveSessionId(),
-	getActiveState: () => sessionCtrl.getActiveState(),
-});
-
-function runAction(action) {
-	void action().catch((error) => {
-		sessionCtrl.appendNotice(error instanceof Error ? error.message : String(error), "error");
-	});
-}
-
-btnAbort.addEventListener("click", () => runAction(sessionCtrl.abortRun));
-btnTakeover.addEventListener("click", () => runAction(sessionCtrl.takeOver));
-btnRelease.addEventListener("click", () => runAction(sessionCtrl.release));
-if (btnModel) btnModel.addEventListener("click", () => void menuCtrl.openModelMenu());
-if (btnThinking) btnThinking.addEventListener("click", () => menuCtrl.openThinkingMenu());
 
 if (kbMenu) kbMenu.addEventListener("click", () => sidebarCtrl.toggleOpen());
-if (kbEsc) kbEsc.addEventListener("click", () => runAction(sessionCtrl.abortRun));
-if (kbTakeover) kbTakeover.addEventListener("click", () => runAction(sessionCtrl.takeOver));
-if (kbRelease) kbRelease.addEventListener("click", () => runAction(sessionCtrl.release));
-if (kbEnter) kbEnter.addEventListener("click", () => void sendPromptFromInput());
-
 if (sidebarOverlay) sidebarOverlay.addEventListener("click", () => sidebarCtrl.setOpen(false));
 
-input.addEventListener("input", () => autoResize(input));
-input.addEventListener("keydown", (e) => {
-	if (isPhoneLike()) return;
-	if (e.key === "Enter" && !e.shiftKey) {
-		e.preventDefault();
-		void sendPromptFromInput();
-	}
-});
-
 window.addEventListener("keydown", (e) => {
-	if (e.key === "Escape") {
-		if (extensionUi.isOpen()) {
-			e.preventDefault();
-			extensionUi.cancelShown();
-			return;
-		}
-		if (menuCtrl.isOpen()) {
-			e.preventDefault();
-			menuCtrl.close();
-			return;
-		}
-		runAction(sessionCtrl.abortRun);
-	}
+	if (e.key === "Escape") pane.handleEscape(e);
 });
 
 fillBorders();
 window.addEventListener("resize", fillBorders);
 window.addEventListener("resize", () => sidebarCtrl.setOpen(false));
-window.addEventListener("pageshow", () => sessionCtrl.resumeIfStale());
-window.addEventListener("focus", () => sessionCtrl.resumeIfStale());
-window.addEventListener("online", () => sessionCtrl.resumeIfStale());
+window.addEventListener("pageshow", () => pane.resumeIfStale());
+window.addEventListener("focus", () => pane.resumeIfStale());
+window.addEventListener("online", () => pane.resumeIfStale());
 document.addEventListener("visibilitychange", () => {
-	if (document.visibilityState === "visible") sessionCtrl.resumeIfStale();
+	if (document.visibilityState === "visible") pane.resumeIfStale();
 });
 
-updateFooter();
-updateControls();
+pane.render();
 
 if (faceIdGuard) {
 	await faceIdGuard.start();
 }
 
 if (replayName) {
-	void sessionCtrl.runReplay(replayName);
+	void pane.runReplay(replayName);
 } else {
 	await loadHosts();
 	void sidebarCtrl.refresh();
