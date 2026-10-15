@@ -27,11 +27,15 @@ Initialize config and issue the first device certificate:
 bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X --device iphone --platform ios
 ```
 
-If you already have a trusted server certificate/key, such as a Tailscale certificate, provide it so phones/tablets do not need to trust Caddy's internal CA:
+If you already have a trusted server certificate/key, such as a Tailscale certificate, provide it so phones/tablets do not need to trust Caddy's internal CA. Keep it in `~/.pi-web/tls`, outside any checkout, so `git clean -x` or a deleted worktree can't take the front door down:
 
 ```bash
-bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X --server-cert .tls/your-machine.ts.net.crt --server-key .tls/your-machine.ts.net.key --device iphone --platform ios
+mkdir -m 700 -p ~/.pi-web/tls
+tailscale cert --cert-file ~/.pi-web/tls/your-machine.ts.net.crt --key-file ~/.pi-web/tls/your-machine.ts.net.key your-machine.ts.net
+bun run cli -- secure init --domain your-machine.ts.net --listen-host 100.X.X.X --server-cert ~/.pi-web/tls/your-machine.ts.net.crt --server-key ~/.pi-web/tls/your-machine.ts.net.key --device iphone --platform ios
 ```
+
+Tailscale certificates last 90 days. Renew by re-running the same `tailscale cert` command, then restart Caddy (`launchctl kickstart -k gui/$(id -u)/dev.pi-web.caddy` under launchd).
 
 Issue more certificates as needed, one per device:
 
@@ -58,11 +62,12 @@ On an always-on host, let launchd own pi-web and Caddy so a crash or reboot brin
 ```bash
 bun run cli -- service print     # review the generated LaunchAgents first
 bun run cli -- service install   # refuses while another pi-web answers on the port
+bun run cli -- service restart   # restart the server agent, e.g. after a deploy
 bun run cli -- service status    # launchd state plus /health
 bun run cli -- service uninstall
 ```
 
-The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-web.caddy.plist`, with logs in `~/.pi-web/logs/`. The server agent captures the `PATH` of the shell that ran `install`, because launchd starts agents with a bare `PATH` and the agent's bash tool needs your tools. Re-run `install` after moving the repo or changing `PATH`.
+The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-web.caddy.plist`, with logs in `~/.pi-web/logs/`. The server agent runs pi-web from the checkout that ran `install` and captures that shell's `PATH` (minus the `node_modules/.bin` entries `bun run` adds), because launchd starts agents with a bare `PATH` and the agent's bash tool needs your tools. Re-run `install` after moving the repo or changing `PATH`.
 
 On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime.
 
@@ -75,10 +80,12 @@ The server serves `public/` straight from its checkout, so run the live server f
 ```bash
 git worktree add --detach ../pi-web-live main              # once
 (cd ../pi-web-live && bun install)                          # once, and when dependencies change
-tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'
+(cd ../pi-web-live && bun run cli -- service install)       # once: launchd runs the worktree
 ```
 
-Deploy a new build: commit on `main`, then `git -C ../pi-web-live checkout --detach main`, run `bun install` there if `bun.lock` changed, and restart (Ctrl+C in the `piweb` tmux pane and start again, or `service install` from the worktree once launchd owns it). A restart aborts running turns, including the one that asked for it, so make it the last step.
+Deploy a new build: commit on `main`, then `git -C ../pi-web-live checkout --detach main`, run `bun install` there if `bun.lock` changed, and `bun run cli -- service restart`. A restart aborts running turns, including the one that asked for it, so make it the last step. Run `service install` only from the worktree; from the main checkout it would point launchd at your work in progress.
+
+Without launchd, run the worktree in tmux instead (`tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'`) and restart with Ctrl+C in that pane.
 
 ### Toggles
 
