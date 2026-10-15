@@ -34,4 +34,15 @@ describe("launchd agents", () => {
 		const env = serviceEnvironment({ PATH: "/usr/bin", HOME: "/Users/me", OPENAI_API_KEY: "secret", LANG: "en_US.UTF-8" }, { EXTRA: "1" });
 		expect(env).toEqual({ PATH: "/usr/bin", LANG: "en_US.UTF-8", EXTRA: "1" });
 	});
+
+	test("drops the node_modules/.bin entries bun run prepends and dedupes PATH", () => {
+		const env = serviceEnvironment({
+			PATH: "/srv/pi-web/node_modules/.bin:/srv/node_modules/.bin/:/node_modules/.bin:/opt/homebrew/bin::/usr/bin:/opt/homebrew/bin",
+		});
+		expect(env).toEqual({ PATH: "/opt/homebrew/bin:/usr/bin" });
+	});
+
+	test("leaves PATH out when nothing survives", () => {
+		expect(serviceEnvironment({ PATH: "/srv/node_modules/.bin", LANG: "C" })).toEqual({ LANG: "C" });
+	});
 });

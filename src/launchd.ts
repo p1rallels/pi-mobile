@@ -69,11 +69,21 @@ export function launchAgentPath(layout: ServiceLayout, label: string): string {
 	return join(layout.launchAgentsDir, `${label}.plist`);
 }
 
+const SERVICE_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "PI_WEB_HOME", "PI_CODING_AGENT_DIR"] as const;
+
+/** `bun run` prepends every ancestor's node_modules/.bin, which would leak the checkout's dev tools into the agent's shell. */
+export function servicePath(path: string): string {
+	const entries = path.split(":").filter((entry) => entry !== "" && !entry.replace(/\/+$/, "").endsWith("/node_modules/.bin"));
+	return [...new Set(entries)].join(":");
+}
+
 /** launchd starts agents with a bare PATH, so the agent's bash tool would miss brew, bun and friends. */
 export function serviceEnvironment(env: NodeJS.ProcessEnv, extra: Record<string, string> = {}): Record<string, string> {
-	const keep = ["PATH", "LANG", "LC_ALL", "PI_WEB_HOME", "PI_CODING_AGENT_DIR"];
-	const picked = Object.fromEntries(keep.flatMap((key) => (env[key] ? [[key, env[key]!]] : [])));
-	return { ...picked, ...extra };
+	const picked = SERVICE_ENV_KEYS.flatMap((key) => {
+		const value = key === "PATH" ? servicePath(env.PATH ?? "") : env[key];
+		return value ? [[key, value] as const] : [];
+	});
+	return { ...Object.fromEntries(picked), ...extra };
 }
 
 export function serverAgentSpec(options: {
