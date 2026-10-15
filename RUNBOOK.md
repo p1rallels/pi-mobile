@@ -66,7 +66,28 @@ The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-
 
 On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime.
 
-`GET /health` reports the pi SDK version, uptime, memory, and running/busy/viewer counts.
+`GET /health` reports the pi SDK version, uptime, memory, running/busy/viewer counts, and the tripwire and project trust modes.
+
+### Working on pi-web from pi-web
+
+The server serves `public/` straight from its checkout, so run the live server from a separate git worktree and edit the main checkout. Half-finished UI work then never reaches your phone, and testing never restarts the server you are talking through.
+
+```bash
+git worktree add --detach ../pi-web-live main              # once
+(cd ../pi-web-live && bun install)                          # once, and when dependencies change
+tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'
+```
+
+Deploy a new build: commit on `main`, then `git -C ../pi-web-live checkout --detach main`, run `bun install` there if `bun.lock` changed, and restart (Ctrl+C in the `piweb` tmux pane and start again, or `service install` from the worktree once launchd owns it). A restart aborts running turns, including the one that asked for it, so make it the last step.
+
+### Toggles
+
+`pi-web config` prints and `pi-web config set <name> <value>` saves these in `~/.pi-web/config.json`; restart to apply. An env var of the same meaning wins over the file.
+
+| Setting | Values | Env |
+|---|---|---|
+| `tripwire` | `on` (default) blocks critical tool calls and logs the rest, `off` inspects nothing | `PI_WEB_TRIPWIRE` |
+| `project-trust` | `always` (default), `ask`, `never` for folders without a `trust.json` decision | `PI_WEB_PROJECT_TRUST` |
 
 ---
 
@@ -222,7 +243,7 @@ For this project, the preferred path is still Tailscale + Caddy mTLS.
 
 ## Tripwire alerts
 
-Tripwires run in the server-side session runtime, not in the browser attachment. Long-running sessions keep executing while the phone disconnects, and tripwire alerts continue accumulating in `~/.pi/agent/pi-web/tripwire-state.json`.
+Tripwires run in the server-side session runtime, not in the browser attachment. Turn them off with `pi-web config set tripwire off`. Long-running sessions keep executing while the phone disconnects, and tripwire alerts continue accumulating in `~/.pi/agent/pi-web/tripwire-state.json`.
 
 Current behavior:
 

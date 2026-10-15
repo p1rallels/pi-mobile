@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { parseTripwireMode } from "../src/tripwire.ts";
 import { agentEventTypes, cleanupAgentDirs, startFauxSession, waitFor } from "./support/faux_runtime.ts";
 
 afterEach(cleanupAgentDirs);
@@ -29,6 +30,31 @@ describe("tripwire guard", () => {
 		expect(session.faux.getPendingResponseCount()).toBe(1);
 
 		await runtime.release(sessionId, { clientId });
+	});
+
+	test("inspects and blocks nothing when switched off", async () => {
+		const session = await startFauxSession([], { runtime: { tripwire: "off" } });
+		const marker = join(session.agentDir, "untripped-marker");
+		session.faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("bash", { command: `touch ${marker} && ls ~/.ssh >/dev/null 2>&1; true` }, { id: "call_secret" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		const { runtime, sessionId, clientId, events } = session;
+
+		await runtime.handleCommand(sessionId, { type: "prompt", clientId, text: "look around" });
+		await waitFor(() => agentEventTypes(events).includes("agent_settled"));
+
+		expect(existsSync(marker)).toBe(true);
+		expect(events.some((event) => event.type === "tripwire_alert")).toBe(false);
+		expect(session.faux.getPendingResponseCount()).toBe(0);
+		expect(runtime.getHealth().tripwire).toBe("off");
+		await runtime.release(sessionId, { clientId });
+	});
+
+	test("reads PI_WEB_TRIPWIRE", () => {
+		expect(parseTripwireMode(undefined)).toBe("on");
+		expect(parseTripwireMode(" OFF ")).toBe("off");
+		expect(() => parseTripwireMode("maybe")).toThrow("PI_WEB_TRIPWIRE");
 	});
 
 	test("lets ordinary tool calls through", async () => {

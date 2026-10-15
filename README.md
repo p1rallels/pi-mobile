@@ -92,7 +92,8 @@ Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intent
 - New sessions can only start from the current working directory or repos you explicitly save in the UI.
 - A tab that loses its event stream (network drop, phone asleep, server restart) reconnects from the last entry it rendered and only receives what it missed, including a message still streaming and tools still running.
 - Extension prompts (`ctx.ui.select/confirm/input/editor`) show as dialogs on every connected device; the first answer wins. Extension statuses, text widgets and titles show in the page too.
-- Project `.pi` resources follow `~/.pi/agent/trust.json` like the CLI. Folders without a saved decision follow `PI_WEB_PROJECT_TRUST`: `always` (default, no prompts), `ask` (CLI-style prompt when a session opens) or `never`.
+- Project `.pi` resources follow `~/.pi/agent/trust.json` like the CLI. Folders without a saved decision follow `pi-web config set project-trust always|ask|never` (`PI_WEB_PROJECT_TRUST`): `always` (default, no prompts), `ask` (CLI-style prompt when a session opens) or `never`.
+- The tripwire can be switched off with `pi-web config set tripwire off` (`PI_WEB_TRIPWIRE=off`).
 
 Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI.
 

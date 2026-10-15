@@ -6,6 +6,7 @@ import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { FaceIdService } from "./faceid.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
+import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
@@ -288,6 +289,9 @@ Env:
   PI_WEB_MAX_RUNNING_SESSIONS
   PI_WEB_MAX_CLIENTS_PER_SESSION
   PI_WEB_IDLE_SESSION_MINUTES (dispose unwatched idle sessions after this long, default 15)
+  PI_WEB_TRIPWIRE=on|off (block critical tool calls, default on)
+  PI_WEB_PROJECT_TRUST=always|ask|never (projects without a trust.json decision, default always)
+  PI_WEB_CLIENT_SESSIONS_PER_MINUTE (browser session handshakes per client IP, default 20)
   PI_WEB_FACEID_SESSION_MINUTES (Face ID session length, default 240)
   PI_WEB_FACEID_COMMAND_MINUTES (Face ID age allowed for prompts and take over, default 60)
   PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, default 10)
@@ -774,7 +778,14 @@ const faceIdChallengeLimiter = createRateLimiter(60_000, 12);
 const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
 
 const projectTrustMode = parseProjectTrustMode(process.env.PI_WEB_PROJECT_TRUST);
-const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession, idleSessionTtlMs: idleSessionMinutes * 60_000, projectTrustMode });
+const tripwireMode = parseTripwireMode(process.env.PI_WEB_TRIPWIRE);
+const runtime = new PiWebRuntime({
+	maxRunningSessions,
+	maxClientsPerSession,
+	idleSessionTtlMs: idleSessionMinutes * 60_000,
+	projectTrustMode,
+	tripwire: tripwireMode,
+});
 runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
 const faceId = new FaceIdService();
@@ -1236,6 +1247,7 @@ if (secureMode) {
 	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
 }
 console.log(`SDK extension auto-loading is enabled. Projects without a trust.json decision: ${projectTrustMode} (PI_WEB_PROJECT_TRUST).`);
+console.log(`Tripwire: ${tripwireMode === "on" ? "on, critical tool calls are blocked" : "off"} (PI_WEB_TRIPWIRE).`);
 if (restoredSessions > 0) console.log(`${String(restoredSessions)} session(s) from before the restart can re-attach.`);
 
 let shuttingDown = false;

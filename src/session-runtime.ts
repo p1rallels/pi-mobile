@@ -31,7 +31,7 @@ import {
 } from "./project-trust.ts";
 import { createSessionIndex, type SessionSummary } from "./session-index.ts";
 import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
-import { TripwireService } from "./tripwire.ts";
+import { TripwireService, type TripwireMode } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
 import type {
 	ApiCommandRequest,
@@ -87,6 +87,7 @@ interface PiWebRuntimeOptions {
 	controllerGraceMs?: number;
 	modelRuntime?: ModelRuntime;
 	projectTrustMode?: ProjectTrustMode;
+	tripwire?: TripwireMode;
 }
 
 interface DetachedSession {
@@ -389,6 +390,7 @@ export class PiWebRuntime {
 	private idleSessionTtlMs: number;
 	private controllerGraceMs: number;
 	private projectTrustMode: ProjectTrustMode;
+	private tripwireMode: TripwireMode;
 	private trustStore = new ProjectTrustStore(this.agentDir);
 
 	constructor(options: PiWebRuntimeOptions = {}) {
@@ -397,6 +399,7 @@ export class PiWebRuntime {
 		this.idleSessionTtlMs = options.idleSessionTtlMs ?? DEFAULT_IDLE_SESSION_TTL_MS;
 		this.controllerGraceMs = options.controllerGraceMs ?? DEFAULT_CONTROLLER_GRACE_MS;
 		this.projectTrustMode = options.projectTrustMode ?? DEFAULT_PROJECT_TRUST_MODE;
+		this.tripwireMode = options.tripwire ?? "on";
 		this.modelRuntimePromise = options.modelRuntime
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
@@ -447,7 +450,7 @@ export class PiWebRuntime {
 			cwd,
 			agentDir: this.agentDir,
 			settingsManager,
-			extensionFactories: [this.tripwireGuard()],
+			extensionFactories: this.tripwireMode === "on" ? [this.tripwireGuard()] : [],
 		});
 		const modelRuntime = await this.refreshModelRuntime();
 		await resourceLoader.reload();
@@ -633,9 +636,11 @@ export class PiWebRuntime {
 		return this.runningById.has(sessionId);
 	}
 
-	getHealth(): { runningSessions: number; busySessions: number; viewers: number; detachedSessions: number } {
+	getHealth(): { runningSessions: number; busySessions: number; viewers: number; detachedSessions: number; tripwire: TripwireMode; projectTrust: ProjectTrustMode } {
 		const runtimes = [...this.runningById.values()];
 		return {
+			tripwire: this.tripwireMode,
+			projectTrust: this.projectTrustMode,
 			runningSessions: runtimes.length,
 			busySessions: runtimes.filter((runtime) => !runtime.session.isIdle).length,
 			viewers: runtimes.reduce((total, runtime) => total + runtime.clients.size, 0),
@@ -1202,14 +1207,10 @@ export class PiWebRuntime {
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			runtime.modifiedAtMs = Date.now();
 			runtime.live = reduceLiveSnapshot(runtime.live, event);
-			const inspection = this.tripwireService.inspectEvent(
-				{
-					sessionId,
-					cwd: runtime.cwd,
-					allowedRoots: runtime.tripwireAllowedRoots,
-				},
-				event,
-			);
+			const inspection =
+				this.tripwireMode === "on"
+					? this.tripwireService.inspectEvent({ sessionId, cwd: runtime.cwd, allowedRoots: runtime.tripwireAllowedRoots }, event)
+					: { alerts: [] };
 			this.broadcast(sessionId, { type: "agent_event", event: toWireEvent(event) });
 
 			if (inspection.alerts.length > 0) {

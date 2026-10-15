@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { buildCaddyfile, writeCaddyfile } from "../src/caddy-config.ts";
 import { emptyDeviceRegistry, expiredDevices, expiringDevices, isDeviceAllowed, normalizeFingerprint, type DeviceRecord } from "../src/device-registry.ts";
 import { runDoctor } from "../src/doctor.ts";
-import { createSecureConfig, ensurePiWebDirs, resolvePiWebPaths } from "../src/security-config.ts";
+import { createSecureConfig, ensurePiWebDirs, parsePiWebConfig, resolvePiWebPaths } from "../src/security-config.ts";
 
 const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
 const normalized = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
@@ -79,6 +79,9 @@ describe("security config", () => {
 		expect(config.secureMode).toBe(true);
 		expect(config.host).toBe("127.0.0.1");
 		expect(config.publicOrigins).toEqual(["https://pi.example.test"]);
+		expect([config.tripwire, config.projectTrust]).toEqual(["on", "always"]);
+		const parsed = parsePiWebConfig({ ...config, tripwire: "off", projectTrust: "sometimes" }, paths);
+		expect([parsed.tripwire, parsed.projectTrust]).toEqual(["off", "always"]);
 		const caddyfile = buildCaddyfile(config);
 		expect(caddyfile).toContain("auto_https disable_redirects");
 		expect(caddyfile).toContain("tls internal");

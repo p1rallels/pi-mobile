@@ -5,6 +5,16 @@ import { join, resolve, sep } from "node:path";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 import type { ApiTripwireAlert, ApiTripwireAlertsResponse, ApiTripwireCategory, ApiTripwireResponse, ApiTripwireSeverity } from "./types.ts";
 
+/** PI_WEB_TRIPWIRE: `on` blocks critical tool calls and logs the rest, `off` inspects nothing. */
+export type TripwireMode = "on" | "off";
+
+export function parseTripwireMode(raw: string | undefined): TripwireMode {
+	const value = raw?.trim().toLowerCase();
+	if (!value || value === "on") return "on";
+	if (value === "off") return "off";
+	throw new Error(`PI_WEB_TRIPWIRE must be on or off (got ${JSON.stringify(raw)}).`);
+}
+
 interface StoredTripwireAlert {
 	id: string;
 	sessionId: string;

@@ -32,6 +32,7 @@ function usage(): string {
 
 Usage:
   pi-web start
+  pi-web config [set tripwire on|off | set project-trust always|ask|never]
   pi-web service install [--no-caddy] [--force] | uninstall | status | print [--no-caddy]
   pi-web doctor
   pi-web update --models [--timeout <seconds>]
@@ -326,8 +327,31 @@ function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<
 		env.PI_WEB_PUBLIC_ORIGIN = config.publicOrigins[0]!;
 		env.PI_WEB_ALLOWED_ORIGINS = config.publicOrigins.slice(1).join(",");
 	}
+	env.PI_WEB_TRIPWIRE = env.PI_WEB_TRIPWIRE?.trim() || config.tripwire;
+	env.PI_WEB_PROJECT_TRUST = env.PI_WEB_PROJECT_TRUST?.trim() || config.projectTrust;
 	delete env.PI_WEB_TOKEN;
 	return env;
+}
+
+const CONFIG_SETTINGS = {
+	tripwire: { key: "tripwire", values: ["on", "off"] },
+	"project-trust": { key: "projectTrust", values: ["always", "ask", "never"] },
+} as const;
+
+async function commandConfig(args: ParsedArgs): Promise<void> {
+	const paths = resolvePiWebPaths();
+	const config = (await loadPiWebConfig(paths)) ?? defaultPiWebConfig(paths);
+	const [, action, name, value] = args.positionals;
+	if (action === undefined) {
+		console.log(`tripwire: ${config.tripwire}\nproject-trust: ${config.projectTrust}\nconfig: ${paths.configPath}`);
+		return;
+	}
+	const setting = name && name in CONFIG_SETTINGS ? CONFIG_SETTINGS[name as keyof typeof CONFIG_SETTINGS] : null;
+	if (action !== "set" || !setting || !setting.values.some((allowed) => allowed === value)) {
+		throw new Error("Usage: pi-web config [set tripwire on|off | set project-trust always|ask|never]");
+	}
+	await savePiWebConfig(paths, { ...config, [setting.key]: value });
+	console.log(`${name}: ${String(value)} (restart pi-web to apply)`);
 }
 
 function tailLines(text: string, count: number): string {
@@ -490,6 +514,7 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (cmd === "start") return commandStart();
+	if (cmd === "config") return commandConfig(args);
 	if (cmd === "service") return commandService(args);
 	if (cmd === "doctor") return commandDoctor();
 	if (cmd === "update") return commandUpdate(args);

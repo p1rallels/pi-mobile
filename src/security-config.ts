@@ -37,6 +37,10 @@ export interface PiWebConfig {
 	tailscale: {
 		required: boolean;
 	};
+	/** Exported to the server as PI_WEB_TRIPWIRE unless that env var is set. */
+	tripwire: "on" | "off";
+	/** Exported to the server as PI_WEB_PROJECT_TRUST unless that env var is set. */
+	projectTrust: "always" | "ask" | "never";
 }
 
 export function resolvePiWebHome(raw = process.env.PI_WEB_HOME): string {
@@ -114,7 +118,13 @@ export function defaultPiWebConfig(paths: PiWebPaths, input: Partial<PiWebConfig
 		tailscale: {
 			required: input.tailscale?.required ?? false,
 		},
+		tripwire: input.tripwire ?? "on",
+		projectTrust: input.projectTrust ?? "always",
 	};
+}
+
+function readChoice<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {
+	return choices.find((choice) => choice === value) ?? fallback;
 }
 
 function readString(value: unknown, fallback: string): string {
@@ -162,6 +172,8 @@ export function parsePiWebConfig(raw: unknown, paths: PiWebPaths): PiWebConfig {
 		tailscale: {
 			required: readBoolean(tailscaleInput.required, base.tailscale.required),
 		},
+		tripwire: readChoice(input.tripwire, ["on", "off"] as const, base.tripwire),
+		projectTrust: readChoice(input.projectTrust, ["always", "ask", "never"] as const, base.projectTrust),
 	});
 }
 
