@@ -674,10 +674,14 @@ export async function bootCanvas() {
 		}
 	}
 
-	/** @returns {Promise<any[]>} */
+	/**
+	 * Sessions this host runs. The active list also names sessions another pi is in the middle of
+	 * (isRunning false, with `elsewhere`): those only come onto the canvas when picked in a launcher.
+	 * @returns {Promise<any[]>}
+	 */
 	async function runningSessions() {
 		const data = await api.getJson("/api/active-sessions");
-		return Array.isArray(data?.sessions) ? data.sessions : [];
+		return Array.isArray(data?.sessions) ? data.sessions.filter((/** @type {any} */ session) => session?.isRunning === true) : [];
 	}
 
 	/** Puts every running session that isn't on the canvas yet on it (a first visit to a host's empty map). */

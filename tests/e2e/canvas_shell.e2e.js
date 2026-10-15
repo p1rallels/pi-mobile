@@ -318,6 +318,45 @@ test("tiles keep the newest entries of a long transcript and page back on reques
 	}
 });
 
+test("a session another pi is writing doesn't land on the canvas as if this host ran it", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "repo");
+	await mkdir(cwd);
+	const path1 = await writeSessionFile(root, cwd, S1, "hello from disk", "hi there");
+	const path2 = await writeSessionFile(root, cwd, S2, "second session", "reply two");
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (resumeSessionPath) => {
+			const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+			const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, resumeSessionPath }) });
+			if (!res.ok) throw new Error(`start failed: ${res.status}`);
+		}, path1);
+		// the active list also names sessions a pi outside pi-web is in the middle of (isRunning false)
+		await page.route("**/api/active-sessions", async (route) => {
+			const response = await route.fetch();
+			const body = await response.json();
+			const lastWrite = new Date().toISOString();
+			const elsewhere = { state: "running", turn: "running_tools", lastWrite, writers: [4242] };
+			body.sessions.push({ id: S2, path: path2, cwd, firstMessage: "second session", created: lastWrite, modified: lastWrite, messageCount: 2, isRunning: false, elsewhere });
+			await route.fulfill({ response, json: body });
+		});
+
+		await page.goto(`${base}/?ui=canvas`);
+		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
+		await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
+		await expect(page.locator(".cv-tile")).toHaveCount(1);
+		await expect(tile(page, S2)).toHaveCount(0);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("the launcher lists a directory's sessions, resumes one in place, starts new ones, and steps back with esc", async ({ page }, testInfo) => {
 	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
 	const cwd = join(root, "launch-repo");
@@ -347,6 +386,8 @@ test("the launcher lists a directory's sessions, resumes one in place, starts ne
 
 		await page.goto(`${base}/?ui=canvas`);
 		await expect(page.locator(".cv-root")).toBeVisible();
+		// nothing on screen says the boot finished on an empty map (it waits on the active list, which scans for pi processes)
+		await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
 		await expect(page.locator(".cv-tile")).toHaveCount(0);
 
 		// double-click on empty canvas opens a launcher there; esc steps back, then closes it
