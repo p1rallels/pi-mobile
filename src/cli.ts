@@ -33,7 +33,7 @@ function usage(): string {
 Usage:
   pi-web start
   pi-web config [set tripwire on|off | set project-trust always|ask|never]
-  pi-web service install [--no-caddy] [--force] | uninstall | status | print [--no-caddy]
+  pi-web service install [--no-caddy] [--force] | restart | uninstall | status | print [--no-caddy]
   pi-web doctor
   pi-web update --models [--timeout <seconds>]
   pi-web secure init [--domain <domain>] [--listen-host <host>] [--listen-port <port>] [--port <port>] [--server-cert <path>] [--server-key <path>] [--device <name>] [--platform <platform>]
@@ -473,7 +473,15 @@ async function commandService(args: ParsedArgs): Promise<void> {
 			if (!loaded.ok) throw new Error(`launchctl bootstrap ${spec.label} failed: ${loaded.stderr || loaded.stdout}`);
 			console.log(`installed ${spec.label} -> ${plistPath}`);
 		}
+		const server = specs.find((spec) => spec.label === SERVER_LABEL);
+		if (server) console.log(`server runs from: ${server.workingDirectory}`);
 		console.log(`logs: ${layout.logsDir}`);
+		return;
+	}
+	if (action === "restart") {
+		const restarted = runSync(["launchctl", "kickstart", "-k", `${launchdDomain()}/${SERVER_LABEL}`]);
+		if (!restarted.ok) throw new Error(`launchctl kickstart ${SERVER_LABEL} failed (is the service installed?): ${restarted.stderr || restarted.stdout}`);
+		console.log(`restarted ${SERVER_LABEL}`);
 		return;
 	}
 	if (action === "uninstall") {
@@ -503,7 +511,7 @@ async function commandService(args: ParsedArgs): Promise<void> {
 		}
 		return;
 	}
-	throw new Error("Usage: pi-web service install|uninstall|status|print");
+	throw new Error("Usage: pi-web service install|restart|uninstall|status|print");
 }
 
 async function main(): Promise<void> {
