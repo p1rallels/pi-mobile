@@ -15,10 +15,11 @@ export default defineConfig({
 		},
 	},
 	webServer: {
-		command: `PI_WEB_HOST=127.0.0.1 PI_WEB_PORT=${PORT} PI_WEB_REPLAY=1 PI_WEB_CLIENT_SESSIONS_PER_MINUTE=1000 bun src/server.ts`,
+		command: `bun tests/support/sandboxed_server.ts PI_WEB_PORT=${PORT} PI_WEB_REPLAY=1 PI_WEB_CLIENT_SESSIONS_PER_MINUTE=1000`,
 		url: `http://127.0.0.1:${PORT}/health`,
 		reuseExistingServer: true,
 		timeout: 120_000,
+		gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
 	},
 	use: {
 		baseURL: `http://127.0.0.1:${PORT}`,

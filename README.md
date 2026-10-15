@@ -33,6 +33,8 @@ bun test
 bun run test:e2e
 ```
 
+Tests never see the caller's `PI_*` env, `~/.pi/agent` or `~/.pi-web`: `bun test` preloads tests/support/preload.ts, and every server a test starts (the Playwright web server on port 4318, `PI_WEB_E2E_PORT` to change it) gets a scrubbed env and a throwaway state dir from tests/support/sandbox_env.js. Running them from inside a pi-web session is safe.
+
 ## Pi updates
 
 The Pi SDK is pinned to an exact version so upstream breaking changes only land through deliberate upgrades. Refresh dynamic provider model catalogs independently of the SDK version:

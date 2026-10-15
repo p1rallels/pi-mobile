@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sandboxServerEnv } from "./support/sandbox_env.js";
 
 const tempDirs: string[] = [];
 const procs: Bun.Subprocess[] = [];
@@ -27,7 +28,7 @@ async function startServer(home: string, port: number): Promise<Bun.Subprocess> 
 		cmd: [process.execPath, "src/server.ts"],
 		stdout: "pipe",
 		stderr: "pipe",
-		env: { ...process.env, PI_WEB_HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_WEB_HOST: "127.0.0.1", PI_WEB_PORT: String(port) },
+		env: { ...sandboxServerEnv(home, { PI_WEB_PORT: String(port) }), PI_WEB_HOME: home },
 	});
 	procs.push(proc);
 	const deadline = Date.now() + 5_000;

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { sandboxServerEnv } from "./support/sandbox_env.js";
 
 const tempDirs: string[] = [];
 const procs: Bun.Subprocess[] = [];
@@ -36,13 +37,7 @@ async function startServer() {
 		cmd: [process.execPath, "src/server.ts"],
 		stdout: "pipe",
 		stderr: "pipe",
-		env: {
-			...process.env,
-			PI_WEB_HOME: dir,
-			PI_WEB_HOST: "127.0.0.1",
-			PI_WEB_PORT: String(port),
-			PI_WEB_PUBLIC_ORIGIN: "http://allowed.example",
-		},
+		env: { ...sandboxServerEnv(dir, { PI_WEB_PORT: String(port), PI_WEB_PUBLIC_ORIGIN: "http://allowed.example" }), PI_WEB_HOME: dir },
 	});
 	procs.push(proc);
 	const baseUrl = `http://127.0.0.1:${String(port)}`;

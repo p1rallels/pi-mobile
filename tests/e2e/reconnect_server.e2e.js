@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sandboxServerEnv } from "../support/sandbox_env.js";
 
 const SESSION_ID = "01a13c00-0000-7000-8000-0000000000e2";
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -41,7 +42,7 @@ async function writeSessionFile(root, cwd) {
 async function startServer(root, port) {
 	const proc = spawn(process.env.BUN_BINARY || "bun", ["src/server.ts"], {
 		stdio: "ignore",
-		env: { ...process.env, PI_WEB_HOME: join(root, "home"), PI_CODING_AGENT_DIR: join(root, "agent"), PI_WEB_HOST: "127.0.0.1", PI_WEB_PORT: String(port), PI_WEB_REPLAY: "" },
+		env: sandboxServerEnv(root, { PI_WEB_PORT: String(port) }),
 	});
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
