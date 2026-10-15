@@ -75,7 +75,8 @@ const tile = (page, id) => page.locator(`.cv-tile[data-tile-id="${id}"]`);
 test("running sessions land on the canvas, the map survives reloads, dormant tiles wake on click", async ({ page }, testInfo) => {
 	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
 	const cwd = join(root, "repo");
-	await mkdir(cwd);
+	await mkdir(join(cwd, ".git"), { recursive: true });
+	await writeFile(join(cwd, ".git", "HEAD"), "ref: refs/heads/main\n");
 	const path1 = await writeSessionFile(root, cwd, S1, "hello from disk", "hi there");
 	const path2 = await writeSessionFile(root, cwd, S2, "second session", "reply two");
 	const port = await freePort();
@@ -99,6 +100,8 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		await expect(tile(page, S1).locator(".cv-title")).toContainText("repo");
 		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
 		await expect(tile(page, S1).locator(".cv-ctl-model .sel")).not.toHaveText("—");
+		// the footer names the branch before the session id, like pi's
+		await expect(tile(page, S1).locator(".footer-left-2")).toHaveText(/(^|• )\(main\) • 01a13c00$/);
 
 		// esc closes a tile's menu before it would ever abort the run
 		await tile(page, S1).locator(".cv-ctl-more").click();

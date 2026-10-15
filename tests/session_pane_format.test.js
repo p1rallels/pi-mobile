@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	branchLabel,
 	buildSessionMetrics,
 	composerPlaceholder,
 	elsewhereFooterNote,
@@ -42,6 +43,15 @@ describe("session pane text", () => {
 		const untrusted = footerLines({ ...state, projectTrust: { gated: true, trusted: false }, model: null }, { baseUrl: "x" });
 		expect(untrusted.line1).toBe("/Users/reddot/Desktop/cc/pi-web · project .pi resources skipped (untrusted)");
 		expect(untrusted.right2).toBe("(no model) • max");
+	});
+
+	test("the footer names the git branch between the metrics and the session id, like pi's", () => {
+		expect(footerLines({ ...state, gitBranch: "main" }, { baseUrl: "x" }).left2).toBe("↑12k ↓1.5k R2.0M $1.235 15%/1.0M (auto) • (main) • 01a13e79");
+		expect(footerLines({ ...state, gitBranch: "detached" }, { baseUrl: "x" }).left2).toBe("↑12k ↓1.5k R2.0M $1.235 15%/1.0M (auto) • (detached) • 01a13e79");
+		expect(footerLines({ ...state, gitBranch: null }, { baseUrl: "x" }).left2).toBe("↑12k ↓1.5k R2.0M $1.235 15%/1.0M (auto) • 01a13e79");
+		expect(footerLines({ sessionId: state.sessionId, gitBranch: "feat/x", stats: null }, { baseUrl: "x" }).left2).toBe("(feat/x) • 01a13e79");
+		expect(branchLabel({ gitBranch: "  " })).toBeNull();
+		expect(branchLabel(null)).toBeNull();
 	});
 
 	test("composer placeholder follows role, run state and device", () => {

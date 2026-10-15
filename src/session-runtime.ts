@@ -41,6 +41,7 @@ import {
 	type ListPiProcesses,
 	type PiProcess,
 } from "./outside-writers.ts";
+import { findGitHead, readGitBranch, watchGitBranch, type GitBranchWatch } from "./git-branch.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
 import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";
 import { createSessionFolders, createSessionIndex, sessionDirForCwd, type SessionFolder, type SessionSummary } from "./session-index.ts";
@@ -124,6 +125,8 @@ interface RunningSession {
 	unsubscribe: (() => void) | null;
 	tripwireAllowedRoots: Set<string>;
 	tripwireStopRequested: boolean;
+	/** The branch the session's folder is on, for the footer. */
+	git: GitBranchWatch;
 	live: LiveSnapshot;
 	outbox: SseEvent[];
 	flushScheduled: boolean;
@@ -305,9 +308,9 @@ function initialTranscriptLimits(limit: number | undefined): TranscriptLimits {
 	return { ...INITIAL_TRANSCRIPT_LIMITS, maxMessages: Math.min(Math.max(1, Math.floor(limit)), INITIAL_TRANSCRIPT_MESSAGES) };
 }
 
-function buildState(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust): ApiSessionState {
+function buildState(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust, gitBranch: string | null): ApiSessionState {
 	const transcript = transcriptPage(session.sessionManager.getBranch(), INITIAL_TRANSCRIPT_LIMITS);
-	return { ...buildStatus(session, cwd, projectTrust), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
+	return { ...buildStatus(session, cwd, projectTrust, gitBranch), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
 }
 
 function resyncTranscript(branch: readonly SessionEntry[], since: string | undefined, limits: TranscriptLimits): ApiResyncTranscript {
@@ -352,11 +355,12 @@ async function sessionFilesWrittenSince(dir: string, sinceMs: number): Promise<s
 	return recent.filter((path): path is string => path !== null);
 }
 
-function buildStatus(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust): ApiSessionStatus {
+function buildStatus(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust, gitBranch: string | null): ApiSessionStatus {
 	return {
 		sessionId: session.sessionId,
 		projectTrust,
 		cwd,
+		gitBranch,
 		sessionFile: session.sessionFile ?? null,
 		sessionName: session.sessionName,
 		isStreaming: session.isStreaming,
@@ -373,8 +377,9 @@ function buildStatus(session: AgentSession, cwd: string, projectTrust: ApiProjec
 	};
 }
 
-function buildPatch(session: AgentSession): ApiSessionPatch {
+function buildPatch(session: AgentSession, gitBranch: string | null): ApiSessionPatch {
 	return {
+		gitBranch,
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
 		retryAttempt: session.retryAttempt,
@@ -863,7 +868,7 @@ export class PiWebRuntime {
 		if (!runtime) {
 			throw new Error("session_not_running");
 		}
-		return buildState(runtime.session, runtime.cwd, runtime.projectTrust);
+		return buildState(runtime.session, runtime.cwd, runtime.projectTrust, runtime.git.current());
 	}
 
 	getTranscriptPage(sessionId: string, request: { before?: string; limit?: number }): TranscriptPage {
@@ -970,7 +975,7 @@ export class PiWebRuntime {
 		return {
 			init: {
 				type: "init",
-				state: buildStatus(runtime.session, runtime.cwd, runtime.projectTrust),
+				state: buildStatus(runtime.session, runtime.cwd, runtime.projectTrust, runtime.git.current()),
 				transcript,
 				live,
 				ui: runtime.ui.snapshot(),
@@ -1106,7 +1111,9 @@ export class PiWebRuntime {
 		let follow = await this.followState(path, cwd, turn, lastWriteMs);
 		let checkedAtMs = Date.now();
 		let busy = false;
-		const describe = (): ApiFollowSession => ({ sessionId, path, cwd, sessionName: info.sessionName, model: info.model, thinkingLevel: info.thinkingLevel });
+		// read once: following is read-only, and a branch switch elsewhere shows on the next open
+		const gitBranch = await readGitBranch(findGitHead(cwd));
+		const describe = (): ApiFollowSession => ({ sessionId, path, cwd, gitBranch, sessionName: info.sessionName, model: info.model, thinkingLevel: info.thinkingLevel });
 
 		const tick = async () => {
 			const appended = await readAppended(path, offset);
@@ -1366,6 +1373,7 @@ export class PiWebRuntime {
 		} catch {
 			// best effort
 		}
+		runtime.git.dispose();
 		this.runningById.delete(sessionId);
 		if (runtime.sessionFile) {
 			this.runningByPath.delete(runtime.sessionFile);
@@ -1436,7 +1444,7 @@ export class PiWebRuntime {
 			const model = modelRuntime.getAvailableSnapshot().find((m) => m.provider === provider && m.id === modelId);
 			if (!model) throw new Error(`model_not_available: ${provider}/${modelId}`);
 			await runtime.session.setModel(model);
-			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session, runtime.git.current()) });
 			return { ok: true };
 		}
 
@@ -1445,7 +1453,7 @@ export class PiWebRuntime {
 			const level = command.level.trim();
 			if (!isThinkingLevel(level)) throw new Error(`invalid_thinking_level: ${level}`);
 			runtime.session.setThinkingLevel(level);
-			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session, runtime.git.current()) });
 			return { ok: true };
 		}
 
@@ -1454,7 +1462,7 @@ export class PiWebRuntime {
 			const mode = command.mode;
 			if (mode !== "all" && mode !== "one-at-a-time") throw new Error(`invalid_steering_mode: ${String(mode)}`);
 			runtime.session.setSteeringMode(mode);
-			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session, runtime.git.current()) });
 			return { ok: true };
 		}
 
@@ -1463,14 +1471,14 @@ export class PiWebRuntime {
 			const mode = command.mode;
 			if (mode !== "all" && mode !== "one-at-a-time") throw new Error(`invalid_follow_up_mode: ${String(mode)}`);
 			runtime.session.setFollowUpMode(mode);
-			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session, runtime.git.current()) });
 			return { ok: true };
 		}
 
 		if (command.type === "set_auto_compaction") {
 			this.assertController(runtime, command.clientId);
 			runtime.session.setAutoCompactionEnabled(Boolean(command.enabled));
-			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session, runtime.git.current()) });
 			return { ok: true };
 		}
 
@@ -1479,7 +1487,7 @@ export class PiWebRuntime {
 			const name = command.name.trim();
 			if (!name) throw new Error("invalid_session_name");
 			runtime.session.setSessionName(name);
-			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session) });
+			this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(runtime.session, runtime.git.current()) });
 			return { ok: true };
 		}
 
@@ -1569,6 +1577,7 @@ export class PiWebRuntime {
 			unsubscribe: null,
 			tripwireAllowedRoots,
 			tripwireStopRequested: false,
+			git: watchGitBranch(cwd, () => this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session, runtime.git.current()) })),
 			live: EMPTY_LIVE_SNAPSHOT,
 			outbox: [],
 			flushScheduled: false,
@@ -1593,8 +1602,10 @@ export class PiWebRuntime {
 			if (event.type === "agent_start" || event.type === "agent_settled") {
 				runtime.tripwireStopRequested = false;
 			}
+			// a run (its bash calls above all) is what switches branches under a session; HEAD's watcher catches the rest
+			if (event.type === "agent_end" || (event.type === "tool_execution_end" && event.toolName === "bash")) runtime.git.refresh();
 			if (STATE_PATCH_EVENTS.has(event.type)) {
-				const patch = buildPatch(session);
+				const patch = buildPatch(session, runtime.git.current());
 				// auto-compaction releases its abort controller only after compaction_end listeners ran
 				if (event.type === "compaction_end") patch.isCompacting = false;
 				this.broadcast(sessionId, { type: "state_patch", patch });
@@ -1602,7 +1613,7 @@ export class PiWebRuntime {
 			// token totals and context use move with every message that lands, not just when the run ends (like
 			// pi's own footer); pi writes the message to the session after message_end listeners ran, so read then
 			if (event.type === "message_end") {
-				queueMicrotask(() => this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session) }));
+				queueMicrotask(() => this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session, runtime.git.current()) }));
 			}
 		});
 		runtime.unsubscribe = unsubscribe;

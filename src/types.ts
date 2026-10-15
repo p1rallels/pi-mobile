@@ -134,6 +134,7 @@ export interface ApiFollowSession {
 	sessionId: string;
 	path: string;
 	cwd: string;
+	gitBranch: string | null;
 	sessionName?: string;
 	model: { provider: string; id: string } | null;
 	thinkingLevel: string | null;
@@ -196,6 +197,8 @@ export interface ApiSessionStatus {
 	sessionId: string;
 	projectTrust: ApiProjectTrust;
 	cwd: string;
+	/** The branch cwd is on ("detached" off a branch), null outside git. */
+	gitBranch: string | null;
 	sessionFile: string | null;
 	sessionName?: string;
 	isStreaming: boolean;
@@ -247,6 +250,7 @@ export type ApiCommandRequest =
 	| { type: "set_session_name"; clientId: string; name: string };
 
 export interface ApiSessionPatch {
+	gitBranch?: string | null;
 	isStreaming?: boolean;
 	isCompacting?: boolean;
 	retryAttempt?: number;

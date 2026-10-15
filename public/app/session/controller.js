@@ -16,6 +16,7 @@ function elsewhereStatus(session, follow) {
 	return {
 		sessionId: session.sessionId,
 		cwd: session.cwd,
+		gitBranch: typeof session.gitBranch === "string" ? session.gitBranch : null,
 		sessionFile: session.path,
 		sessionName: session.sessionName,
 		model: session.model,

@@ -79,18 +79,22 @@ export function elsewherePlaceholder(follow) {
 	return "Finished elsewhere — type to continue here";
 }
 
+/** "(main)" like pi's footer, "(detached)" off a branch, null outside git. @param {any} state */
+export function branchLabel(state) {
+	const branch = typeof state?.gitBranch === "string" ? state.gitBranch.trim() : "";
+	return branch ? `(${branch})` : null;
+}
+
 /**
  * The pane footer: cwd (plus the untrusted-project hint and where a followed session stands), then
- * metrics • session id and model • thinking.
+ * metrics • (branch) • session id and model • thinking.
  * @param {any} state @param {{ hostLabel?: string | null, baseUrl: string }} host @param {any} [follow] a followed session's state
  */
 export function footerLines(state, host, follow = null) {
 	if (!state) return { line1: host.hostLabel ? `host: ${host.hostLabel}` : "—", left2: "—", right2: host.baseUrl };
 	const trust = state.projectTrust;
 	const untrusted = trust && trust.gated && !trust.trusted ? " · project .pi resources skipped (untrusted)" : "";
-	const metrics = buildSessionMetrics(state);
-	const left = metrics ? [metrics] : [];
-	left.push(String(state.sessionId || "").slice(0, 8));
+	const left = [buildSessionMetrics(state), branchLabel(state), String(state.sessionId || "").slice(0, 8)].filter(Boolean);
 	return {
 		line1: `${state.cwd || "—"}${untrusted}${elsewhereFooterNote(follow)}`,
 		left2: left.join(" • "),
