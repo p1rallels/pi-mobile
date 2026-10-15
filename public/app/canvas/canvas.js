@@ -17,6 +17,7 @@ import { createViewport } from "./viewport.js";
  *   onEmptyDoubleClick?: (world: { x: number, y: number }) => void,
  *   onFocusChange?: (id: string | null) => void,
  *   focusComposer?: (id: string) => void,
+ *   onActivate?: (id: string) => void,
  *   onCloseRequest?: (id: string) => void,
  *   onGeometryCommit?: (id: string, rect: Rect) => void,
  *   onVisibilityChange?: (id: string, visible: boolean) => void,
@@ -114,6 +115,7 @@ export function createCanvas(options) {
 		if (target?.closest(INTERACTIVE_SELECTOR)) return;
 		if (!view.getSelection()?.isCollapsed) return;
 		options.focusComposer?.(press.id);
+		options.onActivate?.(press.id);
 	}
 
 	/** @param {MouseEvent} event */

@@ -128,10 +128,16 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		await page.screenshot({ path: testInfo.outputPath("canvas-shell.png") });
 		await testInfo.attach("canvas-shell", { path: testInfo.outputPath("canvas-shell.png"), contentType: "image/png" });
 
-		// one tile per session: the hud's new tile has nothing left to add
+		// one tile per session: picking a session that's already here in the launcher flies to its tile
 		await page.locator('.cv-hud-btn[data-act="new"]').click();
-		await expect(tile(page, S2).locator(".notice-text.error")).toContainText("already on the canvas");
+		const launcher = page.locator(".cv-tile.cv-launcher");
+		await expect(launcher.locator(".cv-launch-search")).toBeFocused();
+		await launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`).click();
+		await expect(launcher.locator(`.cv-launch-row[data-key="session:${S1}"] .cv-launch-badge`)).toHaveText("on canvas");
+		await launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`).click();
+		await expect(launcher).toHaveCount(0);
 		await expect(page.locator(".cv-tile")).toHaveCount(2);
+		await expect(tile(page, S1)).toHaveClass(/cv-focused/);
 
 		// the red dot only takes the tile off the canvas
 		await tile(page, S2).locator(".cv-close").click();
@@ -292,6 +298,101 @@ test("tiles keep the newest entries of a long transcript and page back on reques
 		await expect(t.locator(".user-msg").first()).toHaveText("question 0");
 		expect(await shownEntries(t)).toHaveLength(60);
 		await expect(t.locator(".user-msg")).toHaveCount(30);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the launcher lists a directory's sessions, resumes one in place, starts new ones, and steps back with esc", async ({ page }, testInfo) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "launch-repo");
+	await mkdir(cwd);
+	await writeSessionFile(root, cwd, S1, "hello from disk", "hi there");
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (repo) => {
+			await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+			const res = await fetch("/api/repos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo }) });
+			if (!res.ok) throw new Error(`repo not added: ${res.status}`);
+		}, cwd);
+		const posts = [];
+		await page.route("**/api/sessions", (route) => {
+			if (route.request().method() !== "POST") return route.fallback();
+			const body = route.request().postDataJSON();
+			posts.push(body);
+			if (body.cwd && !body.projectTrust) {
+				return route.fulfill({ status: 409, json: { error: "Project trust required", projectTrust: { cwd: body.cwd, options: [{ choice: "trust_session", label: "Trust (this session only)", trusted: true }, { choice: "distrust", label: "Do not trust", trusted: false }] } } });
+			}
+			return route.fallback();
+		});
+
+		await page.goto(`${base}/?ui=canvas`);
+		await expect(page.locator(".cv-root")).toBeVisible();
+		await expect(page.locator(".cv-tile")).toHaveCount(0);
+
+		// double-click on empty canvas opens a launcher there; esc steps back, then closes it
+		await page.mouse.dblclick(700, 450);
+		const launcher = page.locator(".cv-tile.cv-launcher");
+		await expect(launcher).toHaveCount(1);
+		const center = await page.evaluate(() => {
+			const { canvas, launchers } = window.__canvas;
+			const id = [...launchers.keys()][0];
+			const { rect } = canvas.tiles.get(id);
+			const cam = canvas.viewport.getCamera();
+			return { x: (rect.x + rect.w / 2) * cam.scale + cam.x, y: (rect.y + rect.h / 2) * cam.scale + cam.y };
+		});
+		expect(Math.abs(center.x - 700)).toBeLessThan(2);
+		expect(Math.abs(center.y - 450)).toBeLessThan(2);
+		const search = launcher.locator(".cv-launch-search");
+		await expect(search).toBeFocused();
+		await search.fill("launch-repo");
+		await expect(launcher.locator(".cv-launch-row")).toHaveCount(1);
+		await search.press("Enter");
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("launch-repo · pick a session");
+		await expect(launcher.locator(".cv-launch-row").first()).toHaveText(/new session/);
+		await expect(launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`)).toContainText("hello from disk");
+		await page.screenshot({ path: testInfo.outputPath("launcher.png") });
+		await testInfo.attach("launcher", { path: testInfo.outputPath("launcher.png"), contentType: "image/png" });
+		await page.keyboard.press("Escape");
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("open a session · pick a directory");
+		await page.keyboard.press("Escape");
+		await expect(launcher).toHaveCount(0);
+
+		// an old session: the launcher turns into its tile in place and resumes it
+		await page.locator('.cv-hud-btn[data-act="new"]').click();
+		await launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`).click();
+		const launcherRect = await page.evaluate(() => {
+			const { canvas, launchers } = window.__canvas;
+			return canvas.tiles.get([...launchers.keys()][0]).rect;
+		});
+		await launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`).click();
+		await expect(launcher).toHaveCount(0);
+		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
+		await expect(tile(page, S1).locator("textarea")).toBeFocused();
+		expect(await page.evaluate((id) => window.__canvas.canvas.tiles.get(id).rect, S1)).toEqual(launcherRect);
+		expect(posts.at(-1)?.resumeSessionPath).toContain(S1);
+
+		// a new session, after the project trust question asked inline
+		await page.locator('.cv-hud-btn[data-act="new"]').click();
+		await launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`).click();
+		await launcher.locator('.cv-launch-row[data-key="new"]').click();
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("trust this folder?");
+		await launcher.locator(".cv-launch-row", { hasText: "Trust (this session only)" }).click();
+		await expect(launcher).toHaveCount(0);
+		await expect(page.locator(".cv-tile")).toHaveCount(2);
+		expect(posts.filter((body) => body.cwd).map((body) => body.projectTrust ?? null)).toEqual([null, "trust_session"]);
+		const created = await page.evaluate((known) => [...window.__canvas.entries.keys()].find((id) => id !== known), S1);
+		await expect(tile(page, created)).toHaveClass(/cv-focused/);
+		await expect(tile(page, created).locator(".cv-pill")).toHaveText(/idle|viewing/);
+		await expect(tile(page, created).locator("textarea")).toBeEnabled();
+		await expect.poll(() => page.evaluate(async () => (await (await fetch("/api/canvas")).json()).tiles.length)).toBe(2);
 	} finally {
 		server.kill("SIGTERM");
 		await new Promise((resolve) => server.once("exit", resolve));

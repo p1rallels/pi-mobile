@@ -7,7 +7,8 @@ import { installFaceIdGuard } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
 import { createCanvas } from "./canvas/canvas.js";
 import { createFpsMeter } from "./canvas/fps_meter.js";
-import { nextFreeSlot } from "./canvas/layout.js";
+import { createLauncher } from "./canvas/launcher.js";
+import { nextFreeSlot, rectCenteredAt } from "./canvas/layout.js";
 import { createLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
 import { buildPaneDom } from "./session/pane_dom.js";
 import { createSessionPane } from "./session/pane.js";
@@ -96,15 +97,27 @@ export async function bootCanvas() {
 	const canvas = createCanvas({
 		root,
 		camera: loadCamera(window.localStorage, api.getBaseUrl()) ?? DEFAULT_CAMERA,
-		onNewTile: () => void addRunningSessions({ reveal: true }),
-		onEmptyDoubleClick: () => void addRunningSessions({ reveal: true }),
+		onNewTile: () => openLauncher(nextFreeSlot(canvas.tiles.rects()), { reveal: true }),
+		onEmptyDoubleClick: (point) => openLauncher(rectCenteredAt(point)),
 		onFocusChange: (id) => onFocusChange(id),
-		focusComposer: (id) => focusComposer(id),
-		onCloseRequest: (id) => removeSessionTile(id),
+		focusComposer: (id) => {
+			const launcher = launchers.get(id);
+			if (launcher) launcher.focus();
+			else focusComposer(id);
+		},
+		onActivate: (id) => wake(id),
+		onCloseRequest: (id) => {
+			if (launchers.has(id)) closeLauncher(id);
+			else removeSessionTile(id);
+		},
 		onGeometryCommit: () => scheduleSave(),
 		onCameraSettle: (camera) => saveCamera(window.localStorage, api.getBaseUrl(), camera),
 		onVisibilityChange: (id, visible) => onTileVisibility(id, visible),
-		onEscape: (id, event) => entries.get(id)?.pane.handleEscape(event),
+		onEscape: (id, event) => {
+			const launcher = launchers.get(id);
+			if (launcher) launcher.handleEscape(event);
+			else entries.get(id)?.pane.handleEscape(event);
+		},
 	});
 
 	/** @type {string | null} */
@@ -116,7 +129,70 @@ export async function bootCanvas() {
 		focusedTileId = id;
 		const next = id ? entries.get(id) : null;
 		if (next?.mounted) next.pane.setFocused(true);
-		if (id) wake(id);
+	}
+
+	/** @type {Map<string, ReturnType<typeof createLauncher>>} */
+	const launchers = new Map();
+	let launcherSeq = 0;
+
+	/**
+	 * A new tile starts as a launcher; picking a session turns it into that session's tile in place.
+	 * @param {import("./canvas/camera.js").Rect} rect @param {{ reveal?: boolean }} [options]
+	 */
+	function openLauncher(rect, { reveal = false } = {}) {
+		launcherSeq += 1;
+		const id = `launcher-${launcherSeq}`;
+		const tile = canvas.tiles.addTile({ id, rect, title: "new tile" });
+		tile.el.classList.add("cv-launcher");
+		const launcher = createLauncher({
+			doc: document,
+			api,
+			getClientId: () => clients.current(),
+			isOnCanvas: (sessionId) => entries.has(sessionId),
+			onPick: (pick) => onLauncherPick(id, pick),
+			onClose: () => closeLauncher(id),
+			onTitle: (title) => {
+				tile.titleEl.textContent = title;
+			},
+		});
+		tile.body.replaceChildren(launcher.el);
+		launchers.set(id, launcher);
+		canvas.tiles.focusTile(id);
+		if (reveal) canvas.revealTile(id);
+		launcher.focus();
+		return id;
+	}
+
+	/** @param {string} id */
+	function closeLauncher(id) {
+		const launcher = launchers.get(id);
+		if (!launcher) return;
+		launchers.delete(id);
+		launcher.destroy();
+		canvas.tiles.removeTile(id);
+	}
+
+	/** @param {string} launcherId @param {import("./canvas/launcher.js").LauncherPick} pick */
+	function onLauncherPick(launcherId, pick) {
+		const rect = canvas.tiles.get(launcherId)?.rect;
+		if (!rect) return;
+		const sessionId = pick.kind === "created" ? pick.sessionId : pick.session.id;
+		closeLauncher(launcherId);
+		if (entries.has(sessionId)) {
+			// one tile per session: fly to the one that's already here
+			canvas.tiles.focusTile(sessionId);
+			canvas.revealTile(sessionId);
+			focusComposer(sessionId);
+			return;
+		}
+		const running = pick.kind === "created" || Boolean(pick.session.isRunning);
+		const title = pick.kind === "created" ? sessionTitle({ id: sessionId, cwd: pick.cwd }) : sessionTitle(pick.session);
+		const path = pick.kind === "created" ? null : pick.session.path;
+		addSessionTile({ id: sessionId, path, title, rect, running });
+		scheduleSave();
+		canvas.tiles.focusTile(sessionId);
+		if (!running) wake(sessionId);
+		focusComposer(sessionId);
 	}
 
 	/** A composer that can't take input yet (dormant tile, session still loading) gets focus once it can. @param {string} id */
@@ -419,6 +495,7 @@ export async function bootCanvas() {
 	}
 
 	function clearTiles() {
+		for (const id of [...launchers.keys()]) closeLauncher(id);
 		for (const id of [...entries.keys()]) {
 			const entry = entries.get(id);
 			entries.delete(id);
@@ -435,7 +512,7 @@ export async function bootCanvas() {
 		return Array.isArray(data?.sessions) ? data.sessions : [];
 	}
 
-	/** Puts every running session that isn't on the canvas yet on it (the launcher replaces this, m-f54c). */
+	/** Puts every running session that isn't on the canvas yet on it (a first visit to a host's empty map). */
 	async function addRunningSessions({ reveal = false } = {}) {
 		let sessions;
 		try {
@@ -560,5 +637,5 @@ export async function bootCanvas() {
 	hosts = await loadHostList(api, activeHost);
 	renderHostButton();
 	await loadCanvas();
-	Object.assign(window, { __canvas: { canvas, entries } });
+	Object.assign(window, { __canvas: { canvas, entries, launchers, openLauncher } });
 }
