@@ -62,9 +62,13 @@ export function autoResize(el) {
  *   onSidebarRefresh?: () => void,
  *   transcriptWindow?: { unfocused: number, focused: number, pageSize: number } | null,
  *   tileUi?: { dialogHost: HTMLElement, hasKeyboard: () => boolean, onTitle: (title: string | null) => void } | null,
+ *   onFreshStarted?: (sessionId: string) => void,
+ *   goneNotice?: string,
  * }} options
  * `transcriptWindow` keeps only the newest entries of the transcript (canvas tiles); the phone keeps them all.
  * `tileUi` keeps extension dialogs and the extension title inside a canvas tile instead of on the page.
+ * `onFreshStarted` hears the session a fresh pane's first send started (see fresh.js); `goneNotice` replaces
+ * what the pane says when its session ended for good.
  */
 export function createSessionPane({
 	refs,
@@ -78,6 +82,8 @@ export function createSessionPane({
 	onSidebarRefresh,
 	transcriptWindow = null,
 	tileUi = null,
+	onFreshStarted,
+	goneNotice,
 }) {
 	const { input } = refs;
 	const abortTitle = refs.btnAbort?.title ?? "";
@@ -133,6 +139,8 @@ export function createSessionPane({
 		extensionUi,
 		createSession,
 		transcriptWindow,
+		onFreshStarted: (/** @type {string} */ sessionId) => onFreshStarted?.(sessionId),
+		...(goneNotice ? { goneNotice } : {}),
 	});
 
 	const menuCtrl = createMenu({
@@ -226,11 +234,35 @@ export function createSessionPane({
 		renderWorking();
 	}
 
+	/** No session yet (the one this pane had was never saved): typing and sending work, sending starts one; nothing else applies. */
+	function renderFreshControls() {
+		if (refs.btnAbort) {
+			refs.btnAbort.title = abortTitle;
+			refs.btnAbort.disabled = true;
+		}
+		if (refs.btnTakeover) refs.btnTakeover.disabled = true;
+		if (refs.btnRelease) refs.btnRelease.disabled = true;
+		input.disabled = false;
+		if (refs.btnModel) refs.btnModel.disabled = true;
+		if (refs.btnThinking) refs.btnThinking.disabled = true;
+		if (refs.kbEsc) refs.kbEsc.disabled = true;
+		if (refs.kbTakeover) refs.kbTakeover.disabled = true;
+		if (refs.kbRelease) refs.kbRelease.disabled = true;
+		if (refs.kbEnter) refs.kbEnter.disabled = false;
+		input.placeholder = composerPlaceholder({ hasSession: true, compacting: false, isController: true, streaming: false, phone: isPhoneLike() });
+		renderSelectors();
+		renderWorking();
+	}
+
 	function renderControls() {
 		renderRolePill();
 
 		if (sessionCtrl.getActiveSessionId() && sessionCtrl.getMode() === "elsewhere") {
 			renderElsewhereControls();
+			return;
+		}
+		if (sessionCtrl.isFresh()) {
+			renderFreshControls();
 			return;
 		}
 
@@ -340,6 +372,15 @@ export function createSessionPane({
 		/** "hosted", or "elsewhere" while it follows a session another pi writes. */
 		getMode: () => sessionCtrl.getMode(),
 		getFollow: () => sessionCtrl.getFollow(),
+		/** No session behind the pane yet: the one it had was never saved, and sending starts one (see fresh.js). */
+		isFresh: () => sessionCtrl.isFresh(),
+		/** @returns {import("./fresh.js").FreshRecord | null} */
+		getFresh: () => sessionCtrl.getFresh(),
+		/** @param {import("./fresh.js").FreshRecord} record */
+		openFresh(record) {
+			sessionCtrl.openFresh(record);
+			render();
+		},
 		canStopWriter: () => sessionCtrl.canStopWriter(),
 		canResumeHere: () => sessionCtrl.canResumeHere(),
 		/** @param {any} session */

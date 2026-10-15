@@ -1,6 +1,7 @@
 import { computeCliCommand } from "./cli.js";
 import { createChatView } from "./chat_view.js";
 import { parseCompactCommand, parseQueueCommand } from "./commands.js";
+import { freshPayload, freshRecord, freshStatus, neverSavedOf } from "./fresh.js";
 
 /** The server pings every 5s; a stream silent for longer is dead even if the browser still calls it open. */
 const STALE_STREAM_MS = 15_000;
@@ -46,6 +47,10 @@ export function createSessionController({
 	createSession = (payload) => api.postJson("/api/sessions", payload),
 	// canvas tiles show the tail of a transcript: { unfocused, focused } entries kept, pageSize per older page
 	transcriptWindow = null,
+	// a fresh pane's first send started this session (see openFresh)
+	onFreshStarted = () => {},
+	// what a pane says when its session ended for good (the canvas has no sidebar)
+	goneNotice = "This session is no longer running. Open it again from the sidebar.",
 }) {
 	let activeSessionId = null;
 	let activeState = null;
@@ -78,6 +83,9 @@ export function createSessionController({
 	let stoppingWriter = false;
 	/** The session a read-only tail came from (a dormant canvas tile), so it can page back with no session open. */
 	let readOnly = null;
+	/** No session behind the pane: the one it had was never saved (see fresh.js). Sending starts one in `fresh.cwd`. */
+	let fresh = null;
+	let freshStart = null;
 
 	const chatView = createChatView({
 		msgsEl,
@@ -198,10 +206,17 @@ export function createSessionController({
 		} catch (error) {
 			if (sessionId !== activeSessionId) return;
 			if (error && error.status === 404) {
+				// nothing was ever sent to it: it never existed for pi, so the pane just starts over in its folder
+				const neverSaved = mode === "hosted" ? neverSavedOf(error) : null;
+				const cwd = activeState?.cwd || neverSaved?.cwd;
+				if (neverSaved && cwd) {
+					openFresh(freshRecord(cwd, activeState));
+					return;
+				}
 				closeEvents();
 				stopRecovery();
 				setConnection("gone");
-				chatView.appendNotice("This session is no longer running. Open it again from the sidebar.", "error");
+				chatView.appendNotice(goneNotice, "error");
 				return;
 			}
 			scheduleRecovery(sessionId);
@@ -378,11 +393,17 @@ export function createSessionController({
 		stoppingWriter = false;
 	}
 
+	function leaveFresh() {
+		fresh = null;
+		freshStart = null;
+	}
+
 	function reset() {
 		closeEvents();
 		stopRecovery();
 		setConnection("idle");
 		leaveElsewhere();
+		leaveFresh();
 		readOnly = null;
 		activeSessionPath = null;
 		cursor = null;
@@ -787,6 +808,7 @@ export function createSessionController({
 	/** Follows a session another process is writing, read-only, until its turn closes or its writer is gone. */
 	function openElsewhere(sessionId, path, elsewhere) {
 		if (sessionId !== activeSessionId) renderedSessionId = null;
+		leaveFresh();
 		mode = "elsewhere";
 		follow = elsewhere && typeof elsewhere === "object" ? { ...elsewhere } : null;
 		followSession = null;
@@ -818,6 +840,7 @@ export function createSessionController({
 		if (session.id !== activeSessionId) extensionUi.reset();
 		if (session.isRunning) {
 			leaveElsewhere();
+			leaveFresh();
 			activeSessionId = session.id;
 			activeSessionPath = session.path || null;
 			connectEvents(activeSessionId);
@@ -844,6 +867,7 @@ export function createSessionController({
 			return;
 		}
 		leaveElsewhere();
+		leaveFresh();
 		activeSessionId = result.sessionId;
 		activeSessionPath = session.path;
 		connectEvents(activeSessionId);
@@ -922,7 +946,84 @@ export function createSessionController({
 		}
 	}
 
+	/**
+	 * A pane whose session was never saved and has stopped running (see fresh.js): it keeps its folder, composer and
+	 * settings with no session behind it, and nothing about the old one is worth a notice. The first send starts a
+	 * new session there.
+	 * @param {import("./fresh.js").FreshRecord} record
+	 */
+	function openFresh(record) {
+		if (!record || typeof record.cwd !== "string" || !record.cwd) return;
+		closeEvents();
+		stopRecovery();
+		leaveElsewhere();
+		readOnly = null;
+		fresh = { ...record };
+		freshStart = null;
+		activeSessionId = null;
+		activeSessionPath = null;
+		activeState = freshStatus(fresh);
+		cursor = null;
+		renderedSessionId = null;
+		controllerClientId = null;
+		role = "controller";
+		lastCliCommand = null;
+		pendingPrompt = false;
+		retryStatus = null;
+		compactionReason = null;
+		hasOlderMessages = false;
+		oldestEntryId = null;
+		olderLoading = false;
+		renderGeneration += 1;
+		resetTripwireAlerts();
+		extensionUi.reset();
+		chatView.clear();
+		syncOlderControl();
+		connection = "idle";
+		onStateChange();
+	}
+
+	/** Starts the session a fresh pane stands for, once however often it's asked; project trust is asked first if the host wants it. */
+	function startFresh() {
+		if (!freshStart) {
+			const record = fresh;
+			const starting = createFresh(record).finally(() => {
+				if (freshStart === starting) freshStart = null;
+			});
+			freshStart = starting;
+		}
+		return freshStart;
+	}
+
+	async function createFresh(record) {
+		const result = await createSession(freshPayload(record, getClientId()));
+		if (fresh !== record) throw new Error("the pane moved on before its session started");
+		if (!result || typeof result.sessionId !== "string") throw new Error("the session did not start");
+		leaveFresh();
+		activeSessionId = result.sessionId;
+		activeSessionPath = null;
+		activeState = { ...activeState, sessionId: result.sessionId };
+		controllerClientId = getClientId();
+		role = "controller";
+		onFreshStarted(result.sessionId);
+		connectEvents(activeSessionId);
+		onStateChange();
+		onSidebarRefresh();
+	}
+
 	async function sendPrompt(text) {
+		if (fresh) {
+			if (!String(text || "").trim()) return;
+			pendingPrompt = true;
+			onStateChange();
+			try {
+				await startFresh();
+			} catch (error) {
+				pendingPrompt = false;
+				onStateChange();
+				throw error;
+			}
+		}
 		if (!activeSessionId) return;
 		if (mode === "elsewhere") {
 			if (!String(text || "").trim()) return;
@@ -1019,6 +1120,7 @@ export function createSessionController({
 		clearInterval(staleTimer);
 		closeEvents();
 		stopRecovery();
+		leaveFresh();
 		readOnly = null;
 		activeSessionId = null;
 		renderGeneration += 1;
@@ -1030,7 +1132,7 @@ export function createSessionController({
 	 * pages load from the file too.
 	 */
 	function showReadOnly(page, notice, source = null) {
-		if (activeSessionId) return;
+		if (activeSessionId || fresh) return;
 		renderGeneration += 1;
 		readOnly = source && typeof source.sessionId === "string" && typeof source.path === "string" ? { sessionId: source.sessionId, path: source.path } : null;
 		const messages = Array.isArray(page?.messages) ? page.messages : [];
@@ -1056,6 +1158,7 @@ export function createSessionController({
 		resetTripwireAlerts();
 		if (sessionId !== activeSessionId) extensionUi.reset();
 		leaveElsewhere();
+		leaveFresh();
 		activeSessionId = sessionId;
 		activeSessionPath = null;
 		connectEvents(activeSessionId);
@@ -1072,6 +1175,9 @@ export function createSessionController({
 		getConnection: () => connection,
 		getMode: () => mode,
 		getFollow: () => follow,
+		isFresh: () => fresh !== null,
+		getFresh: () => (fresh ? { ...fresh } : null),
+		openFresh,
 		canResumeHere,
 		canStopWriter,
 		isController: () => Boolean(activeSessionId && mode === "hosted" && controllerClientId === getClientId()),

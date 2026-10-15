@@ -3,6 +3,8 @@
 // takes a tile off the canvas (the session keeps running, release stays explicit in the ⋯ menu).
 // Tiles of sessions that aren't running stay dormant (no runtime attached) until you click them; a
 // session another pi is in the middle of (a terminal pi, a pfs sub) gets a tile that follows its file.
+// A tile whose session never got a message (so pi never wrote it) and stopped running goes fresh instead:
+// same place and composer, and the first send starts a new session in the same folder (session/fresh.js).
 import { createApi } from "./core/api.js";
 import { installFaceIdGuard } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
@@ -11,6 +13,8 @@ import { createFpsMeter } from "./canvas/fps_meter.js";
 import { createLauncher } from "./canvas/launcher.js";
 import { nextFreeSlot, rectCenteredAt } from "./canvas/layout.js";
 import { createLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
+import { renameKey } from "./canvas/tiles.js";
+import { freshRecord, neverSavedOf } from "./session/fresh.js";
 import { buildPaneDom } from "./session/pane_dom.js";
 import { createSessionPane } from "./session/pane.js";
 import { elsewhereTilePill } from "./session/pane_format.js";
@@ -34,6 +38,8 @@ export async function bootCanvas() {
 	// transcript entries a tile keeps: the newest 20 (50 while focused, plus older pages you scroll to)
 	const TRANSCRIPT_WINDOW = { unfocused: intKnob("window", 20), focused: intKnob("focusedWindow", 50), pageSize: 50 };
 	const DORMANT_NOTICE = "Not running. Click this tile to resume it here.";
+	// a never-saved session whose folder the host can't tell (several saved folders map to its session folder)
+	const NEVER_SAVED_NOTICE = "Nothing was ever sent here, so there is nothing to resume. Close this tile and start a new session.";
 	// on-screen tiles whose session is idle (per the host's status stream) let go of their stream after
 	// IDLE_SUSPEND_MS unless focused, so the host can evict them; work or a dialog brings the stream back
 	const IDLE_SUSPEND_MS = intKnob("idleSuspendMs", 30_000);
@@ -49,6 +55,8 @@ export async function bootCanvas() {
 	 *   controls: { btnModel: HTMLButtonElement, btnThinking: HTMLButtonElement, lblModel: HTMLElement, lblThinking: HTMLElement },
 	 *   pill: HTMLElement,
 	 *   dormant: boolean,
+	 *   notice: boolean,
+	 *   fresh: import("./session/fresh.js").FreshRecord | null,
 	 *   elsewhere: any | null,
 	 *   forkLabel: string | null,
 	 *   focusWhenReady: boolean,
@@ -220,13 +228,15 @@ export async function bootCanvas() {
 		const status = statusById.get(entry.id) ?? null;
 		entry.status = status;
 		if (!status) {
-			// stopped running while this tile wasn't listening (evicted, released): back to dormant. A tile
-			// following a session another pi writes is never in this list; its own stream says where it stands.
+			// stopped running while this tile wasn't listening (evicted, released, a restart): back to dormant, or
+			// fresh if it was never saved. A tile following a session another pi writes is never in this list; its
+			// own stream says where it stands.
 			if (!entry.dormant && entry.mounted && entry.opened && entry.pane.getMode() !== "elsewhere" && entry.pane.getConnection() === "suspended") {
 				entry.dormant = true;
 				entry.opened = false;
 				entry.idleSuspended = false;
-				entry.pane.appendNotice(DORMANT_NOTICE);
+				entry.readOnly = "none";
+				settleDormant(entry);
 			}
 		} else if (entry.dormant) {
 			// running again (resumed from another device): go live
@@ -401,7 +411,7 @@ export async function bootCanvas() {
 		if (entry.pane.getMode() === "elsewhere") return elsewhereTilePill(entry.pane.getFollow());
 		const status = entry.pane.getRunStatus();
 		if (status.kind !== "idle") return { text: status.kind, kind: "working" };
-		return { text: entry.pane.isController() ? "idle" : "viewing", kind: "idle" };
+		return { text: entry.pane.isController() || entry.pane.isFresh() ? "idle" : "viewing", kind: "idle" };
 	}
 
 	/**
@@ -417,10 +427,16 @@ export async function bootCanvas() {
 		}
 		if (entry.pane.getMode() === "elsewhere") entry.elsewhere = entry.pane.getFollow() ?? entry.elsewhere ?? {};
 		else if (entry.elsewhere && state?.sessionId === entry.id) entry.elsewhere = null;
+		// the pane found its session gone and never saved: kept on the entry, so a remount starts fresh too
+		const fresh = entry.pane.getFresh();
+		if (fresh) entry.fresh = fresh;
 		if (!entry.dormant && entry.pane.getConnection() === "gone") {
 			entry.dormant = true;
 			entry.opened = false;
 			entry.elsewhere = null;
+			// the pane said so already: its gone notice is DORMANT_NOTICE
+			entry.readOnly = "shown";
+			entry.notice = true;
 		}
 	}
 
@@ -471,8 +487,11 @@ export async function bootCanvas() {
 				list.append(row);
 			};
 			const following = !entry.dormant && pane.getMode() === "elsewhere";
+			const fresh = Boolean(entry.fresh);
 			if (entry.dormant) {
 				item("Resume", "attach this session so it can run here", () => wake(entry.id));
+			} else if (fresh) {
+				// no session behind it yet: sending starts one
 			} else if (following) {
 				const writers = pane.getFollow()?.writers;
 				const who = Array.isArray(writers) && writers.length > 0 ? `pi ${writers.join(", ")} · ` : "";
@@ -483,8 +502,8 @@ export async function bootCanvas() {
 			} else {
 				item("Take over", "control this session from this browser", pane.takeOver);
 			}
-			if (!entry.dormant && !following && pane.getRunStatus().kind !== "idle") item("Abort run", "same as esc", pane.abort);
-			item("Remove from canvas", "the session keeps running", () => removeSessionTile(entry.id));
+			if (!entry.dormant && !fresh && !following && pane.getRunStatus().kind !== "idle") item("Abort run", "same as esc", pane.abort);
+			item("Remove from canvas", fresh ? "nothing was sent here yet, so there is no session to keep" : "the session keeps running", () => removeSessionTile(entry.id));
 			body.append(list);
 			panel.append(body);
 		});
@@ -514,6 +533,8 @@ export async function bootCanvas() {
 			menuDom,
 			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 			onStateChange: () => renderTileChrome(entry.id),
+			onFreshStarted: (sessionId) => adoptSession(entry, sessionId),
+			goneNotice: DORMANT_NOTICE,
 			transcriptWindow: TRANSCRIPT_WINDOW,
 			tileUi: {
 				dialogHost: el,
@@ -527,35 +548,101 @@ export async function bootCanvas() {
 		entry.mounted = true;
 		entry.opened = false;
 		entry.readOnly = "none";
+		entry.notice = false;
 		if (focusedTileId === entry.id) entry.pane.setFocused(true);
 		entry.pane.render();
-		if (entry.dormant) {
-			entry.pane.appendNotice(DORMANT_NOTICE);
-			showDormantTail(entry);
-		}
+		settleDormant(entry);
+	}
+
+	/** The dormant notice, once per pane. @param {TileEntry} entry @param {string} [text] */
+	function showDormantNotice(entry, text = DORMANT_NOTICE) {
+		if (entry.notice) return;
+		entry.notice = true;
+		entry.pane.appendNotice(text);
 	}
 
 	/**
-	 * A dormant tile on screen shows the tail of its session file (no runtime attached on the host) and pages
-	 * back through the file; hosts without GET /api/session-transcript leave the notice alone.
+	 * What a dormant tile on screen shows, read from the host without attaching anything: the tail of its session
+	 * file under the resume notice (earlier pages come from the file too), or, when there is no file because nobody
+	 * ever sent the session anything, a fresh composer in the same folder (freshen). Hosts without GET
+	 * /api/session-transcript get the notice alone. Offscreen tiles wait until they show (onTileVisibility).
 	 * @param {TileEntry} entry
 	 */
-	function showDormantTail(entry) {
-		if (!entry.dormant || !entry.mounted || !entry.visible || !entry.path || entry.readOnly !== "none") return;
+	function settleDormant(entry) {
+		if (!entry.dormant || !entry.mounted || !entry.visible || entry.readOnly !== "none") return;
+		if (!entry.path) {
+			entry.readOnly = "shown";
+			showDormantNotice(entry);
+			return;
+		}
 		entry.readOnly = "loading";
 		const { pane, path } = entry;
+		const current = () => entry.pane === pane && entry.dormant && entry.mounted;
 		const query = new URLSearchParams({ path, limit: String(TRANSCRIPT_WINDOW.unfocused || 20) });
 		api.getJson(`/api/session-transcript?${query.toString()}`).then(
 			(/** @type {any} */ page) => {
-				if (entry.pane !== pane || !entry.dormant || !entry.mounted) return;
+				if (!current()) return;
 				entry.readOnly = "shown";
+				// a pane that ran the session until it stopped keeps showing what it had
+				if (pane.getSessionId()) {
+					showDormantNotice(entry);
+					return;
+				}
 				const sessionId = typeof page?.sessionId === "string" ? page.sessionId : entry.id;
 				pane.showReadOnly(page, DORMANT_NOTICE, { sessionId, path });
+				entry.notice = true;
 			},
-			() => {
-				if (entry.pane === pane) entry.readOnly = "shown";
+			(/** @type {unknown} */ error) => {
+				if (!current()) return;
+				const neverSaved = neverSavedOf(error);
+				if (neverSaved?.cwd) {
+					freshen(entry, freshRecord(neverSaved.cwd, pane.getState()));
+					return;
+				}
+				entry.readOnly = "shown";
+				showDormantNotice(entry, neverSaved ? NEVER_SAVED_NOTICE : DORMANT_NOTICE);
 			},
 		);
+	}
+
+	/**
+	 * A tile whose session was never saved and isn't running (see session/fresh.js): it keeps its place and
+	 * composer, and its first send starts a new session in `record.cwd` (adoptSession).
+	 * @param {TileEntry} entry @param {import("./session/fresh.js").FreshRecord} record
+	 */
+	function freshen(entry, record) {
+		if (entries.get(entry.id) !== entry) return;
+		entry.dormant = false;
+		entry.elsewhere = null;
+		entry.idleSuspended = false;
+		entry.readOnly = "none";
+		entry.notice = false;
+		entry.fresh = record;
+		entry.opened = false;
+		openIfReady(entry);
+		renderTileChrome(entry.id);
+	}
+
+	/**
+	 * A fresh tile's first send started a new session: the tile (same place, same pane, same draft) is that
+	 * session's now, and the canvas map follows.
+	 * @param {TileEntry} entry @param {string} sessionId
+	 */
+	function adoptSession(entry, sessionId) {
+		const previous = entry.id;
+		if (entries.get(previous) !== entry || entries.has(sessionId)) return;
+		if (!canvas.tiles.renameTile(previous, sessionId)) return;
+		renameKey(entries, previous, sessionId);
+		entry.id = sessionId;
+		entry.path = null;
+		entry.title = sessionTitle({ id: sessionId, cwd: entry.fresh?.cwd, forkLabel: entry.forkLabel });
+		entry.fresh = null;
+		entry.dormant = false;
+		entry.opened = true;
+		entry.status = statusById.get(sessionId) ?? null;
+		if (focusedTileId === previous) focusedTileId = sessionId;
+		scheduleSave();
+		renderTileChrome(sessionId);
 	}
 
 	/** @param {TileEntry} entry */
@@ -577,7 +664,8 @@ export async function bootCanvas() {
 	function openIfReady(entry) {
 		if (entry.dormant || !entry.mounted || entry.opened || !entry.visible) return;
 		entry.opened = true;
-		if (entry.elsewhere && entry.path) entry.pane.followElsewhere(entry.id, entry.path, entry.elsewhere);
+		if (entry.fresh) entry.pane.openFresh(entry.fresh);
+		else if (entry.elsewhere && entry.path) entry.pane.followElsewhere(entry.id, entry.path, entry.elsewhere);
 		else entry.pane.openSessionId(entry.id);
 	}
 
@@ -597,7 +685,7 @@ export async function bootCanvas() {
 			if (!entry.mounted) mountPane(entry);
 			if (entry.opened && !entry.idleSuspended) entry.pane.resume();
 			else if (!entry.opened) openIfReady(entry);
-			showDormantTail(entry);
+			settleDormant(entry);
 			renderTileChrome(id);
 			return;
 		}
@@ -658,6 +746,8 @@ export async function bootCanvas() {
 			controls: { btnModel, btnThinking, lblModel, lblThinking },
 			pill,
 			dormant: !running && !elsewhere,
+			notice: false,
+			fresh: null,
 			elsewhere: running ? null : elsewhere,
 			forkLabel,
 			focusWhenReady: false,
@@ -697,11 +787,19 @@ export async function bootCanvas() {
 		entry.dormant = false;
 		entry.opened = true;
 		renderTileChrome(id);
-		void entry.pane.selectSession({ id, path: entry.path, isRunning: false }).catch((/** @type {unknown} */ error) => {
+		const { pane } = entry;
+		void pane.selectSession({ id, path: entry.path, isRunning: false }).catch((/** @type {unknown} */ error) => {
+			// nothing was ever sent to it, so there's nothing to resume: it goes fresh, no error
+			const neverSaved = neverSavedOf(error);
+			if (neverSaved?.cwd && entry.pane === pane) {
+				freshen(entry, freshRecord(neverSaved.cwd, pane.getState()));
+				return;
+			}
 			entry.dormant = true;
 			entry.opened = false;
-			entry.pane.appendNotice(`Couldn't resume: ${error instanceof Error ? error.message : String(error)}`, "error");
-			renderTileChrome(id);
+			if (neverSaved) showDormantNotice(entry, NEVER_SAVED_NOTICE);
+			else entry.pane.appendNotice(`Couldn't resume: ${error instanceof Error ? error.message : String(error)}`, "error");
+			renderTileChrome(entry.id);
 		});
 	}
 

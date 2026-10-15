@@ -28,6 +28,18 @@ import { trackPointer } from "./pointer.js";
 export const INTERACTIVE_SELECTOR = "button, input, select, textarea, a, [contenteditable], [data-no-drag]";
 
 /**
+ * Moves a map entry to a new key, keeping its place in the order (the order tiles are listed and saved in).
+ * @template V @param {Map<string, V>} map @param {string} from @param {string} to
+ */
+export function renameKey(map, from, to) {
+	if (!map.has(from) || map.has(to)) return false;
+	const entries = [...map.entries()].map(([key, value]) => /** @type {[string, V]} */ ([key === from ? to : key, value]));
+	map.clear();
+	for (const [key, value] of entries) map.set(key, value);
+	return true;
+}
+
+/**
  * @template {keyof HTMLElementTagNameMap} K
  * @param {Document} doc @param {K} tag @param {string} className
  * @returns {HTMLElementTagNameMap[K]}
@@ -122,7 +134,7 @@ export function createTileLayer({ world, viewport, onFocusChange, onCloseRequest
 		close.setAttribute("aria-label", "Remove from canvas");
 		close.addEventListener("click", (event) => {
 			event.stopPropagation();
-			onCloseRequest?.(id);
+			onCloseRequest?.(tile.id);
 		});
 		const titleEl = make(doc, "div", "cv-title");
 		titleEl.textContent = title;
@@ -155,6 +167,19 @@ export function createTileLayer({ world, viewport, onFocusChange, onCloseRequest
 			if (next) focusTile(next.id);
 			else onFocusChange?.(null);
 		}
+	}
+
+	/**
+	 * Gives a tile another id (a new session took over its place), keeping its spot, focus and order.
+	 * @param {string} from @param {string} to
+	 */
+	function renameTile(from, to) {
+		const tile = tiles.get(from);
+		if (!tile || !renameKey(tiles, from, to)) return false;
+		tile.id = to;
+		tile.el.dataset.tileId = to;
+		if (focusedId === from) focusedId = to;
+		return true;
 	}
 
 	/** @param {string | null} id */
@@ -220,6 +245,7 @@ export function createTileLayer({ world, viewport, onFocusChange, onCloseRequest
 	return {
 		addTile,
 		removeTile,
+		renameTile,
 		focusTile,
 		beginDrag,
 		beginResize,
