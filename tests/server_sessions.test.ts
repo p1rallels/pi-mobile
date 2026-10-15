@@ -187,6 +187,43 @@ describe("server session files", () => {
 	});
 });
 
+describe("server never-saved sessions", () => {
+	test("a session path with no file behind it says never saved, with its folder, wherever a missing session is reported", async () => {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));
+		tempDirs.push(root);
+		const cwd = join(root, "repo");
+		await mkdir(cwd);
+		const id = "01a1410a-b6d4-7741-b541-08a5f154bad3";
+		const path = join(root, "agent", "sessions", `--${cwd.replace(/^\//, "").replace(/[/\\:]/g, "-")}--`, `2026-10-15T19-29-43-636Z_${id}.jsonl`);
+		const port = await freePort();
+		const base = `http://127.0.0.1:${String(port)}`;
+		await startServer(root, port);
+		const client = await fetch(`${base}/api/client`, { method: "POST" });
+		const headers = { cookie: client.headers.get("set-cookie")?.split(";")[0] ?? "", "content-type": "application/json" };
+		const post = (url: string, body: unknown) => fetch(`${base}${url}`, { method: "POST", headers, body: JSON.stringify(body) });
+		expect((await post("/api/repos", { cwd })).status).toBe(200);
+
+		const missing = { neverSaved: true, cwd };
+		const state = await fetch(`${base}/api/sessions/${id}/state?path=${encodeURIComponent(path)}`, { headers });
+		expect(state.status).toBe(404);
+		expect(await state.json()).toEqual({ error: "Session not running", ...missing });
+		const transcript = await fetch(`${base}/api/session-transcript?path=${encodeURIComponent(path)}`, { headers });
+		expect(transcript.status).toBe(404);
+		expect(await transcript.json()).toEqual({ error: "Session file not found", ...missing });
+		const resume = await post("/api/sessions", { resumeSessionPath: path });
+		expect(resume.status).toBe(404);
+		expect(await resume.json()).toMatchObject(missing);
+
+		// another session's name, or no path at all: just not running
+		const other = await fetch(`${base}/api/sessions/someone-else/state?path=${encodeURIComponent(path)}`, { headers });
+		expect(await other.json()).toEqual({ error: "Session not running" });
+		expect(await (await fetch(`${base}/api/sessions/${id}/state`, { headers })).json()).toEqual({ error: "Session not running" });
+
+		expect((await post("/api/sessions", { cwd, model: "opus" })).status).toBe(400);
+		expect((await post("/api/sessions", { cwd, thinkingLevel: 3 })).status).toBe(400);
+	});
+});
+
 describe("server sessions", () => {
 	test("resumes, pages, lists, and re-attaches a session across a graceful restart", async () => {
 		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));

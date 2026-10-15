@@ -78,6 +78,19 @@ export interface ApiErrorResponse {
 	error: string;
 }
 
+/**
+ * A session path with no file behind it: pi writes a session's file with its first message, so a session nobody
+ * sent anything to leaves none once it stops running (see never-saved.ts). `cwd` is the folder it ran in, or null
+ * when that can't be told from the path.
+ */
+export interface ApiNeverSaved {
+	neverSaved: true;
+	cwd: string | null;
+}
+
+/** 404 for a session that isn't running (attach, resume, file reads); one that was never saved says so. */
+export type ApiSessionMissingResponse = ApiErrorResponse & Partial<ApiNeverSaved>;
+
 export interface ApiSessionSummary {
 	id: string;
 	path: string | null;
@@ -161,6 +174,10 @@ export interface ApiCreateSessionRequest {
 	takeOver?: boolean;
 	/** The answer to a project trust prompt, sent when the first attempt was refused with one. */
 	projectTrust?: ApiProjectTrustChoice;
+	/** A new session's model, when available (a session standing in for one that was never saved keeps that one's). */
+	model?: { provider: string; id: string };
+	/** A new session's thinking level, when valid. */
+	thinkingLevel?: string;
 }
 
 /** 409 from POST /api/sessions in PI_WEB_PROJECT_TRUST=ask mode: answer with `projectTrust` and retry. */

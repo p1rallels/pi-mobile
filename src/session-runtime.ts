@@ -43,6 +43,7 @@ import {
 } from "./outside-writers.ts";
 import { findGitHead, readGitBranch, watchGitBranch, type GitBranchWatch } from "./git-branch.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
+import { classifyNeverSaved } from "./never-saved.ts";
 import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";
 import { createSessionFolders, createSessionIndex, sessionDirForCwd, type SessionFolder, type SessionSummary } from "./session-index.ts";
 import { isOpenTurn, turnOfEntries, type Turn } from "./session-turn.ts";
@@ -65,6 +66,7 @@ import type {
 	ApiFollowState,
 	ApiPromptDisposition,
 	ApiModelInfo,
+	ApiNeverSaved,
 	ApiRepoSuggestion,
 	ApiResyncTranscript,
 	ApiSessionState,
@@ -107,6 +109,13 @@ export class RunningElsewhereError extends Error {
 export class AmbiguousWritersError extends Error {
 	constructor(readonly pids: number[]) {
 		super("ambiguous_writers");
+	}
+}
+
+/** Refused resume: nothing was ever sent to the session, so it has no file (see never-saved.ts); start a new one in `cwd`. */
+export class NeverSavedError extends Error {
+	constructor(readonly cwd: string | null) {
+		super("never_saved");
 	}
 }
 
@@ -1036,7 +1045,11 @@ export class PiWebRuntime {
 
 		if (request.resumeSessionPath) {
 			const path = this.assertAllowedResumePath(request.resumeSessionPath);
-			if (!this.isHostedPath(path)) await this.assertNotRunningElsewhere(path, request.takeOver === true);
+			if (!this.isHostedPath(path)) {
+				const neverSaved = await this.neverSaved(path);
+				if (neverSaved) throw new NeverSavedError(neverSaved.cwd);
+				await this.assertNotRunningElsewhere(path, request.takeOver === true);
+			}
 			const runtime = await this.resumeSession(path, clientId, { choice: request.projectTrust });
 			return { sessionId: runtime.session.sessionId };
 		}
@@ -1046,9 +1059,39 @@ export class PiWebRuntime {
 		this.ensureCapacity();
 		const sessionManager = SessionManager.create(cwd);
 		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager, projectTrust);
+		await this.applyStartSettings(session, request);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
 		const runtime = this.registerSession(session, ui, projectTrust, cwd, clientId, tripwireAllowedRoots);
 		return { sessionId: runtime.session.sessionId };
+	}
+
+	/** The model and thinking level a new session was asked to start with, where they still apply; the defaults otherwise. */
+	private async applyStartSettings(session: AgentSession, request: Pick<ApiCreateSessionRequest, "model" | "thinkingLevel">): Promise<void> {
+		const wanted = request.model;
+		if (wanted && (session.model?.provider !== wanted.provider || session.model?.id !== wanted.id)) {
+			const modelRuntime = await this.refreshModelRuntime();
+			const model = modelRuntime.getAvailableSnapshot().find((m) => m.provider === wanted.provider && m.id === wanted.id);
+			if (model) await session.setModel(model).catch(() => {});
+		}
+		const level = request.thinkingLevel;
+		if (level && isThinkingLevel(level) && session.thinkingLevel !== level) session.setThinkingLevel(level);
+	}
+
+	/**
+	 * Whether a session path has nothing behind it because nobody ever sent the session a message (see
+	 * never-saved.ts), with the folder it ran in; null for a hosted session, a file that's there, or a path that
+	 * isn't a session's. `sessionId`, when given, must be the one the file would be named for.
+	 */
+	async neverSaved(rawPath: string, sessionId?: string): Promise<ApiNeverSaved | null> {
+		let path: string;
+		try {
+			path = this.assertAllowedResumePath(rawPath);
+		} catch {
+			return null;
+		}
+		if (this.isHostedPath(path)) return null;
+		const folders = await this.listRepos().catch((): string[] => []);
+		return classifyNeverSaved(path, { sessionsDir: resolve(this.agentDir, "sessions"), folders, exists: existsSync, sessionId });
 	}
 
 	/**

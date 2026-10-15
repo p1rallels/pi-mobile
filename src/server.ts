@@ -12,7 +12,7 @@ import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
-import { AmbiguousWritersError, PiWebRuntime, RunningElsewhereError, type FollowClient, type SessionClient } from "./session-runtime.ts";
+import { AmbiguousWritersError, NeverSavedError, PiWebRuntime, RunningElsewhereError, type FollowClient, type SessionClient } from "./session-runtime.ts";
 import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PING_INTERVAL_MS } from "./sse.ts";
 import type {
 	ApiActiveSessionsResponse,
@@ -33,6 +33,7 @@ import type {
 	ApiReleaseRequest,
 	ApiRunningElsewhereResponse,
 	ApiSessionFileTranscriptResponse,
+	ApiSessionMissingResponse,
 	ApiSessionState,
 	ApiStopElsewhereRequest,
 	ApiStopElsewhereResponse,
@@ -742,9 +743,19 @@ async function attachIfNeeded(req: Request, url: URL, sessionId: string, request
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (message === "too_many_active_sessions") return errorResponse("Too many active sessions", 429);
-		return errorResponse("Session not running", 404);
+		return sessionMissing("Session not running", path, sessionId);
 	}
 }
+
+/** 404 for a session that isn't there to run or read; one nobody ever sent a message to says so, with its folder. */
+async function sessionMissing(message: string, path: string, sessionId?: string): Promise<Response> {
+	const neverSaved = await runtime.neverSaved(path, sessionId);
+	const body: ApiSessionMissingResponse = { error: message, ...neverSaved };
+	return json(body, 404);
+}
+
+const isModelRef = (value: unknown): value is { provider: string; id: string } =>
+	Boolean(value) && typeof value === "object" && typeof (value as { provider?: unknown }).provider === "string" && typeof (value as { id?: unknown }).id === "string";
 
 function createCookieResponse(body: unknown, status: number, cookieHeader: string): Response {
 	return json(body, status, { "set-cookie": cookieHeader });
@@ -966,7 +977,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				const message = error instanceof Error ? error.message : String(error);
 				if (message.startsWith("session_path_not_allowed")) return errorResponse("Session path not allowed", 403);
 				if (message === "unknown_entry") return errorResponse("Unknown transcript entry", 404);
-				return errorResponse("Session file not found", 404);
+				return sessionMissing("Session file not found", path);
 			}
 		}
 
@@ -1144,9 +1155,15 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			try {
 				const raw = (await requireJsonBody(req)) as ApiCreateSessionRequest;
 				if (raw.projectTrust !== undefined && !isProjectTrustChoice(raw.projectTrust)) return errorResponse("Invalid project trust choice", 400);
+				if (raw.model !== undefined && !isModelRef(raw.model)) return errorResponse("Invalid model", 400);
+				if (raw.thinkingLevel !== undefined && typeof raw.thinkingLevel !== "string") return errorResponse("Invalid thinking level", 400);
 				const result = await runtime.startSession({ ...raw, clientId: client.clientId });
 				return json(result, 200);
 			} catch (error) {
+				if (error instanceof NeverSavedError) {
+					const body: ApiSessionMissingResponse = { error: "Nothing was ever sent to this session, so there is no file to resume", neverSaved: true, cwd: error.cwd };
+					return json(body, 404);
+				}
 				if (error instanceof ProjectTrustRequiredError) {
 					const body: ApiProjectTrustRequiredResponse = { error: "Project trust required", projectTrust: error.prompt };
 					return json(body, 409);
