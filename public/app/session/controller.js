@@ -155,7 +155,7 @@ export function createSessionController({
 	/** Called when the page comes back: phones often keep a dead stream that never reports an error. */
 	function resumeIfStale() {
 		if (!activeSessionId || activeSessionId === "replay") return;
-		if (connection === "gone" || connection === "idle") return;
+		if (connection === "gone" || connection === "idle" || connection === "suspended") return;
 		if (connection === "reconnecting" && recoveryTimer) {
 			scheduleRecovery(activeSessionId, 0);
 			return;
@@ -743,6 +743,24 @@ export function createSessionController({
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/release`, { clientId: getClientId() });
 	}
 
+	/**
+	 * Offscreen canvas tiles drop their stream so the server can evict idle sessions; resume() picks up
+	 * from the cursor, so only what was missed comes back.
+	 */
+	function suspend() {
+		if (!activeSessionId || activeSessionId === "replay") return;
+		if (connection === "gone" || connection === "suspended") return;
+		closeEvents();
+		stopRecovery();
+		setConnection("suspended");
+	}
+
+	function resume() {
+		if (!activeSessionId || activeSessionId === "replay") return;
+		if (connection !== "suspended") return;
+		connectEvents(activeSessionId);
+	}
+
 	/** For panes that go away (canvas tiles): stop timers and the stream; late async work sees no session. */
 	function destroy() {
 		clearInterval(staleTimer);
@@ -781,6 +799,8 @@ export function createSessionController({
 		takeOver,
 		release,
 		openSessionId,
+		suspend,
+		resume,
 		destroy,
 	};
 }

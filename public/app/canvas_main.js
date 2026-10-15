@@ -17,6 +17,18 @@ import { createMenu } from "./ui/menu.js";
 export async function bootCanvas() {
 	const SAVE_DEBOUNCE_MS = 400;
 	const DEFAULT_CAMERA = { x: 48, y: 64, scale: 0.6 };
+	const knobs = new URL(window.location.href).searchParams;
+	/** @param {string} name @param {number} fallback */
+	const msKnob = (name, fallback) => {
+		const value = Number.parseInt(knobs.get(name) ?? "", 10);
+		return Number.isFinite(value) && value >= 0 ? value : fallback;
+	};
+	// offscreen tiles: drop the stream after SUSPEND_GRACE_MS, unmount the dom after UNMOUNT_AFTER_MS
+	// beyond the KEEP_MOUNTED_OFFSCREEN most recently seen (?suspendMs= / ?unmountMs= for tests)
+	const SUSPEND_GRACE_MS = msKnob("suspendMs", 8_000);
+	const UNMOUNT_AFTER_MS = msKnob("unmountMs", 90_000);
+	const KEEP_MOUNTED_OFFSCREEN = msKnob("keepMounted", 8);
+	const SWEEP_MS = Math.min(15_000, Math.max(250, UNMOUNT_AFTER_MS / 2));
 
 	/**
 	 * @typedef {{
@@ -24,9 +36,16 @@ export async function bootCanvas() {
 	 *   path: string | null,
 	 *   title: string,
 	 *   pane: ReturnType<typeof createSessionPane>,
+	 *   controls: { btnModel: HTMLButtonElement, btnThinking: HTMLButtonElement, lblModel: HTMLElement, lblThinking: HTMLElement },
 	 *   pill: HTMLElement,
 	 *   dormant: boolean,
 	 *   focusWhenReady: boolean,
+	 *   mounted: boolean,
+	 *   opened: boolean,
+	 *   visible: boolean,
+	 *   suspendTimer: number,
+	 *   hiddenAt: number,
+	 *   lastVisibleAt: number,
 	 *   shown: { title: string, pill: string },
 	 * }} TileEntry
 	 */
@@ -83,6 +102,7 @@ export async function bootCanvas() {
 		onCloseRequest: (id) => removeSessionTile(id),
 		onGeometryCommit: () => scheduleSave(),
 		onCameraSettle: (camera) => saveCamera(window.localStorage, api.getBaseUrl(), camera),
+		onVisibilityChange: (id, visible) => onTileVisibility(id, visible),
 		onEscape: (id, event) => entries.get(id)?.pane.handleEscape(event),
 	});
 
@@ -90,6 +110,7 @@ export async function bootCanvas() {
 	function focusComposer(id) {
 		const entry = entries.get(id);
 		if (!entry) return;
+		if (!entry.mounted) mountPane(entry);
 		entry.focusWhenReady = entry.pane.refs.input.disabled;
 		entry.pane.focusComposer();
 	}
@@ -97,8 +118,8 @@ export async function bootCanvas() {
 	/** @param {string} message */
 	function notice(message) {
 		const focused = canvas.tiles.focusedId();
-		const entry = focused ? entries.get(focused) : entries.values().next().value;
-		if (entry) entry.pane.appendNotice(message, "error");
+		const entry = focused ? entries.get(focused) : [...entries.values()].find((candidate) => candidate.mounted);
+		if (entry?.mounted) entry.pane.appendNotice(message, "error");
 		else console.error(message);
 	}
 
@@ -125,7 +146,9 @@ export async function bootCanvas() {
 	/** @param {TileEntry} entry */
 	function pillFor(entry) {
 		if (entry.dormant) return { text: "not running", kind: "idle" };
+		if (!entry.mounted || !entry.opened) return { text: "offscreen", kind: "idle" };
 		const connection = entry.pane.getConnection();
+		if (connection === "suspended") return { text: "offscreen", kind: "idle" };
 		if (connection === "gone") return { text: "ended", kind: "offline" };
 		if (connection === "reconnecting") return { text: "reconnecting", kind: "offline" };
 		const status = entry.pane.getRunStatus();
@@ -133,16 +156,30 @@ export async function bootCanvas() {
 		return { text: entry.pane.isController() ? "idle" : "viewing", kind: "idle" };
 	}
 
+	/** Learns the session file from the pane, and turns an ended session back into a dormant tile. @param {TileEntry} entry */
+	function syncFromPane(entry) {
+		const state = entry.pane.getState();
+		if (state?.sessionFile && entry.path !== state.sessionFile) {
+			entry.path = state.sessionFile;
+			scheduleSave();
+		}
+		if (!entry.dormant && entry.pane.getConnection() === "gone") {
+			entry.dormant = true;
+			entry.opened = false;
+		}
+	}
+
 	/** @param {string} id */
 	function renderTileChrome(id) {
 		const entry = entries.get(id);
 		const tile = canvas.tiles.get(id);
 		if (!entry || !tile) return;
-		if (entry.focusWhenReady && !entry.pane.refs.input.disabled) {
+		if (entry.mounted) syncFromPane(entry);
+		if (entry.mounted && entry.focusWhenReady && !entry.pane.refs.input.disabled) {
 			entry.focusWhenReady = false;
 			if (canvas.tiles.focusedId() === id) entry.pane.focusComposer();
 		}
-		const state = entry.pane.getState();
+		const state = entry.mounted ? entry.pane.getState() : null;
 		if (state?.sessionName) entry.title = sessionTitle({ id, cwd: state.cwd, name: state.sessionName });
 		if (entry.shown.title !== entry.title) {
 			entry.shown.title = entry.title;
@@ -157,7 +194,7 @@ export async function bootCanvas() {
 			entry.pill.className = `cv-pill is-${pill.kind}`;
 			tile.el.classList.toggle("cv-working", pill.kind === "working");
 		}
-		tile.el.classList.toggle("cv-waiting", !entry.dormant && entry.pane.extensionUi.isOpen());
+		tile.el.classList.toggle("cv-waiting", entry.mounted && !entry.dormant && entry.pane.extensionUi.isOpen());
 	}
 
 	/** @param {HTMLElement} anchor @param {TileEntry} entry */
@@ -186,15 +223,101 @@ export async function bootCanvas() {
 		});
 	}
 
+	/** @param {string} text */
+	function placeholder(text) {
+		const el = h("div", "cv-placeholder", text);
+		return el;
+	}
+
+	/**
+	 * Builds the pane inside the tile body. The title-bar controls outlive it, so a tile can be
+	 * unmounted while offscreen and mounted again when it comes back.
+	 * @param {TileEntry} entry
+	 */
+	function mountPane(entry) {
+		const tile = canvas.tiles.get(entry.id);
+		if (!tile || entry.mounted) return;
+		const { el, refs } = buildPaneDom(document);
+		tile.body.replaceChildren(el);
+		entry.pane = createSessionPane({
+			refs: { ...refs, ...entry.controls },
+			api,
+			getClientId: () => clients.current(),
+			refreshClient: () => clients.refresh(),
+			menuDom,
+			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
+			onStateChange: () => renderTileChrome(entry.id),
+		});
+		entry.mounted = true;
+		entry.opened = false;
+		entry.pane.render();
+		if (entry.dormant) entry.pane.appendNotice("Not running. Click this tile to resume it here.");
+	}
+
+	/** @param {TileEntry} entry */
+	function unmountPane(entry) {
+		const tile = canvas.tiles.get(entry.id);
+		if (!tile || !entry.mounted) return;
+		entry.pane.destroy();
+		entry.mounted = false;
+		entry.opened = false;
+		tile.body.replaceChildren(placeholder(entry.title));
+		renderTileChrome(entry.id);
+	}
+
+	/** Running sessions open their stream once their tile is on screen, not before. @param {TileEntry} entry */
+	function openIfReady(entry) {
+		if (entry.dormant || !entry.mounted || entry.opened || !entry.visible) return;
+		entry.opened = true;
+		entry.pane.openSessionId(entry.id);
+	}
+
+	/**
+	 * Offscreen tiles drop their stream after a grace period (so idle sessions become evictable on
+	 * the server) and pick up from their cursor when they come back.
+	 * @param {string} id @param {boolean} visible
+	 */
+	function onTileVisibility(id, visible) {
+		const entry = entries.get(id);
+		if (!entry || entry.visible === visible) return;
+		entry.visible = visible;
+		window.clearTimeout(entry.suspendTimer);
+		entry.suspendTimer = 0;
+		if (visible) {
+			entry.lastVisibleAt = Date.now();
+			if (!entry.mounted) mountPane(entry);
+			if (entry.opened) entry.pane.resume();
+			else openIfReady(entry);
+			renderTileChrome(id);
+			return;
+		}
+		entry.hiddenAt = Date.now();
+		entry.suspendTimer = window.setTimeout(() => {
+			entry.suspendTimer = 0;
+			if (!entry.visible && entry.mounted) entry.pane.suspend();
+			renderTileChrome(id);
+		}, SUSPEND_GRACE_MS);
+	}
+
+	/** Unmounts tiles that have been offscreen for a while, keeping the most recently seen ones. */
+	function sweepOffscreen() {
+		const now = Date.now();
+		const focused = canvas.tiles.focusedId();
+		const stale = [...entries.values()]
+			.filter((entry) => entry.mounted && !entry.visible && entry.id !== focused && now - entry.hiddenAt >= UNMOUNT_AFTER_MS)
+			.sort((a, b) => b.lastVisibleAt - a.lastVisibleAt);
+		const mountedOffscreen = [...entries.values()].filter((entry) => entry.mounted && !entry.visible).length;
+		const excess = Math.max(0, mountedOffscreen - KEEP_MOUNTED_OFFSCREEN);
+		for (const entry of stale.slice(Math.max(0, stale.length - excess))) unmountPane(entry);
+	}
+
 	/**
 	 * @param {{ id: string, path: string | null, title: string, rect: import("./canvas/camera.js").Rect, running: boolean }} spec
 	 */
 	function addSessionTile({ id, path, title, rect, running }) {
-		if (entries.has(id)) return entries.get(id);
+		const existing = entries.get(id);
+		if (existing) return existing;
 		const tile = canvas.tiles.addTile({ id, rect, title });
-		const { el, refs } = buildPaneDom(document);
-		tile.body.append(el);
-
 		const pill = h("span", "cv-pill");
 		tile.statusEl.append(pill);
 		const combo = h("span", "cv-combo");
@@ -214,22 +337,31 @@ export async function bootCanvas() {
 		more.title = "Take over, release, abort";
 		tile.controlsEl.append(combo, more);
 
-		const pane = createSessionPane({
-			refs: { ...refs, btnModel, btnThinking, lblModel, lblThinking },
-			api,
-			getClientId: () => clients.current(),
-			refreshClient: () => clients.refresh(),
-			menuDom,
-			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
-			onStateChange: () => renderTileChrome(id),
-		});
 		/** @type {TileEntry} */
-		const entry = { id, path, title, pane, pill, dormant: !running, focusWhenReady: false, shown: { title: "", pill: "" } };
+		const entry = {
+			id,
+			path,
+			title,
+			pane: /** @type {any} */ (null),
+			controls: { btnModel, btnThinking, lblModel, lblThinking },
+			pill,
+			dormant: !running,
+			focusWhenReady: false,
+			mounted: false,
+			opened: false,
+			visible: tile.visible,
+			suspendTimer: 0,
+			hiddenAt: tile.visible ? 0 : Date.now(),
+			lastVisibleAt: tile.visible ? Date.now() : 0,
+			shown: { title: "", pill: "" },
+		};
 		entries.set(id, entry);
-		more.addEventListener("click", () => openTileActions(more, entry));
-		pane.render();
-		if (running) pane.openSessionId(id);
-		else pane.appendNotice("Not running. Click this tile to resume it here.");
+		more.addEventListener("click", () => {
+			if (!entry.mounted) mountPane(entry);
+			openTileActions(more, entry);
+		});
+		mountPane(entry);
+		openIfReady(entry);
 		renderTileChrome(id);
 		return entry;
 	}
@@ -238,14 +370,17 @@ export async function bootCanvas() {
 	function wake(id) {
 		const entry = entries.get(id);
 		if (!entry || !entry.dormant) return;
+		if (!entry.mounted) mountPane(entry);
 		if (!entry.path) {
 			entry.pane.appendNotice("This session has no file to resume from.", "error");
 			return;
 		}
 		entry.dormant = false;
+		entry.opened = true;
 		renderTileChrome(id);
 		void entry.pane.selectSession({ id, path: entry.path, isRunning: false }).catch((/** @type {unknown} */ error) => {
 			entry.dormant = true;
+			entry.opened = false;
 			entry.pane.appendNotice(`Couldn't resume: ${error instanceof Error ? error.message : String(error)}`, "error");
 			renderTileChrome(id);
 		});
@@ -256,15 +391,19 @@ export async function bootCanvas() {
 		const entry = entries.get(id);
 		if (!entry) return;
 		entries.delete(id);
-		entry.pane.destroy();
+		window.clearTimeout(entry.suspendTimer);
+		if (entry.mounted) entry.pane.destroy();
 		canvas.tiles.removeTile(id);
 		scheduleSave();
 	}
 
 	function clearTiles() {
 		for (const id of [...entries.keys()]) {
-			entries.get(id)?.pane.destroy();
+			const entry = entries.get(id);
 			entries.delete(id);
+			if (!entry) continue;
+			window.clearTimeout(entry.suspendTimer);
+			if (entry.mounted) entry.pane.destroy();
 			canvas.tiles.removeTile(id);
 		}
 	}
@@ -363,8 +502,9 @@ export async function bootCanvas() {
 	});
 
 	function resumeAll() {
-		for (const entry of entries.values()) if (!entry.dormant) entry.pane.resumeIfStale();
+		for (const entry of entries.values()) if (entry.mounted && entry.opened && !entry.dormant) entry.pane.resumeIfStale();
 	}
+	window.setInterval(sweepOffscreen, SWEEP_MS);
 	window.addEventListener("pageshow", resumeAll);
 	window.addEventListener("focus", resumeAll);
 	window.addEventListener("online", resumeAll);

@@ -291,6 +291,8 @@ export function createSessionPane({ refs, api, getClientId, refreshClient, menuD
 		/** @param {string} name */
 		runReplay: (name) => sessionCtrl.runReplay(name),
 		resumeIfStale: () => sessionCtrl.resumeIfStale(),
+		suspend: () => sessionCtrl.suspend(),
+		resume: () => sessionCtrl.resume(),
 		sendPromptFromInput,
 		abort,
 		takeOver,

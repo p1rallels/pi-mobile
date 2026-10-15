@@ -158,6 +158,7 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
 }
 .cv-body .msgs { overscroll-behavior: contain; }
 .cv-body .chat { flex: 1; min-height: 0; }
+.cv-placeholder { margin: auto; padding: 0 24px; color: #505058; font-size: 12px; text-align: center; }
 /* one footer line in tiles: the title bar already shows the repo, the model and the thinking level */
 .cv-body .footer-line-1, .cv-body .footer-right { display: none; }
 

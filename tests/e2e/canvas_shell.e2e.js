@@ -139,3 +139,85 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+function trackEventSources() {
+	const Native = window.EventSource;
+	let open = 0;
+	window.EventSource = class extends Native {
+		constructor(url, init) {
+			super(url, init);
+			open += 1;
+			const close = this.close.bind(this);
+			let closed = false;
+			this.close = () => {
+				if (!closed) open -= 1;
+				closed = true;
+				close();
+			};
+		}
+	};
+	Object.defineProperty(window, "__openEventSources", { get: () => open });
+}
+
+test("offscreen tiles drop their stream, unmount later, and come back from their cursor", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "repo");
+	await mkdir(cwd);
+	const paths = [await writeSessionFile(root, cwd, S1, "hello from disk", "hi there"), await writeSessionFile(root, cwd, S2, "second session", "reply two")];
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (resumePaths) => {
+			const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+			for (const resumeSessionPath of resumePaths) {
+				const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, resumeSessionPath }) });
+				if (!res.ok) throw new Error(`start failed: ${res.status}`);
+			}
+		}, paths);
+
+		const streams = [];
+		page.on("request", (request) => {
+			if (request.url().includes("/events")) streams.push(new URL(request.url()));
+		});
+		await page.addInitScript(trackEventSources);
+		await page.goto(`${base}/?ui=canvas&suspendMs=150&unmountMs=1500&keepMounted=0`);
+		await expect(page.locator(".cv-tile")).toHaveCount(2);
+		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
+		await expect(tile(page, S2).locator(".user-msg")).toHaveText("second session");
+		await expect.poll(() => page.evaluate(() => window.__openEventSources)).toBe(2);
+		const firstConnects = streams.length;
+
+		// out of view: both streams close after the grace period
+		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: -100_000, y: 0, scale: 0.6 }));
+		await expect.poll(() => page.evaluate(() => window.__openEventSources)).toBe(0);
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText("offscreen");
+
+		// back before the unmount: the same dom picks up from its cursor
+		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: 48, y: 64, scale: 0.6 }));
+		await expect.poll(() => page.evaluate(() => window.__openEventSources)).toBe(2);
+		const resumed = streams.slice(firstConnects);
+		expect(resumed).toHaveLength(2);
+		for (const url of resumed) expect(url.searchParams.get("since")).toBeTruthy();
+		await expect(tile(page, S1).locator(".user-msg")).toHaveCount(1);
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
+
+		// away long enough to unmount: only a placeholder stays, and the session keeps running
+		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: -100_000, y: 0, scale: 0.6 }));
+		await expect.poll(() => page.locator(".cv-tile .cv-placeholder").count(), { timeout: 10_000 }).toBe(2);
+		await expect(page.locator(".cv-tile .msgs")).toHaveCount(0);
+		const active = await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.map((s) => s.id));
+		expect(active.sort()).toEqual([S1, S2].sort());
+
+		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: 48, y: 64, scale: 0.6 }));
+		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
+		await expect(tile(page, S2).locator(".assistant-block .md")).toHaveText("reply two");
+		await expect.poll(() => page.evaluate(() => window.__openEventSources)).toBe(2);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
