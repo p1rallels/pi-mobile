@@ -159,7 +159,7 @@ export function createSessionController({
 		if (sessionId !== activeSessionId) return;
 		try {
 			await onRefreshClient();
-			if (mode !== "elsewhere") await api.getJson(sessionUrl(sessionId, "state"));
+			await api.getJson(mode === "elsewhere" ? sessionUrl(sessionId, "transcript", { limit: "1" }) : sessionUrl(sessionId, "state"));
 			if (sessionId !== activeSessionId) return;
 			connectEvents(sessionId);
 		} catch (error) {

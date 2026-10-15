@@ -56,7 +56,7 @@ export function isPiCommand(command: string): boolean {
 	return PI_COMMANDS.has(baseName(command.trim()));
 }
 
-/** `ps -axo pid=,pgid=,etime=,comm=` rows; the command is last and may hold spaces. */
+/** `ps -A -o pid=,pgid=,etime=,comm=` rows; the command is last and may hold spaces. */
 export function parsePsListing(listing: string, nowMs: number): PsRow[] {
 	return listing.split("\n").flatMap((line): PsRow[] => {
 		const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/.exec(line);
@@ -119,7 +119,7 @@ async function cwdsFromLsof(pids: readonly number[]): Promise<Map<number, string
 
 /** Every pi process with its folder, from one `ps` and one `lsof` (or /proc on linux). */
 export async function listPiProcesses(ownPid = process.pid, nowMs = Date.now()): Promise<PiProcess[] | null> {
-	const listing = await run(["ps", "-axo", "pid=,pgid=,etime=,comm="]);
+	const listing = await run(["ps", "-A", "-o", "pid=,pgid=,etime=,comm="]);
 	if (listing === null) return null;
 	const rows = parsePsListing(listing, nowMs).filter((row) => row.pid !== ownPid && isPiCommand(row.command));
 	if (rows.length === 0) return [];
