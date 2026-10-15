@@ -91,17 +91,15 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 
 		// the canvas is remembered: a plain reload stays on it, with the same tile where it was
 		const rect = await page.evaluate((id) => window.__canvas.canvas.tiles.get(id).rect, S1);
-		await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 600)));
-		await page.goto(`${base}/health`);
+		// the map lives on the host (GET/PUT /api/canvas): add a tile for the second session there
+		await expect.poll(() => page.evaluate(async () => (await (await fetch("/api/canvas")).json()).tiles.length)).toBe(1);
 		await page.evaluate(
-			([id, p]) => {
-				const key = `pi-web.canvas.layout:${location.origin}`;
-				const layout = JSON.parse(localStorage.getItem(key) ?? '{"tiles":[]}');
-				layout.tiles.push({ sessionId: id, path: p, title: "repo · second", x: rect0(layout).x + 840, y: rect0(layout).y, w: 800, h: 500 });
-				localStorage.setItem(key, JSON.stringify(layout));
-				function rect0(l) {
-					return l.tiles[0];
-				}
+			async ([id, p]) => {
+				const layout = await (await fetch("/api/canvas")).json();
+				const first = layout.tiles[0];
+				layout.tiles.push({ sessionId: id, path: p, title: "repo · second", x: first.x + 840, y: first.y, w: 800, h: 500 });
+				const res = await fetch("/api/canvas", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(layout) });
+				if (!res.ok) throw new Error(`layout save failed: ${res.status}`);
 			},
 			[S2, path2],
 		);
@@ -127,6 +125,7 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 		// the red dot only takes the tile off the canvas
 		await tile(page, S2).locator(".cv-close").click();
 		await expect(page.locator(".cv-tile")).toHaveCount(1);
+		await expect.poll(() => page.evaluate(async () => (await (await fetch("/api/canvas")).json()).tiles.map((t) => t.sessionId))).toEqual([S1]);
 		const active = await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.map((s) => s.id));
 		expect(active).toContain(S2);
 

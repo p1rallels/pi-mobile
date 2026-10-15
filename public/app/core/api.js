@@ -53,9 +53,19 @@ export function createApi({ baseUrl = window.location.origin } = {}) {
 		return handleJsonResponse(res);
 	}
 
+	async function putJson(path, payload) {
+		const res = await fetch(resolveUrl(path), {
+			method: "PUT",
+			credentials: "include",
+			headers: headers(),
+			body: JSON.stringify(payload),
+		});
+		return handleJsonResponse(res);
+	}
+
 	function eventSource(path) {
 		return new EventSource(resolveUrl(path), { withCredentials: true });
 	}
 
-	return { headers, getJson, postJson, eventSource, getBaseUrl, setBaseUrl, resolveUrl };
+	return { headers, getJson, postJson, putJson, eventSource, getBaseUrl, setBaseUrl, resolveUrl };
 }

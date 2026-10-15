@@ -90,6 +90,31 @@ async function readInit(url: string, cookie: string, lastEventId?: string): Prom
 	return { status: res.status, id, init: JSON.parse(data) };
 }
 
+describe("server canvas layout", () => {
+	test("GET /api/canvas starts empty, PUT saves a sanitized layout, bad bodies are refused", async () => {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-"));
+		tempDirs.push(root);
+		const port = await freePort();
+		await startServer(root, port);
+		const base = `http://127.0.0.1:${String(port)}`;
+		expect(await (await fetch(`${base}/api/canvas`)).json()).toEqual({ version: 1, tiles: [], updatedAt: null });
+
+		const put = await fetch(`${base}/api/canvas`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ tiles: [{ sessionId: "s1", path: "/x.jsonl", title: "t", x: 1, y: 2, w: 10, h: 10 }, { sessionId: "s1" }] }),
+		});
+		expect(put.status).toBe(200);
+		const saved = (await (await fetch(`${base}/api/canvas`)).json()) as { tiles: unknown[]; updatedAt: unknown };
+		expect(saved.tiles).toEqual([{ sessionId: "s1", path: "/x.jsonl", title: "t", x: 1, y: 2, w: 320, h: 220 }]);
+		expect(typeof saved.updatedAt).toBe("string");
+
+		const bad = await fetch(`${base}/api/canvas`, { method: "PUT", headers: { "content-type": "application/json" }, body: "{nope" });
+		expect(bad.status).toBe(400);
+		expect(((await (await fetch(`${base}/api/canvas`)).json()) as { tiles: unknown[] }).tiles).toHaveLength(1);
+	});
+});
+
 describe("server sessions", () => {
 	test("resumes, pages, lists, and re-attaches a session across a graceful restart", async () => {
 		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-sessions-"));

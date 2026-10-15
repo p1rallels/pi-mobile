@@ -8,7 +8,7 @@ import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, 
 import { createCanvas } from "./canvas/canvas.js";
 import { createFpsMeter } from "./canvas/fps_meter.js";
 import { nextFreeSlot } from "./canvas/layout.js";
-import { createLocalLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
+import { createLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
 import { buildPaneDom } from "./session/pane_dom.js";
 import { createSessionPane } from "./session/pane.js";
 import { createMenu } from "./ui/menu.js";
@@ -85,10 +85,11 @@ export async function bootCanvas() {
 	let activeHost = pageHost();
 	/** @type {any[]} */
 	let hosts = [];
-	let layoutStore = createLocalLayoutStore(window.localStorage, api.getBaseUrl());
+	let layoutStore = createLayoutStore(api, window.localStorage);
 	/** @type {Map<string, TileEntry>} */
 	const entries = new Map();
 	let saveTimer = 0;
+	let layoutLoaded = false;
 
 	const canvas = createCanvas({
 		root,
@@ -136,11 +137,17 @@ export async function bootCanvas() {
 	async function saveLayout() {
 		window.clearTimeout(saveTimer);
 		saveTimer = 0;
+		// never overwrite a map we failed to read
+		if (!layoutLoaded) return;
 		const tiles = [...entries.values()].flatMap((entry) => {
 			const tile = canvas.tiles.get(entry.id);
 			return tile ? [{ sessionId: entry.id, path: entry.path, title: entry.title, ...tile.rect }] : [];
 		});
-		await layoutStore.save({ tiles });
+		try {
+			await layoutStore.save({ tiles });
+		} catch (error) {
+			console.warn("canvas layout not saved", error);
+		}
 	}
 
 	/** @param {TileEntry} entry */
@@ -438,7 +445,20 @@ export async function bootCanvas() {
 	}
 
 	async function loadCanvas() {
-		const [layout, running] = await Promise.all([layoutStore.load(), runningSessions().catch(() => [])]);
+		layoutLoaded = false;
+		const [layout, running] = await Promise.all([
+			layoutStore.load().then(
+				(loaded) => {
+					layoutLoaded = true;
+					return loaded;
+				},
+				(error) => {
+					notice(`Couldn't load this host's canvas layout: ${error instanceof Error ? error.message : String(error)}`);
+					return { tiles: [] };
+				},
+			),
+			runningSessions().catch(() => []),
+		]);
 		const runningIds = new Set(running.map((session) => session.id));
 		for (const tile of layout.tiles) {
 			addSessionTile({ id: tile.sessionId, path: tile.path, title: tile.title ?? tile.sessionId.slice(0, 8), rect: tile, running: runningIds.has(tile.sessionId) });
@@ -454,7 +474,7 @@ export async function bootCanvas() {
 		clearTiles();
 		api.setBaseUrl(origin);
 		activeHost = { ...host, url: origin };
-		layoutStore = createLocalLayoutStore(window.localStorage, origin);
+		layoutStore = createLayoutStore(api, window.localStorage);
 		renderHostButton();
 		try {
 			await clients.ensure();

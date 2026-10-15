@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
+import { VERSION as PI_VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CANVAS_LAYOUT_BODY_LIMIT, createCanvasLayoutStore } from "./canvas-layout.ts";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { FaceIdService } from "./faceid.ts";
@@ -772,6 +773,9 @@ const clientSessionLimiter = createRateLimiter(
 	parsePositiveInt(process.env.PI_WEB_CLIENT_SESSIONS_PER_MINUTE, 20, "PI_WEB_CLIENT_SESSIONS_PER_MINUTE"),
 );
 const repoMutationLimiter = createRateLimiter(60_000, 12);
+// layout saves are debounced drag/resize ends; this only stops a runaway client
+const canvasLayoutLimiter = createRateLimiter(60_000, 240);
+const canvasLayouts = createCanvasLayoutStore(join(getAgentDir(), "pi-web", "canvas.json"));
 const sessionCreateLimiter = createRateLimiter(60_000, 12);
 const commandLimiter = createRateLimiter(60_000, 90);
 const faceIdChallengeLimiter = createRateLimiter(60_000, 12);
@@ -836,7 +840,7 @@ function corsPreflightResponse(req: Request): Response | null {
 	applySecurityHeaders(headers);
 	headers.set("access-control-allow-origin", origin);
 	headers.set("access-control-allow-credentials", "true");
-	headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
+	headers.set("access-control-allow-methods", "GET, POST, PUT, OPTIONS");
 	headers.set("access-control-allow-headers", "content-type, last-event-id");
 	headers.set("access-control-max-age", "600");
 	appendVary(headers, "Origin");
@@ -942,6 +946,26 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			const repos = await runtime.listRepos();
 			const body: ApiListReposResponse = { repos };
 			return json(body, 200);
+		}
+
+		if (req.method === "GET" && url.pathname === "/api/canvas") {
+			try {
+				return json(await canvasLayouts.load(), 200);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return errorResponse(`Couldn't read the canvas layout: ${message}`, 500);
+			}
+		}
+
+		if (req.method === "PUT" && url.pathname === "/api/canvas") {
+			const limited = canvasLayoutLimiter.check(`canvas:${requesterId}`);
+			if (limited) return rateLimitResponse(limited);
+			try {
+				return json(await canvasLayouts.save(await requireJsonBody(req, CANVAS_LAYOUT_BODY_LIMIT)), 200);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return errorResponse(message, 400);
+			}
 		}
 
 		if (req.method === "GET" && url.pathname === "/api/hosts") {

@@ -1,6 +1,6 @@
-// Where the canvas map lives. The layout (which sessions sit where) is per host; until the server
-// endpoint lands (m-d9da) it is kept in this browser's localStorage behind the same load/save shape.
-// The camera is always per device and per host.
+// Where the canvas map lives. The layout (which sessions sit where) belongs to the host: GET/PUT
+// /api/canvas, so every browser sees the same map. Hosts without that endpoint (older pi-web) fall
+// back to this browser's localStorage. The camera is always per device and per host.
 import { sanitizeCamera } from "./camera.js";
 import { sanitizeRect } from "./layout.js";
 
@@ -71,4 +71,33 @@ export function saveCamera(storage, origin, camera) {
 	} catch {
 		// not kept
 	}
+}
+
+/**
+ * The host's layout over /api/canvas, falling back to localStorage when the host doesn't have it.
+ * @param {{ getBaseUrl: () => string, getJson: (path: string) => Promise<any>, putJson: (path: string, body: unknown) => Promise<any> }} api
+ * @param {Pick<Storage, "getItem" | "setItem">} storage
+ * @returns {{ load: () => Promise<Layout>, save: (layout: Layout) => Promise<void> }}
+ */
+export function createLayoutStore(api, storage) {
+	const local = createLocalLayoutStore(storage, api.getBaseUrl());
+	let serverless = false;
+	/** @param {unknown} error */
+	const missingEndpoint = (error) => Boolean(error && typeof error === "object" && /** @type {any} */ (error).status === 404);
+	return {
+		async load() {
+			if (serverless) return local.load();
+			try {
+				return parseLayout(await api.getJson("/api/canvas"));
+			} catch (error) {
+				if (!missingEndpoint(error)) throw error;
+				serverless = true;
+				return local.load();
+			}
+		},
+		async save(layout) {
+			if (serverless) return local.save(layout);
+			await api.putJson("/api/canvas", parseLayout(layout));
+		},
+	};
 }
