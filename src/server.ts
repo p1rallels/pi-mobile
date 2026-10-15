@@ -948,7 +948,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			if (!path) return errorResponse("Missing session path", 400);
 			const limit = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
 			try {
-				const body: ApiSessionFileTranscriptResponse = runtime.readTranscriptFile(path, {
+				const body: ApiSessionFileTranscriptResponse = await runtime.readTranscriptFile(path, {
 					before: url.searchParams.get("before")?.trim() || undefined,
 					limit: Number.isFinite(limit) ? limit : undefined,
 				});
@@ -1167,7 +1167,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			const path = url.searchParams.get("path")?.trim();
 			try {
 				const body: ApiTranscriptPageResponse =
-					!runtime.isRunning(sessionId) && path ? await runtime.readTranscriptPage(sessionId, path, request) : runtime.getTranscriptPage(sessionId, request);
+					!runtime.isRunning(sessionId) && path ? await runtime.readTranscriptFile(path, { ...request, sessionId }) : runtime.getTranscriptPage(sessionId, request);
 				return json(body, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

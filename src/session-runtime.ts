@@ -474,7 +474,7 @@ export class PiWebRuntime {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
 	private statusListeners = new Set<() => void>();
-	private transcriptFiles = new Map<string, { mtimeMs: number; size: number; sessionId: string; entries: ReturnType<SessionManager["getBranch"]> }>();
+	private transcriptFiles = new Map<string, { mtimeMs: number; size: number; sessionId: string; branch: SessionEntry[] }>();
 	private resumingByPath = new Map<string, Promise<RunningSession>>();
 	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
@@ -861,36 +861,38 @@ export class PiWebRuntime {
 	}
 
 	/**
-	 * A page of a session that isn't running, read straight from its file: canvas tiles show the tail of
-	 * a dormant session without attaching a runtime. The newest few parsed files are kept until they change.
+	 * A page of a session read from its file, for sessions pi-web doesn't run: a dormant canvas tile shows the
+	 * tail, the follow view pages back. A hosted session's page comes from its runtime. `sessionId`, when
+	 * given, must be the file's.
 	 */
-	readTranscriptFile(rawPath: string, request: { before?: string; limit?: number }): TranscriptPage & { sessionId: string } {
+	async readTranscriptFile(rawPath: string, request: { before?: string; limit?: number; sessionId?: string }): Promise<TranscriptPage & { sessionId: string }> {
 		const path = this.assertAllowedResumePath(rawPath);
 		const runningId = this.runningByPath.get(path);
 		const running = runningId ? this.runningById.get(runningId) : undefined;
+		const file = running ? { sessionId: running.session.sessionId, branch: running.session.sessionManager.getBranch() } : await this.parsedSessionFile(path);
+		if (request.sessionId !== undefined && file.sessionId !== request.sessionId) throw new Error("session_path_mismatch");
 		const limit = Math.min(Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_MESSAGES)), MAX_TRANSCRIPT_PAGE_MESSAGES);
-		const options = { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES };
-		if (running) return { sessionId: running.session.sessionId, ...transcriptPage(running.session.sessionManager.getBranch(), options) };
-		if (!existsSync(path)) throw new Error("session_file_missing");
-		const { mtimeMs, size } = statSync(path);
+		return { sessionId: file.sessionId, ...transcriptPage(file.branch, { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES }) };
+	}
+
+	/**
+	 * A session file parsed the follow view's way, so reading never writes it (SessionManager.open appends a
+	 * newline after a line another pi is halfway through, and rewrites old formats). The newest few parsed
+	 * files are kept until they change.
+	 */
+	private async parsedSessionFile(path: string): Promise<{ sessionId: string; branch: SessionEntry[] }> {
+		const { mtimeMs, size } = await stat(path).catch((error: unknown) => {
+			throw isMissingFileError(error) ? new Error("session_file_missing") : error;
+		});
 		let parsed = this.transcriptFiles.get(path);
 		if (!parsed || parsed.mtimeMs !== mtimeMs || parsed.size !== size) {
-			const manager = SessionManager.open(path);
-			parsed = { mtimeMs, size, sessionId: manager.getSessionId(), entries: manager.getBranch() };
+			const snapshot = await readSessionSnapshot(path);
+			parsed = { mtimeMs, size, sessionId: snapshot.sessionId, branch: snapshot.branch };
 		}
 		this.transcriptFiles.delete(path);
 		this.transcriptFiles.set(path, parsed);
 		for (const stale of [...this.transcriptFiles.keys()].slice(0, Math.max(0, this.transcriptFiles.size - TRANSCRIPT_FILE_CACHE))) this.transcriptFiles.delete(stale);
-		return { sessionId: parsed.sessionId, ...transcriptPage(parsed.entries, options) };
-	}
-
-	/** Older history of a session pi-web isn't hosting, read from its file, for the read-only follow view. */
-	async readTranscriptPage(sessionId: string, rawPath: string, request: { before?: string; limit?: number }): Promise<TranscriptPage> {
-		const path = this.assertAllowedResumePath(rawPath);
-		const snapshot = await readSessionSnapshot(path);
-		if (snapshot.sessionId !== sessionId) throw new Error("session_path_mismatch");
-		const limit = Math.min(Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_MESSAGES)), MAX_TRANSCRIPT_PAGE_MESSAGES);
-		return transcriptPage(snapshot.branch, { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES });
+		return parsed;
 	}
 
 	async getTripwireAlerts(sessionId: string, clientId: string): Promise<ApiTripwireAlertsResponse> {

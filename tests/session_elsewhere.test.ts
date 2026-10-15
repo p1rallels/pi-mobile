@@ -187,6 +187,25 @@ describe("sessions another process is writing", () => {
 		expect((ambiguous as AmbiguousWritersError).pids).toEqual([7272, 7373]);
 	});
 
+	test("reads pages of a file another pi is appending to without writing it", async () => {
+		const cwd = await workDir();
+		const { runtime, agentDir } = await setup([writer(9191, cwd)]);
+		const id = "s-read";
+		const path = await writeSession(agentDir, cwd, id, MID_TOOL);
+		// the other pi is halfway through appending its next entry
+		await appendFile(path, toolResult("t1", "a1", "call-a1").slice(0, 50));
+		const before = await Bun.file(path).text();
+
+		const tail = await runtime.readTranscriptFile(path, { limit: 1 });
+		expect(tail).toMatchObject({ sessionId: id, hasOlder: true });
+		expect(tail.messages.map((message) => message.entryId)).toEqual(["a1"]);
+		const older = await runtime.readTranscriptFile(path, { before: "a1", sessionId: id });
+		expect(older.messages.map((message) => message.entryId)).toEqual(["u1"]);
+		await expect(runtime.readTranscriptFile(path, { sessionId: "other-id" })).rejects.toThrow("session_path_mismatch");
+		await expect(runtime.readTranscriptFile(path.replace(".jsonl", "-gone.jsonl"), {})).rejects.toThrow("session_file_missing");
+		expect(await Bun.file(path).text()).toBe(before);
+	});
+
 	test("follows appended entries and reports when the turn closes or the writer is gone", async () => {
 		const cwd = await workDir();
 		const { runtime, agentDir, setProcesses } = await setup([writer(8181, cwd)]);
