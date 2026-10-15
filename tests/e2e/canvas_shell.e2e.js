@@ -318,6 +318,55 @@ test("tiles keep the newest entries of a long transcript and page back on reques
 	}
 });
 
+test("dormant tiles page back through their session file without attaching it", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "repo");
+	await mkdir(cwd);
+	const path = await writeSessionTurns(root, cwd, S1, Array.from({ length: 30 }, (_, i) => [`question ${i}`, `answer ${i}`]));
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(
+			async ([id, p]) => {
+				await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+				const tiles = [{ sessionId: id, path: p, title: "repo · long", x: 0, y: 0, w: 800, h: 500 }];
+				const res = await fetch("/api/canvas", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ tiles }) });
+				if (!res.ok) throw new Error(`layout save failed: ${res.status}`);
+			},
+			[S1, path],
+		);
+		const requests = [];
+		page.on("request", (request) => {
+			const url = new URL(request.url());
+			if (url.pathname.endsWith("/transcript")) requests.push(url);
+		});
+
+		await page.goto(`${base}/?ui=canvas`);
+		const t = tile(page, S1);
+		await expect(t.locator(".cv-pill")).toHaveText("not running");
+		await expect(t.locator(".user-msg").last()).toHaveText("question 29");
+		await expect(t.locator(".user-msg").first()).toHaveText("question 20");
+		await expect(t.locator(".load-older")).toHaveText("↑ earlier messages");
+
+		await t.locator(".load-older").click();
+		await expect(t.locator(".user-msg").first()).toHaveText("question 0");
+		await expect(t.locator(".user-msg")).toHaveCount(30);
+		await expect(t.locator(".load-older")).toHaveCount(0);
+		const older = requests.find((url) => url.pathname.endsWith(`/${S1}/transcript`));
+		expect(older?.searchParams.get("path")).toBe(path);
+		expect(older?.searchParams.get("before")).toBe(`u20${S1.slice(-7)}`);
+		await expect(t.locator(".cv-pill")).toHaveText("not running");
+		expect(await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.length)).toBe(0);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 /** `ps` lists it as pi (pi titles its own process that way) and it leads its own process group, like a pfs run. */
 function spawnFakePi(cwd) {
 	return spawn("node", ["-e", 'process.title = "pi"; setInterval(() => {}, 1000);'], { cwd, stdio: "ignore", detached: true });

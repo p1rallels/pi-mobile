@@ -362,8 +362,11 @@ export function createSessionPane({
 		resume: () => sessionCtrl.resume(),
 		/** @param {boolean} focused */
 		setFocused: (focused) => sessionCtrl.setFocused(focused),
-		/** @param {{ messages: unknown[] }} page @param {string} [notice] */
-		showReadOnly: (page, notice) => sessionCtrl.showReadOnly(page, notice),
+		/**
+		 * @param {{ messages: unknown[], hasOlder?: boolean }} page @param {string} [notice]
+		 * @param {{ sessionId: string, path: string } | null} [source] the session it came from, to page back through its file
+		 */
+		showReadOnly: (page, notice, source = null) => sessionCtrl.showReadOnly(page, notice, source),
 		getShownEntryCount: () => sessionCtrl.getShownEntryCount(),
 		sendPromptFromInput,
 		abort,

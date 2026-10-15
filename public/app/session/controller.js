@@ -75,12 +75,15 @@ export function createSessionController({
 	let follow = null;
 	let followSession = null;
 	let stoppingWriter = false;
+	/** The session a read-only tail came from (a dormant canvas tile), so it can page back with no session open. */
+	let readOnly = null;
 
 	const chatView = createChatView({
 		msgsEl,
 		queuedEl,
 		pillEl,
 		onTrim: (oldest) => {
+			if (!historySource()) return;
 			hasOlderMessages = true;
 			oldestEntryId = oldest;
 			syncOlderControl();
@@ -124,9 +127,9 @@ export function createSessionController({
 		recoveryAttempt = 0;
 	}
 
-	function sessionUrl(sessionId, action, params = {}) {
+	function sessionUrl(sessionId, action, params = {}, path = activeSessionPath) {
 		const query = new URLSearchParams();
-		if (activeSessionPath) query.set("path", activeSessionPath);
+		if (path) query.set("path", path);
 		for (const [key, value] of Object.entries(params)) {
 			if (typeof value === "string" && value) query.set(key, value);
 		}
@@ -140,6 +143,7 @@ export function createSessionController({
 
 	/** Resumes from the last entry this page rendered, so the server sends only what is missing. */
 	function connectEvents(sessionId) {
+		readOnly = null;
 		closeEvents();
 		setConnection("connecting");
 		const since = renderedSessionId === sessionId ? cursor : null;
@@ -258,16 +262,24 @@ export function createSessionController({
 		void loadOlderMessages();
 	}
 
+	/** Where earlier pages come from: the open session, or the file a read-only tail was read from. */
+	function historySource() {
+		if (activeSessionId) return activeSessionId === "replay" ? null : { sessionId: activeSessionId, path: activeSessionPath };
+		return readOnly;
+	}
+
 	async function loadOlderMessages() {
-		if (olderLoading || !hasOlderMessages || !oldestEntryId || !activeSessionId || activeSessionId === "replay") return;
-		const sessionId = activeSessionId;
+		const source = historySource();
+		if (olderLoading || !hasOlderMessages || !oldestEntryId || !source) return;
+		const { sessionId } = source;
 		const generation = renderGeneration;
+		const stale = () => historySource()?.sessionId !== sessionId || generation !== renderGeneration;
 		olderLoading = true;
 		syncOlderControl();
 		try {
 			const limit = transcriptWindow ? String(transcriptWindow.pageSize) : null;
-			const page = await api.getJson(sessionUrl(sessionId, "transcript", { before: oldestEntryId, limit }));
-			if (sessionId !== activeSessionId || generation !== renderGeneration) return;
+			const page = await api.getJson(sessionUrl(sessionId, "transcript", { before: oldestEntryId, limit }, source.path));
+			if (stale()) return;
 			const messages = Array.isArray(page?.messages) ? page.messages : [];
 			hasOlderMessages = Boolean(page?.hasOlder) && messages.length > 0;
 			chatView.prependHistory(messages, { hasOlder: hasOlderMessages });
@@ -276,7 +288,7 @@ export function createSessionController({
 			syncOlderControl();
 			maybeLoadOlderMessages();
 		} catch (error) {
-			if (sessionId !== activeSessionId || generation !== renderGeneration) return;
+			if (stale()) return;
 			console.error("Failed to load earlier messages", error);
 			olderLoading = false;
 			syncOlderControl("error");
@@ -370,6 +382,7 @@ export function createSessionController({
 		stopRecovery();
 		setConnection("idle");
 		leaveElsewhere();
+		readOnly = null;
 		activeSessionPath = null;
 		cursor = null;
 		retryStatus = null;
@@ -1005,21 +1018,26 @@ export function createSessionController({
 		clearInterval(staleTimer);
 		closeEvents();
 		stopRecovery();
+		readOnly = null;
 		activeSessionId = null;
 		renderGeneration += 1;
 	}
 
 	/**
-	 * The tail of a session that isn't running, read from its file (no stream, no paging): a dormant
-	 * canvas tile shows what the session was doing until you resume it.
+	 * The tail of a session that isn't running, read from its file (no stream): a dormant canvas tile shows
+	 * what the session was doing until you resume it. Given the session it came from (`source`), earlier
+	 * pages load from the file too.
 	 */
-	function showReadOnly(page, notice) {
+	function showReadOnly(page, notice, source = null) {
 		if (activeSessionId) return;
 		renderGeneration += 1;
+		readOnly = source && typeof source.sessionId === "string" && typeof source.path === "string" ? { sessionId: source.sessionId, path: source.path } : null;
+		const messages = Array.isArray(page?.messages) ? page.messages : [];
 		chatView.clear();
-		chatView.renderHistory(Array.isArray(page?.messages) ? page.messages : []);
-		hasOlderMessages = false;
-		oldestEntryId = null;
+		chatView.renderHistory(messages);
+		hasOlderMessages = Boolean(readOnly) && Boolean(page?.hasOlder) && messages.length > 0;
+		oldestEntryId = hasOlderMessages ? firstEntryId(messages) : null;
+		olderLoading = false;
 		syncOlderControl();
 		if (notice) chatView.appendNotice(notice);
 		chatView.flush();

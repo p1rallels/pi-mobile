@@ -536,20 +536,21 @@ export async function bootCanvas() {
 	}
 
 	/**
-	 * A dormant tile on screen shows the tail of its session file (no runtime attached on the host); hosts
-	 * without GET /api/session-transcript leave the notice alone.
+	 * A dormant tile on screen shows the tail of its session file (no runtime attached on the host) and pages
+	 * back through the file; hosts without GET /api/session-transcript leave the notice alone.
 	 * @param {TileEntry} entry
 	 */
 	function showDormantTail(entry) {
 		if (!entry.dormant || !entry.mounted || !entry.visible || !entry.path || entry.readOnly !== "none") return;
 		entry.readOnly = "loading";
-		const pane = entry.pane;
-		const query = new URLSearchParams({ path: entry.path, limit: String(TRANSCRIPT_WINDOW.unfocused || 20) });
+		const { pane, path } = entry;
+		const query = new URLSearchParams({ path, limit: String(TRANSCRIPT_WINDOW.unfocused || 20) });
 		api.getJson(`/api/session-transcript?${query.toString()}`).then(
 			(/** @type {any} */ page) => {
 				if (entry.pane !== pane || !entry.dormant || !entry.mounted) return;
 				entry.readOnly = "shown";
-				pane.showReadOnly(page, DORMANT_NOTICE);
+				const sessionId = typeof page?.sessionId === "string" ? page.sessionId : entry.id;
+				pane.showReadOnly(page, DORMANT_NOTICE, { sessionId, path });
 			},
 			() => {
 				if (entry.pane === pane) entry.readOnly = "shown";
