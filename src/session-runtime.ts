@@ -16,6 +16,7 @@ import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
+import { createExtensionUiBridge, type ApiExtensionUiResponse, type ExtensionUiBridge } from "./extension-ui.ts";
 import { EMPTY_LIVE_SNAPSHOT, reduceLiveSnapshot, type LiveSnapshot } from "./live-snapshot.ts";
 import { createSessionIndex, type SessionSummary } from "./session-index.ts";
 import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
@@ -50,6 +51,7 @@ export type InitSseEvent = Extract<SseEvent, { type: "init" }>;
 
 interface RunningSession {
 	session: AgentSession;
+	ui: ExtensionUiBridge;
 	cwd: string;
 	sessionFile: string | null;
 	createdAtMs: number;
@@ -286,6 +288,13 @@ function parseQueueCommandText(text: string): string | null {
 	return null;
 }
 
+/** Extension commands run to completion before pi acknowledges them, and may wait on a dialog for minutes. */
+function isExtensionCommand(session: AgentSession, text: string): boolean {
+	if (!text.startsWith("/")) return false;
+	const name = text.slice(1).split(/\s/, 1)[0] ?? "";
+	return name.length > 0 && session.extensionRunner.getCommand(name) !== undefined;
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -386,7 +395,7 @@ export class PiWebRuntime {
 		return modelRuntime;
 	}
 
-	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<AgentSession> {
+	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<{ session: AgentSession; ui: ExtensionUiBridge }> {
 		const settingsManager = SettingsManager.create(cwd, this.agentDir);
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
@@ -403,12 +412,18 @@ export class PiWebRuntime {
 			settingsManager,
 			resourceLoader,
 		});
+		const ui = createExtensionUiBridge({
+			emit: (event) => this.broadcast(session.sessionId, event),
+			fallback: session.extensionRunner.getUIContext(),
+		});
 		await session.bindExtensions({
+			uiContext: ui.context,
+			mode: "rpc",
 			onError: (error) => {
 				console.error(`[pi-web extension] ${error.extensionPath} ${error.event}: ${error.error}`);
 			},
 		});
-		return session;
+		return { session, ui };
 	}
 
 	private tripwireGuard(): InlineExtension {
@@ -656,6 +671,7 @@ export class PiWebRuntime {
 				state: buildStatus(runtime.session, runtime.cwd),
 				transcript,
 				live,
+				ui: runtime.ui.snapshot(),
 				cursor,
 				yourClientId: client.clientId,
 				controllerClientId,
@@ -715,9 +731,9 @@ export class PiWebRuntime {
 		const cwd = await this.assertAllowedCwd(request.cwd ?? process.cwd());
 		this.ensureCapacity();
 		const sessionManager = SessionManager.create(cwd);
-		const session = await this.createRuntimeSession(cwd, sessionManager);
+		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
-		const runtime = this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
+		const runtime = this.registerSession(session, ui, cwd, clientId, tripwireAllowedRoots);
 		return { sessionId: runtime.session.sessionId };
 	}
 
@@ -841,9 +857,9 @@ export class PiWebRuntime {
 			throw new Error("session_path_mismatch");
 		}
 		const cwd = sessionManager.getCwd();
-		const session = await this.createRuntimeSession(cwd, sessionManager);
+		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
-		return this.registerSession(session, cwd, clientId, tripwireAllowedRoots);
+		return this.registerSession(session, ui, cwd, clientId, tripwireAllowedRoots);
 	}
 
 	private claimControllerIfVacant(runtime: RunningSession, clientId: string): void {
@@ -899,6 +915,7 @@ export class PiWebRuntime {
 	private disposeRuntime(runtime: RunningSession): void {
 		const sessionId = runtime.session.sessionId;
 		this.cancelControllerHandoff(runtime);
+		runtime.ui.dispose();
 		this.flushOutbox(runtime);
 		for (const client of runtime.clients.values()) {
 			client.close();
@@ -961,6 +978,12 @@ export class PiWebRuntime {
 			const promptText = (queuedText ?? text).trim();
 			if (promptText.length === 0) return { ok: true, disposition: "handled" };
 			const streamingBehavior = queuedText !== null ? "followUp" : (command.deliverAs ?? "steer");
+			if (isExtensionCommand(runtime.session, promptText)) {
+				void runtime.session.prompt(promptText, { streamingBehavior }).catch((error: unknown) => {
+					this.broadcast(sessionId, { type: "command_error", command: "prompt", message: errorMessage(error) });
+				});
+				return { ok: true, disposition: "handled" };
+			}
 			const disposition = await promptUntilAccepted(runtime.session, promptText, { streamingBehavior }, (error) => {
 				this.broadcast(sessionId, { type: "command_error", command: "prompt", message: errorMessage(error) });
 			});
@@ -1026,6 +1049,17 @@ export class PiWebRuntime {
 		throw new Error(`unknown_command: ${String((command as { type?: unknown }).type)}`);
 	}
 
+	/** Any viewer may answer: every device is the same user behind mTLS + WebAuthn. */
+	answerExtensionUi(sessionId: string, response: ApiExtensionUiResponse): void {
+		const runtime = this.runningById.get(sessionId);
+		if (!runtime) {
+			throw new Error("session_not_running");
+		}
+		const result = runtime.ui.respond(response);
+		if (result === "unknown") throw new Error("unknown_dialog");
+		if (result === "invalid") throw new Error("invalid_dialog_answer");
+	}
+
 	takeover(sessionId: string, request: { clientId: string }): void {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
@@ -1065,11 +1099,18 @@ export class PiWebRuntime {
 		return roots;
 	}
 
-	private registerSession(session: AgentSession, cwd: string, controllerClientId: string, tripwireAllowedRoots: Set<string>): RunningSession {
+	private registerSession(
+		session: AgentSession,
+		ui: ExtensionUiBridge,
+		cwd: string,
+		controllerClientId: string,
+		tripwireAllowedRoots: Set<string>,
+	): RunningSession {
 		const sessionId = session.sessionId;
 		const sessionFile = session.sessionFile ? resolve(session.sessionFile) : null;
 
 		if ((sessionFile && this.runningByPath.has(sessionFile)) || this.runningById.has(sessionId)) {
+			ui.dispose();
 			session.dispose();
 			throw new Error("session_already_running");
 		}
@@ -1077,6 +1118,7 @@ export class PiWebRuntime {
 		const createdAtMs = Date.now();
 		const runtime: RunningSession = {
 			session,
+			ui,
 			cwd,
 			sessionFile,
 			createdAtMs,

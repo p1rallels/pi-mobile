@@ -1,4 +1,5 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { ApiExtensionUiSnapshot, ExtensionUiEvent } from "./extension-ui.ts";
 import type { LiveSnapshot } from "./live-snapshot.ts";
 import type { TranscriptMessage, TranscriptPage } from "./transcript.ts";
 
@@ -205,6 +206,7 @@ export type SseEvent =
 			state: ApiSessionStatus;
 			transcript: ApiResyncTranscript;
 			live: ApiLiveSnapshot;
+			ui: ApiExtensionUiSnapshot;
 			cursor: string | null;
 			yourClientId: string;
 			controllerClientId: string | null;
@@ -215,4 +217,5 @@ export type SseEvent =
 	| { type: "state_patch"; patch: ApiSessionPatch }
 	| { type: "command_error"; command: ApiCommandRequest["type"]; message: string }
 	| { type: "controller_changed"; controllerClientId: string | null }
-	| { type: "released"; byClientId: string };
+	| { type: "released"; byClientId: string }
+	| ExtensionUiEvent;

@@ -49,9 +49,19 @@ type RuntimeOptions = Omit<NonNullable<ConstructorParameters<typeof PiWebRuntime
 
 export async function startFauxSession(
 	responses: FauxResponseStep[] = [],
-	options: { settings?: Record<string, unknown>; runtime?: RuntimeOptions; faux?: RegisterFauxProviderOptions } = {},
+	options: {
+		settings?: Record<string, unknown>;
+		runtime?: RuntimeOptions;
+		faux?: RegisterFauxProviderOptions;
+		/** Extension sources by file name, loaded like ~/.pi/agent/extensions. */
+		extensions?: Record<string, string>;
+	} = {},
 ): Promise<FauxSession> {
 	const agentDir = await makeAgentDir(options.settings);
+	if (options.extensions) {
+		await mkdir(join(agentDir, "extensions"), { recursive: true });
+		await Promise.all(Object.entries(options.extensions).map(([name, source]) => writeFile(join(agentDir, "extensions", name), source)));
+	}
 	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
 	const faux = fauxProvider(options.faux);
 	modelRuntime.registerNativeProvider(faux.provider);

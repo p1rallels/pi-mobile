@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
+import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { FaceIdService } from "./faceid.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
@@ -68,6 +69,7 @@ const FACEID_COMMAND_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEI
 
 const DEFAULT_JSON_BODY_LIMIT = 256 * 1024;
 const COMMAND_JSON_BODY_LIMIT = 64 * 1024;
+const UI_RESPONSE_JSON_BODY_LIMIT = 1024 * 1024;
 const MAX_PROMPT_CHARS = 32_000;
 
 function parsePositiveInt(raw: string | undefined, fallback: number, name: string): number {
@@ -562,7 +564,7 @@ function faceIdFreshnessFor(method: string, pathname: string): number | null {
 	const sessionRoute = parseSessionRoute(pathname);
 	if (!sessionRoute) return null;
 	if (sessionRoute.action === "release") return FACEID_FRESH_TTL_MS;
-	if (sessionRoute.action === "command" || sessionRoute.action === "takeover") return FACEID_COMMAND_TTL_MS;
+	if (sessionRoute.action === "command" || sessionRoute.action === "takeover" || sessionRoute.action === "ui-response") return FACEID_COMMAND_TTL_MS;
 	return null;
 }
 
@@ -1135,6 +1137,25 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "session_not_running") return errorResponse("Session not running", 404);
 				if (message === "not_controller") return errorResponse("Not controller", 403);
+				return errorResponse(message, 400);
+			}
+		}
+
+		if (req.method === "POST" && action === "ui-response") {
+			const limited = commandLimiter.check(`command:${requesterId}`);
+			if (limited) return rateLimitResponse(limited);
+			const client = resolveClientCookie(req);
+			if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
+			try {
+				const response = parseExtensionUiResponse(await requireJsonBody(req, UI_RESPONSE_JSON_BODY_LIMIT));
+				if (!response) return errorResponse("Invalid dialog answer", 400);
+				runtime.answerExtensionUi(sessionId, response);
+				return ok();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message === "session_not_running") return errorResponse("Session not running", 404);
+				if (message === "unknown_dialog") return errorResponse("Dialog already closed", 410);
+				if (message === "invalid_dialog_answer") return errorResponse("Invalid dialog answer", 400);
 				return errorResponse(message, 400);
 			}
 		}
