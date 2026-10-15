@@ -358,7 +358,7 @@ function closeTile(id) {
 
 for (let i = 0; i < TILES; i += 1) addFakeTile(gridSlot(i), i < STREAMING);
 
-setInterval(() => {
+const tickTimer = setInterval(() => {
 	for (const pane of panes.values()) if (pane.streaming) pane.tick();
 }, 1000 / RATE);
 
@@ -373,6 +373,8 @@ Object.assign(window, {
 		removeTile: closeTile,
 		tileIds: () => canvas.tiles.ids(),
 		paneCount: () => panes.size,
+		/** Stops every fake stream (e.g. before counting what the panes show). */
+		stopStreaming: () => clearInterval(tickTimer),
 		openFakeStreams,
 		/** @param {string} id */
 		shownEntries: (id) => {

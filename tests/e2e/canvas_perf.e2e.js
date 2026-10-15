@@ -147,8 +147,11 @@ test("30 tiles with 10 streaming: pan and zoom stay under the frame budget", asy
 
 test("30 real session panes with 10 streaming: pan and zoom stay under the frame budget, transcripts stay windowed", async ({ page }, testInfo) => {
 	await measurePanZoom(page, testInfo, REAL_PERF_QUERY, "canvas perf, real panes");
-	const shown = await page.evaluate(() => {
+	// stop the streams and let the last frame's trims run before counting
+	const shown = await page.evaluate(async () => {
 		const mock = window.__canvasMock;
+		mock.stopStreaming();
+		await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 		return mock.tileIds().map((id) => mock.shownEntries(id));
 	});
 	const window = await page.evaluate(() => window.__canvasMock.knobs.window);
