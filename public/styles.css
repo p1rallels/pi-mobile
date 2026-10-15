@@ -114,6 +114,7 @@
     .top-pill.controller { color: #b5bd68; border-color: #2a3a2a; background: #1e2a20; }
     .top-pill.viewer { color: #808080; }
     .top-pill.offline { color: #f0c674; border-color: #3a3424; background: #2a2618; }
+    .top-pill.elsewhere { color: #81a2be; border-color: #2a3240; background: #1c222c; }
 
 	    .top-btn {
 	      display: flex; align-items: center; gap: 6px;
@@ -274,6 +275,9 @@
     .si-meta { font-size: 10px; color: #505050; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .si.active .si-name { color: #b5bd68; }
     .si-run { color: #b5bd68; }
+    .si-elsewhere { color: #81a2be; }
+    .si-elsewhere.quiet { color: #f0c674; }
+    .si-elsewhere.stopped { color: #808080; }
     .section-title {
       margin: 10px 8px 5px;
       color: #505050;

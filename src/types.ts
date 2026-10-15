@@ -1,7 +1,9 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ApiExtensionUiSnapshot, ExtensionUiEvent } from "./extension-ui.ts";
 import type { LiveSnapshot } from "./live-snapshot.ts";
+import type { ElsewhereState } from "./outside-writers.ts";
 import type { ApiProjectTrust, ApiProjectTrustChoice, ApiProjectTrustPrompt } from "./project-trust.ts";
+import type { Turn } from "./session-turn.ts";
 import type { TranscriptMessage, TranscriptPage } from "./transcript.ts";
 
 export type ClientRole = "controller" | "viewer";
@@ -60,7 +62,64 @@ export interface ApiSessionSummary {
 	modified: string;
 	messageCount: number;
 	isRunning: boolean;
+	/** Set when pi-web isn't hosting the session and its last message left the turn open. */
+	elsewhere?: ApiElsewhere;
+	/** "repo · fork 8-hooks" when the session ran in a pfs fork (<repo>/.forks/<n>). */
+	forkLabel?: string;
 }
+
+export type ApiElsewhereState = ElsewhereState;
+
+/**
+ * A session another process may still be writing. running: a pi works in its folder and wrote recently.
+ * quiet: same, but no write for a long while, so taking over is allowed. stopped: nobody is left to finish the turn.
+ */
+export interface ApiElsewhere {
+	state: ApiElsewhereState;
+	turn: Turn;
+	lastWrite: string;
+	/** pids of the pi processes that may be writing it, or null when pi-web can't list processes. */
+	writers: number[] | null;
+}
+
+/** 409 from POST /api/sessions: another process is writing the session; follow it instead, or retry with takeOver once it's quiet. */
+export interface ApiRunningElsewhereResponse {
+	error: string;
+	elsewhere: ApiElsewhere;
+}
+
+export interface ApiStopElsewhereRequest {
+	path: string;
+}
+
+export interface ApiStopElsewhereResponse {
+	ok: true;
+	/** The pi processes pi-web stopped; empty when nobody was writing any more. */
+	stopped: number[];
+}
+
+/** A followed session: still elsewhere, its turn closed (done), or pi-web hosts it now (hosted). */
+export interface ApiFollowState {
+	state: ApiElsewhereState | "done" | "hosted";
+	turn: Turn;
+	lastWrite: string;
+	writers: number[] | null;
+}
+
+export interface ApiFollowSession {
+	sessionId: string;
+	path: string;
+	cwd: string;
+	sessionName?: string;
+	model: { provider: string; id: string } | null;
+	thinkingLevel: string | null;
+}
+
+/** GET /api/sessions/:id/follow?path=: a read-only stream of a session file another process writes. */
+export type FollowSseEvent =
+	| { type: "follow_init"; session: ApiFollowSession; transcript: ApiResyncTranscript; follow: ApiFollowState; cursor: string | null }
+	| { type: "follow_entries"; messages: TranscriptMessage[]; session: ApiFollowSession }
+	| { type: "follow_state"; follow: ApiFollowState };
 
 export interface ApiListSessionsResponse {
 	sessions: ApiSessionSummary[];
@@ -71,6 +130,8 @@ export interface ApiCreateSessionRequest {
 	clientId?: string;
 	cwd?: string;
 	resumeSessionPath?: string;
+	/** Resume a session whose outside writer went quiet; a running one is still refused. */
+	takeOver?: boolean;
 	/** The answer to a project trust prompt, sent when the first attempt was refused with one. */
 	projectTrust?: ApiProjectTrustChoice;
 }

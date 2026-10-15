@@ -6,11 +6,12 @@ import { isPhoneLike } from "../core/device.js";
 import { createExtensionUi } from "../ui/extension_ui.js";
 import { createMenu } from "../ui/menu.js";
 import { createSessionController } from "./controller.js";
-import { composerPlaceholder, footerLines, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
+import { composerPlaceholder, elsewherePlaceholder, footerLines, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
 import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./project_trust.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const COMPOSER_MAX_PX = 200;
+const STOP_WRITER_TITLE = "Stop the pi writing this session (Esc)";
 
 /**
  * @typedef {{
@@ -79,6 +80,7 @@ export function createSessionPane({
 	tileUi = null,
 }) {
 	const { input } = refs;
+	const abortTitle = refs.btnAbort?.title ?? "";
 	/** @type {ReturnType<typeof setInterval> | null} */
 	let workingIntervalId = null;
 	let workingFrame = 0;
@@ -144,8 +146,13 @@ export function createSessionPane({
 		getActiveState: () => sessionCtrl.getActiveState(),
 	});
 
+	/** Where a session another pi writes stands, or null when this pane hosts its session. */
+	function followed() {
+		return sessionCtrl.getMode() === "elsewhere" ? sessionCtrl.getFollow() : null;
+	}
+
 	function renderFooter() {
-		const lines = footerLines(sessionCtrl.getActiveState(), getHost());
+		const lines = footerLines(sessionCtrl.getActiveState(), getHost(), followed());
 		refs.footerLine1.textContent = lines.line1;
 		refs.footerLeft2.textContent = lines.left2;
 		refs.footerRight2.textContent = lines.right2;
@@ -153,9 +160,9 @@ export function createSessionPane({
 
 	function renderRolePill() {
 		if (!refs.rolePill) return;
-		const badge = roleBadge(sessionCtrl.getRole(), sessionCtrl.getConnection(), Boolean(sessionCtrl.getActiveSessionId()));
+		const badge = roleBadge(sessionCtrl.getRole(), sessionCtrl.getConnection(), Boolean(sessionCtrl.getActiveSessionId()), followed());
 		refs.rolePill.textContent = badge.text;
-		refs.rolePill.classList.remove("controller", "viewer", "offline");
+		refs.rolePill.classList.remove("controller", "viewer", "offline", "elsewhere");
 		refs.rolePill.classList.add(badge.kind);
 	}
 
@@ -197,10 +204,38 @@ export function createSessionPane({
 		}
 	}
 
+	/** A followed session: Esc stops its writer, and typing or Take over continue it here once nobody writes it. */
+	function renderElsewhereControls() {
+		const canStop = sessionCtrl.canStopWriter();
+		const canResume = sessionCtrl.canResumeHere();
+		if (refs.btnAbort) {
+			refs.btnAbort.title = STOP_WRITER_TITLE;
+			refs.btnAbort.disabled = !canStop;
+		}
+		if (refs.btnTakeover) refs.btnTakeover.disabled = !canResume;
+		if (refs.btnRelease) refs.btnRelease.disabled = true;
+		input.disabled = !canResume;
+		if (refs.btnModel) refs.btnModel.disabled = true;
+		if (refs.btnThinking) refs.btnThinking.disabled = true;
+		if (refs.kbEsc) refs.kbEsc.disabled = !canStop;
+		if (refs.kbTakeover) refs.kbTakeover.disabled = !canResume;
+		if (refs.kbRelease) refs.kbRelease.disabled = true;
+		if (refs.kbEnter) refs.kbEnter.disabled = !canResume;
+		input.placeholder = elsewherePlaceholder(sessionCtrl.getFollow());
+		renderSelectors();
+		renderWorking();
+	}
+
 	function renderControls() {
 		renderRolePill();
 
+		if (sessionCtrl.getActiveSessionId() && sessionCtrl.getMode() === "elsewhere") {
+			renderElsewhereControls();
+			return;
+		}
+
 		const hasSession = Boolean(sessionCtrl.getActiveSessionId());
+		if (refs.btnAbort) refs.btnAbort.title = abortTitle;
 		const isController = hasSession && sessionCtrl.isController();
 		const activeState = sessionCtrl.getActiveState();
 		const compacting = Boolean(activeState && activeState.isCompacting);

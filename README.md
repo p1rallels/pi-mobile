@@ -96,8 +96,13 @@ Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intent
 - Extension prompts (`ctx.ui.select/confirm/input/editor`) show as dialogs on every connected device; the first answer wins. Extension statuses, text widgets and titles show in the page too.
 - Project `.pi` resources follow `~/.pi/agent/trust.json` like the CLI. Folders without a saved decision follow `pi-web config set project-trust always|ask|never` (`PI_WEB_PROJECT_TRUST`): `always` (default, no prompts), `ask` (CLI-style prompt when a session opens) or `never`.
 - The tripwire can be switched off with `pi-web config set tripwire off` (`PI_WEB_TRIPWIRE=off`).
+- **Running elsewhere:** sessions another `pi` process is in the middle of (a terminal `pi`, a `pi -p` from a script or `pfs run --bg`) show as *running elsewhere* in the session lists, the active list included.
+  - How pi-web tells: pi writes a whole entry when each message ends, so a last message that is a prompt, a tool call or a tool result means mid-turn. Its writer is a `pi` process (as `ps` lists it) working in the session's folder that started before the last write.
+  - Opening one follows its file read-only as entries arrive. pi-web won't load a second copy while it runs.
+  - **Esc** stops that `pi` (with its process group when it leads one, as pfs runs do); then typing or **Take over** continues the session here. The view also unlocks on its own when the turn closes, when the writer is gone (a killed `pi` writes no closing message, so its turn reads open forever), or after 30 minutes without a write.
+  - Sessions that ran in a pfs fork (`<repo>/.forks/<n>`) are named `repo · fork n-name`.
 
-Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI.
+Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI. pi-web only notices the CLI mid-turn: a `pi` idle at its prompt can't be told apart from a closed one.
 
 ## Security notes
 

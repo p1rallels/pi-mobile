@@ -6,6 +6,30 @@ import { parseCompactCommand, parseQueueCommand } from "./commands.js";
 const STALE_STREAM_MS = 15_000;
 const STALE_CHECK_MS = 5_000;
 
+const EMPTY_QUEUE = { steering: [], followUp: [] };
+
+/** Elsewhere states that leave nobody writing the turn, or a writer quiet long enough to take over from. */
+const RESUMABLE_ELSEWHERE = new Set(["done", "stopped", "quiet"]);
+
+/** The footer and controls read a hosted session's status; a followed one fills in what its file says. */
+function elsewhereStatus(session, follow) {
+	return {
+		sessionId: session.sessionId,
+		cwd: session.cwd,
+		sessionFile: session.path,
+		sessionName: session.sessionName,
+		model: session.model,
+		thinkingLevel: session.thinkingLevel || "—",
+		projectTrust: null,
+		isStreaming: follow.state === "running" || follow.state === "quiet",
+		isCompacting: false,
+		retryAttempt: 0,
+		queuedMessages: EMPTY_QUEUE,
+		stats: null,
+		contextUsage: null,
+	};
+}
+
 export function createSessionController({
 	msgsEl,
 	queuedEl,
@@ -46,6 +70,11 @@ export function createSessionController({
 	let lastFrameAtMs = 0;
 	let focused = false;
 	let lastScrollTop = 0;
+	/** hosted: pi-web runs the session. elsewhere: another process writes it and this page follows the file. */
+	let mode = "hosted";
+	let follow = null;
+	let followSession = null;
+	let stoppingWriter = false;
 
 	const chatView = createChatView({
 		msgsEl,
@@ -115,7 +144,7 @@ export function createSessionController({
 		setConnection("connecting");
 		const since = renderedSessionId === sessionId ? cursor : null;
 		const limit = transcriptWindow ? String(windowSize()) : null;
-		const source = api.eventSource(sessionUrl(sessionId, "events", { since, limit }));
+		const source = api.eventSource(sessionUrl(sessionId, mode === "elsewhere" ? "follow" : "events", { since, limit }));
 		eventSource = source;
 		lastFrameAtMs = Date.now();
 		source.onopen = () => {
@@ -158,7 +187,7 @@ export function createSessionController({
 		if (sessionId !== activeSessionId) return;
 		try {
 			await onRefreshClient();
-			await api.getJson(sessionUrl(sessionId, "state"));
+			await api.getJson(mode === "elsewhere" ? sessionUrl(sessionId, "transcript", { limit: "1" }) : sessionUrl(sessionId, "state"));
 			if (sessionId !== activeSessionId) return;
 			connectEvents(sessionId);
 		} catch (error) {
@@ -236,10 +265,8 @@ export function createSessionController({
 		olderLoading = true;
 		syncOlderControl();
 		try {
-			const pageLimit = transcriptWindow ? `&limit=${transcriptWindow.pageSize}` : "";
-			const page = await api.getJson(
-				`/api/sessions/${encodeURIComponent(sessionId)}/transcript?before=${encodeURIComponent(oldestEntryId)}${pageLimit}`,
-			);
+			const limit = transcriptWindow ? String(transcriptWindow.pageSize) : null;
+			const page = await api.getJson(sessionUrl(sessionId, "transcript", { before: oldestEntryId, limit }));
 			if (sessionId !== activeSessionId || generation !== renderGeneration) return;
 			const messages = Array.isArray(page?.messages) ? page.messages : [];
 			hasOlderMessages = Boolean(page?.hasOlder) && messages.length > 0;
@@ -324,16 +351,25 @@ export function createSessionController({
 
 	function getRunStatus() {
 		if (!activeState) return { kind: "idle" };
+		if (mode === "elsewhere") return activeState.isStreaming ? { kind: "elsewhere" } : { kind: "idle" };
 		if (activeState.isCompacting) return { kind: "compacting", reason: compactionReason };
 		if (retryStatus) return { kind: "retrying", ...retryStatus };
 		if (activeState.isStreaming || pendingPrompt) return { kind: "working" };
 		return { kind: "idle" };
 	}
 
+	function leaveElsewhere() {
+		mode = "hosted";
+		follow = null;
+		followSession = null;
+		stoppingWriter = false;
+	}
+
 	function reset() {
 		closeEvents();
 		stopRecovery();
 		setConnection("idle");
+		leaveElsewhere();
 		activeSessionPath = null;
 		cursor = null;
 		retryStatus = null;
@@ -354,8 +390,72 @@ export function createSessionController({
 		chatView.appendNotice("No session selected.");
 	}
 
+	function applyFollowState(next) {
+		follow = next && typeof next === "object" ? next : follow;
+		if (activeState && follow) activeState.isStreaming = follow.state === "running" || follow.state === "quiet";
+		if (follow?.state === "stopped") chatView.markPendingToolsAborted("Stopped: the pi running it is gone");
+		if (follow?.state === "hosted") {
+			leaveElsewhere();
+			connectEvents(activeSessionId);
+		}
+		onStateChange();
+	}
+
+	/** The read-only view of a session another process writes: same transcript rendering, no controls. */
+	function handleFollowSse(event) {
+		if (event.type === "follow_init") {
+			const transcript = initTranscript(event);
+			const sameSession = renderedSessionId !== null && renderedSessionId === event.session?.sessionId;
+			if (transcript.mode === "append" && !sameSession) {
+				cursor = null;
+				connectEvents(activeSessionId);
+				return;
+			}
+			if (!sameSession) onCloseMenu();
+			followSession = event.session;
+			follow = event.follow;
+			activeState = elsewhereStatus(followSession, follow);
+			activeSessionPath = followSession.path || activeSessionPath;
+			controllerClientId = null;
+			role = "viewer";
+			pendingPrompt = false;
+			retryStatus = null;
+			compactionReason = null;
+			if (typeof event.cursor === "string") cursor = event.cursor;
+			renderedSessionId = followSession.sessionId;
+			if (transcript.mode === "append") {
+				appendTranscript(transcript, null);
+			} else {
+				replaceTranscript(transcript, null, { keepPosition: sameSession });
+			}
+			applyQueuedMessages(EMPTY_QUEUE);
+			applyFollowState(follow);
+			return;
+		}
+
+		if (event.type === "follow_entries") {
+			if (event.session && typeof event.session === "object") {
+				followSession = event.session;
+				if (activeState) Object.assign(activeState, elsewhereStatus(followSession, follow || { state: "running" }));
+			}
+			const wasPinned = chatView.isPinned();
+			chatView.renderHistory(Array.isArray(event.messages) ? event.messages : []);
+			chatView.flush();
+			if (wasPinned) chatView.pin();
+			onStateChange();
+			return;
+		}
+
+		if (event.type === "follow_state") applyFollowState(event.follow);
+	}
+
 	function handleSse(event) {
 		if (!event || typeof event.type !== "string") return;
+
+		if (event.type.startsWith("follow_")) {
+			if (mode === "elsewhere") handleFollowSse(event);
+			return;
+		}
 
 		if (event.type === "init") {
 			const transcript = initTranscript(event);
@@ -670,11 +770,32 @@ export function createSessionController({
 		}
 	}
 
+	/** Follows a session another process is writing, read-only, until its turn closes or its writer is gone. */
+	function openElsewhere(sessionId, path, elsewhere) {
+		if (sessionId !== activeSessionId) renderedSessionId = null;
+		mode = "elsewhere";
+		follow = elsewhere && typeof elsewhere === "object" ? { ...elsewhere } : null;
+		followSession = null;
+		stoppingWriter = false;
+		activeSessionId = sessionId;
+		activeSessionPath = path;
+		controllerClientId = null;
+		role = "viewer";
+		connectEvents(sessionId);
+		onSidebarClose();
+		onStateChange();
+	}
+
+	function isRunningElsewhereError(error) {
+		return Boolean(error && error.status === 409 && error.body && typeof error.body.elsewhere === "object");
+	}
+
 	async function selectSession(session) {
 		stopRecovery();
 		resetTripwireAlerts();
 		if (session.id !== activeSessionId) extensionUi.reset();
 		if (session.isRunning) {
+			leaveElsewhere();
 			activeSessionId = session.id;
 			activeSessionPath = session.path || null;
 			connectEvents(activeSessionId);
@@ -687,12 +808,74 @@ export function createSessionController({
 			throw new Error("Missing session path");
 		}
 
-		const result = await createSession({ clientId: getClientId(), resumeSessionPath: session.path });
+		if (session.elsewhere && session.elsewhere.state !== "stopped") {
+			openElsewhere(session.id, session.path, session.elsewhere);
+			return;
+		}
+
+		let result;
+		try {
+			result = await createSession({ clientId: getClientId(), resumeSessionPath: session.path });
+		} catch (error) {
+			if (!isRunningElsewhereError(error)) throw error;
+			openElsewhere(session.id, session.path, error.body.elsewhere);
+			return;
+		}
+		leaveElsewhere();
 		activeSessionId = result.sessionId;
 		activeSessionPath = session.path;
 		connectEvents(activeSessionId);
 		onSidebarClose();
 		onStateChange();
+	}
+
+	function canResumeHere() {
+		return mode === "elsewhere" && Boolean(activeSessionPath) && Boolean(follow) && RESUMABLE_ELSEWHERE.has(follow.state) && !stoppingWriter;
+	}
+
+	function canStopWriter() {
+		return mode === "elsewhere" && Boolean(follow) && (follow.state === "running" || follow.state === "quiet") && !stoppingWriter;
+	}
+
+	/**
+	 * Opens the followed session here as a hosted one. The transcript on screen is the same file, so the
+	 * event stream resumes from the entry this page already shows.
+	 */
+	async function resumeHere() {
+		if (!canResumeHere()) throw new Error("Another pi is still writing this session. Esc stops it.");
+		const sessionId = activeSessionId;
+		let result;
+		try {
+			result = await createSession({ clientId: getClientId(), resumeSessionPath: activeSessionPath, takeOver: follow.state === "quiet" });
+		} catch (error) {
+			if (isRunningElsewhereError(error) && sessionId === activeSessionId) applyFollowState({ ...error.body.elsewhere });
+			throw error;
+		}
+		if (sessionId !== activeSessionId || mode !== "elsewhere") return;
+		leaveElsewhere();
+		activeSessionId = result.sessionId;
+		connectEvents(activeSessionId);
+		onStateChange();
+		onSidebarRefresh();
+	}
+
+	/** Esc in a followed session: stop the pi writing it, so the session can be continued here. */
+	async function stopWriter() {
+		if (!canStopWriter()) return;
+		const sessionId = activeSessionId;
+		stoppingWriter = true;
+		onStateChange();
+		try {
+			const result = await api.postJson(`/api/sessions/${encodeURIComponent(sessionId)}/stop-elsewhere`, { path: activeSessionPath });
+			if (sessionId !== activeSessionId || mode !== "elsewhere") return;
+			const pids = Array.isArray(result?.stopped) ? result.stopped : [];
+			chatView.appendNotice(pids.length > 0 ? `Stopped pi (pid ${pids.join(", ")}). Type to continue here.` : "Nothing was writing it any more. Type to continue here.");
+			stoppingWriter = false;
+			applyFollowState({ ...follow, state: "stopped", writers: [] });
+		} finally {
+			stoppingWriter = false;
+			onStateChange();
+		}
 	}
 
 	async function compact(customInstructions) {
@@ -719,6 +902,11 @@ export function createSessionController({
 
 	async function sendPrompt(text) {
 		if (!activeSessionId) return;
+		if (mode === "elsewhere") {
+			if (!String(text || "").trim()) return;
+			await resumeHere();
+			if (mode === "elsewhere") throw new Error("Not resumed here.");
+		}
 		const compactInstructions = parseCompactCommand(text);
 		if (compactInstructions !== null) {
 			await compact(compactInstructions);
@@ -751,6 +939,10 @@ export function createSessionController({
 
 	async function abortRun() {
 		if (!activeSessionId) return;
+		if (mode === "elsewhere") {
+			await stopWriter();
+			return;
+		}
 		const hadPendingTools = chatView.hasPendingTools();
 		const hadAssistant = chatView.hasAssistant();
 		const hadStreaming = Boolean(activeState?.isStreaming);
@@ -770,11 +962,15 @@ export function createSessionController({
 
 	async function takeOver() {
 		if (!activeSessionId) return;
+		if (mode === "elsewhere") {
+			await resumeHere();
+			return;
+		}
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/takeover`, { clientId: getClientId() });
 	}
 
 	async function release() {
-		if (!activeSessionId) return;
+		if (!activeSessionId || mode === "elsewhere") return;
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/release`, { clientId: getClientId() });
 	}
 
@@ -832,6 +1028,7 @@ export function createSessionController({
 		stopRecovery();
 		resetTripwireAlerts();
 		if (sessionId !== activeSessionId) extensionUi.reset();
+		leaveElsewhere();
 		activeSessionId = sessionId;
 		activeSessionPath = null;
 		connectEvents(activeSessionId);
@@ -846,7 +1043,11 @@ export function createSessionController({
 		getPendingPrompt: () => pendingPrompt,
 		getRunStatus,
 		getConnection: () => connection,
-		isController: () => Boolean(activeSessionId && controllerClientId === getClientId()),
+		getMode: () => mode,
+		getFollow: () => follow,
+		canResumeHere,
+		canStopWriter,
+		isController: () => Boolean(activeSessionId && mode === "hosted" && controllerClientId === getClientId()),
 		appendNotice: chatView.appendNotice,
 		reset,
 		runReplay,

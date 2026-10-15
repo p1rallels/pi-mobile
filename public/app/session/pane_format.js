@@ -58,23 +58,51 @@ export function buildSessionMetrics(state) {
 export const modelLabel = (state) => (state?.model ? `${state.model.provider}/${state.model.id}` : null);
 
 /**
- * The pane footer: cwd (plus the untrusted-project hint), then metrics • session id and model • thinking.
- * @param {any} state @param {{ hostLabel?: string | null, baseUrl: string }} host
+ * Where a session another pi writes stands, for the footer: "" when this pane hosts it.
+ * @param {any} follow the followed session's state, or null
  */
-export function footerLines(state, host) {
+export function elsewhereFooterNote(follow) {
+	if (!follow) return "";
+	const writers = Array.isArray(follow.writers) && follow.writers.length > 0 ? ` (pi ${follow.writers.join(", ")})` : "";
+	if (follow.state === "running") return ` · running elsewhere${writers}`;
+	if (follow.state === "quiet") return ` · elsewhere, quiet since ${new Date(follow.lastWrite).toLocaleTimeString()}${writers}`;
+	if (follow.state === "stopped") return " · stopped mid-turn, nobody is writing it";
+	if (follow.state === "done") return writers ? ` · finished elsewhere, pi still open there${writers}` : " · finished elsewhere";
+	return "";
+}
+
+/** @param {any} follow */
+export function elsewherePlaceholder(follow) {
+	if (!follow || follow.state === "running") return "Running elsewhere, read-only — Esc stops it";
+	if (follow.state === "quiet") return "No writes for a while — type or Take over to continue here";
+	if (follow.state === "stopped") return "Stopped mid-turn — type to continue here";
+	return "Finished elsewhere — type to continue here";
+}
+
+/**
+ * The pane footer: cwd (plus the untrusted-project hint and where a followed session stands), then
+ * metrics • session id and model • thinking.
+ * @param {any} state @param {{ hostLabel?: string | null, baseUrl: string }} host @param {any} [follow] a followed session's state
+ */
+export function footerLines(state, host, follow = null) {
 	if (!state) return { line1: host.hostLabel ? `host: ${host.hostLabel}` : "—", left2: "—", right2: host.baseUrl };
 	const trust = state.projectTrust;
 	const untrusted = trust && trust.gated && !trust.trusted ? " · project .pi resources skipped (untrusted)" : "";
 	const metrics = buildSessionMetrics(state);
 	const left = metrics ? [metrics] : [];
 	left.push(String(state.sessionId || "").slice(0, 8));
-	return { line1: `${state.cwd || "—"}${untrusted}`, left2: left.join(" • "), right2: `${modelLabel(state) ?? "(no model)"} • ${state.thinkingLevel}` };
+	return {
+		line1: `${state.cwd || "—"}${untrusted}${elsewhereFooterNote(follow)}`,
+		left2: left.join(" • "),
+		right2: `${modelLabel(state) ?? "(no model)"} • ${state.thinkingLevel}`,
+	};
 }
 
 /** @param {{ kind: string, reason?: string | null, attempt?: number, maxAttempts?: number }} status */
 export function workingLabel(status) {
 	if (status.kind === "compacting") return status.reason && status.reason !== "manual" ? `Compacting context (${status.reason})...` : "Compacting context...";
 	if (status.kind === "retrying") return `Retrying (${status.attempt}/${status.maxAttempts})...`;
+	if (status.kind === "elsewhere") return "Running elsewhere...";
 	return "Working...";
 }
 
@@ -87,9 +115,12 @@ export function composerPlaceholder({ hasSession, compacting, isController, stre
 	return streaming ? "Streaming… (Enter steers, /queue waits)" : "Type a prompt (Enter to send, Shift+Enter for newline)";
 }
 
-/** @param {string} role @param {string} connection @param {boolean} hasSession */
-export function roleBadge(role, connection, hasSession) {
+const ELSEWHERE_PILL = { running: "elsewhere", quiet: "quiet", stopped: "stopped", done: "finished", hosted: "viewer" };
+
+/** @param {string} role @param {string} connection @param {boolean} hasSession @param {any} [follow] a followed session's state */
+export function roleBadge(role, connection, hasSession, follow = null) {
 	const offline = hasSession && (connection === "reconnecting" || connection === "gone");
-	if (!offline) return { text: role, kind: role };
-	return { text: connection === "gone" ? "ended" : "reconnecting", kind: "offline" };
+	if (offline) return { text: connection === "gone" ? "ended" : "reconnecting", kind: "offline" };
+	if (follow) return { text: ELSEWHERE_PILL[follow.state] ?? "elsewhere", kind: "elsewhere" };
+	return { text: role, kind: role };
 }

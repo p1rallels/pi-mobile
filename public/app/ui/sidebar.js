@@ -36,9 +36,19 @@ function escapeHtml(text) {
 		.replaceAll("'", "&#039;");
 }
 
+/** The label for a session another process may still be writing, or "" when pi-web hosts it or its turn closed. */
+export function elsewhereLabel(s) {
+	const elsewhere = s && typeof s.elsewhere === "object" ? s.elsewhere : null;
+	if (!elsewhere || s.isRunning) return "";
+	if (elsewhere.state === "running") return "running elsewhere";
+	if (elsewhere.state === "quiet") return `running elsewhere, quiet ${formatRelativeTime(elsewhere.lastWrite).replace(" ago", "")}`;
+	if (elsewhere.state === "stopped") return "stopped mid-turn";
+	return "";
+}
+
 function shouldShowSessionInLists(s) {
 	if (!s || typeof s !== "object") return false;
-	if (s.isRunning) return true;
+	if (s.isRunning || elsewhereLabel(s)) return true;
 	const name = typeof s.name === "string" ? s.name.trim() : "";
 	if (name) return true;
 	const first = typeof s.firstMessage === "string" ? s.firstMessage.trim() : "";
@@ -214,8 +224,15 @@ export function createSidebar({
 
 			const meta = document.createElement("div");
 			meta.className = "si-meta";
-			const rel = formatRelativeTime(s.modified);
-			meta.innerHTML = `${rel} · ${escapeHtml(s.cwd)}${s.isRunning ? ` · <span class="si-run">running</span>` : ""}`;
+			const elsewhere = elsewhereLabel(s);
+			const rel = formatRelativeTime(elsewhere ? s.elsewhere.lastWrite : s.modified);
+			const cwd = escapeHtml(typeof s.forkLabel === "string" && s.forkLabel ? s.forkLabel : s.cwd);
+			meta.title = s.cwd;
+			if (elsewhere) {
+				meta.innerHTML = `${rel} · <span class="si-elsewhere ${escapeHtml(s.elsewhere.state)}">${escapeHtml(elsewhere)}</span> · ${cwd}`;
+			} else {
+				meta.innerHTML = `${rel} · ${cwd}${s.isRunning ? ` · <span class="si-run">running</span>` : ""}`;
+			}
 
 			row.appendChild(name);
 			row.appendChild(meta);
