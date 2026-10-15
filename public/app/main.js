@@ -312,10 +312,10 @@ function updateWorkingIndicator() {
 	}
 }
 
-/** A followed session: Esc stops its writer, and typing or Take over continue it here once nobody writes it. */
 const ABORT_TITLE = btnAbort.title;
 const STOP_WRITER_TITLE = "Stop the pi writing this session (Esc)";
 
+/** A followed session: Esc stops its writer, and typing or Take over continue it here once nobody writes it. */
 function updateElsewhereControls() {
 	const canStop = sessionCtrl.canStopWriter();
 	const canResume = sessionCtrl.canResumeHere();
