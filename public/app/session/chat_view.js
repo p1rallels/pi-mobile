@@ -494,6 +494,12 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 
 	const tools = createToolBoxManager({ mount, onContentChange: scheduleFrame });
 
+	/** Partial results still waiting for their frame must not paint over the abort. */
+	function abortPendingTools(message) {
+		pendingToolOutput.clear();
+		tools.markPendingToolsAborted(message);
+	}
+
 	function stopReasonNotice(message) {
 		if (message.stopReason === "aborted") return "Operation aborted";
 		if (message.stopReason !== "error") return null;
@@ -848,7 +854,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 								: "Error";
 
 					if (hasToolCalls) {
-						tools.markPendingToolsAborted(stopReason === "aborted" ? abortMessage : errMessage);
+						abortPendingTools(stopReason === "aborted" ? abortMessage : errMessage);
 					} else if (block) {
 						const err = document.createElement("div");
 						err.className = "notice-text error";
@@ -930,6 +936,6 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		handleAgentEvent,
 		hasPendingTools: tools.hasPendingTools,
 		hasAssistant: () => Boolean(currentAssistant),
-		markPendingToolsAborted: tools.markPendingToolsAborted,
+		markPendingToolsAborted: abortPendingTools,
 	};
 }
