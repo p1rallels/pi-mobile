@@ -572,6 +572,86 @@
     .editor-input::placeholder { color: #505050; }
     .editor-inner { padding: 0 16px; }
 
+    /* ── Extension UI (ctx.ui dialogs, widgets, statuses) ────── */
+    .ext-widgets {
+      flex-shrink: 0;
+      padding: 4px 16px;
+      color: #8a8a96;
+    }
+    .ext-widgets[hidden] { display: none; }
+    .ext-widget {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ext-widget + .ext-widget { margin-top: 4px; }
+    .footer-line.ext-status { color: #8abeb7; }
+    .footer-line.ext-status[hidden] { display: none; }
+    .ext-dialog-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 110;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(8, 10, 14, 0.7);
+    }
+    .ext-dialog-card {
+      width: min(520px, 100%);
+      max-height: min(640px, 90dvh);
+      overflow: auto;
+      border: 1px solid #2a3840;
+      border-radius: 12px;
+      background: #12121a;
+      padding: 14px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.45);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .ext-dialog-title { color: #d6ebea; font-weight: 700; white-space: pre-wrap; word-break: break-word; }
+    .ext-dialog-message { color: #b0b0b8; white-space: pre-wrap; word-break: break-word; }
+    .ext-dialog-options { display: flex; flex-direction: column; gap: 4px; }
+    .ext-dialog-option {
+      text-align: left;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #2a2a32;
+      background: #1e1e28;
+      color: #d4d4d4;
+      font: inherit;
+      cursor: pointer;
+    }
+    .ext-dialog-option:hover, .ext-dialog-option:focus { background: #252530; border-color: #335463; outline: none; }
+    .ext-dialog-field {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #2a2a32;
+      background: #1e1e28;
+      color: #d4d4d4;
+      font: inherit;
+      outline: none;
+      resize: vertical;
+    }
+    .ext-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .ext-dialog-btn {
+      border: 1px solid #2a2a32;
+      border-radius: 8px;
+      background: #1e1e28;
+      color: #c4c4cc;
+      font: inherit;
+      font-size: 12px;
+      padding: 7px 14px;
+      cursor: pointer;
+    }
+    .ext-dialog-btn.primary { background: #17313f; border-color: #335463; color: #c4dde0; }
+    .ext-dialog-btn:disabled, .ext-dialog-option:disabled { opacity: .5; cursor: default; }
+    .ext-dialog-error { color: #cc6666; min-height: 0; }
+    .ext-dialog-error:empty { display: none; }
+    .ext-dialog-meta { color: #666666; font-size: 12px; }
+    .ext-dialog-meta:empty { display: none; }
+
     /* ── Footer (2 lines) ────────────────────────────────────── */
     .footer {
       flex-shrink: 0;
@@ -607,6 +687,7 @@
       /* Prevent iOS input focus zoom + horizontal drift */
       .editor-input { font-size: 16px; }
       .menu-search { font-size: 16px; }
+      .ext-dialog-field { font-size: 16px; }
 
       /* Footer: stack metrics + model on narrow screens */
       #footer-line-2 { display: flex; flex-direction: column; gap: 1px; }

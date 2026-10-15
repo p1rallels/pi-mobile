@@ -2,6 +2,7 @@ import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
 import { createSessionController } from "./session/controller.js";
+import { createExtensionUi } from "./ui/extension_ui.js";
 import { createMenu } from "./ui/menu.js";
 import { createSidebar } from "./ui/sidebar.js";
 
@@ -363,6 +364,19 @@ async function sendPromptFromInput() {
 	}
 }
 
+const extensionUi = createExtensionUi({
+	api,
+	getSessionId: () => sessionCtrl.getActiveSessionId(),
+	onNotice: (text, kind) => sessionCtrl.appendNotice(text, kind),
+	onEditorText: (text) => {
+		input.value = text;
+		autoResize(input);
+	},
+	statusEl: document.getElementById("footer-ext-status"),
+	aboveEl: document.getElementById("ext-widgets-above"),
+	belowEl: document.getElementById("ext-widgets-below"),
+});
+
 const sessionCtrl = createSessionController({
 	msgsEl: msgs,
 	queuedEl: queuedPanel,
@@ -377,6 +391,7 @@ const sessionCtrl = createSessionController({
 	onCloseMenu: () => menuCtrl?.close(),
 	onSidebarClose: () => sidebarCtrl?.setOpen(false),
 	onSidebarRefresh: () => sidebarCtrl?.refresh(),
+	extensionUi,
 });
 
 sidebarCtrl = createSidebar({
@@ -444,6 +459,11 @@ input.addEventListener("keydown", (e) => {
 
 window.addEventListener("keydown", (e) => {
 	if (e.key === "Escape") {
+		if (extensionUi.isOpen()) {
+			e.preventDefault();
+			extensionUi.cancelShown();
+			return;
+		}
 		if (menuCtrl.isOpen()) {
 			e.preventDefault();
 			menuCtrl.close();

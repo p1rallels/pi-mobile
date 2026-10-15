@@ -101,7 +101,7 @@ Do not open the same session in `pi-web` and the native `pi` CLI simultaneously.
 - Non-loopback control actions require recent WebAuthn verification: within 60 minutes for prompts, aborts and take over (`PI_WEB_FACEID_COMMAND_MINUTES`), within 10 minutes for new sessions, repo changes and release (`PI_WEB_FACEID_FRESH_MINUTES`), inside a 4 hour Face ID session (`PI_WEB_FACEID_SESSION_MINUTES`).
 - Browser and Face ID sessions are HMAC-signed cookies keyed by `~/.pi-web/cookie-key` and, in secure mode, bound to the device certificate that received them. Restarts keep devices signed in; deleting the key signs every device out.
 - Browser responses ship with a strict CSP and related security headers.
-- The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS` and `PI_WEB_MAX_CLIENTS_PER_SESSION` if needed.
+- The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS`, `PI_WEB_MAX_CLIENTS_PER_SESSION` and `PI_WEB_CLIENT_SESSIONS_PER_MINUTE` (browser session handshakes per client IP, default 20) if needed.
 
 ## Credits
 

@@ -17,6 +17,7 @@ export function createSessionController({
 	onCloseMenu,
 	onSidebarClose,
 	onSidebarRefresh,
+	extensionUi = { applySnapshot() {}, handleEvent: () => false, reset() {} },
 }) {
 	let activeSessionId = null;
 	let activeState = null;
@@ -312,6 +313,7 @@ export function createSessionController({
 		pendingPrompt = false;
 		renderedSessionId = null;
 		resetTripwireAlerts();
+		extensionUi.reset();
 		chatView.clear();
 		chatView.appendNotice("No session selected.");
 	}
@@ -347,10 +349,16 @@ export function createSessionController({
 				replaceTranscript(transcript, live, { keepPosition: sameSession });
 			}
 			applyQueuedMessages(activeState.queuedMessages);
+			extensionUi.applySnapshot(event.ui);
 			onStateChange();
 			if (activeSessionId) {
 				void loadTripwireAlerts(activeSessionId);
 			}
+			return;
+		}
+
+		if (event.type.startsWith("extension_ui_")) {
+			extensionUi.handleEvent(event);
 			return;
 		}
 
@@ -385,6 +393,7 @@ export function createSessionController({
 			role = "viewer";
 			renderedSessionId = null;
 			resetTripwireAlerts();
+			extensionUi.reset();
 			chatView.renderQueuedMessages({ steering: [], followUp: [] });
 
 			chatView.renderReleased({ cliCommand: cmd });
@@ -628,6 +637,7 @@ export function createSessionController({
 	async function selectSession(session) {
 		stopRecovery();
 		resetTripwireAlerts();
+		if (session.id !== activeSessionId) extensionUi.reset();
 		if (session.isRunning) {
 			activeSessionId = session.id;
 			activeSessionPath = session.path || null;
@@ -735,6 +745,7 @@ export function createSessionController({
 	function openSessionId(sessionId) {
 		stopRecovery();
 		resetTripwireAlerts();
+		if (sessionId !== activeSessionId) extensionUi.reset();
 		activeSessionId = sessionId;
 		activeSessionPath = null;
 		connectEvents(activeSessionId);

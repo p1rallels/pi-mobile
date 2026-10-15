@@ -761,7 +761,10 @@ const allowedOriginsSet = new Set(allowedOrigins);
 const allowedHostPorts = collectAllowedHostPorts(allowedOrigins);
 const allowedHostNames = collectAllowedHostNames(allowedOrigins);
 
-const clientSessionLimiter = createRateLimiter(60_000, 20);
+const clientSessionLimiter = createRateLimiter(
+	60_000,
+	parsePositiveInt(process.env.PI_WEB_CLIENT_SESSIONS_PER_MINUTE, 20, "PI_WEB_CLIENT_SESSIONS_PER_MINUTE"),
+);
 const repoMutationLimiter = createRateLimiter(60_000, 12);
 const sessionCreateLimiter = createRateLimiter(60_000, 12);
 const commandLimiter = createRateLimiter(60_000, 90);
