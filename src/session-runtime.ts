@@ -760,6 +760,7 @@ export class PiWebRuntime {
 		runtime.lastSeenAtMs = Date.now();
 		if (client.clientId === runtime.controllerClientId) this.cancelControllerHandoff(runtime);
 		this.claimControllerIfVacant(runtime, client.clientId);
+		this.notifyStatus();
 		return this.getSessionRole(sessionId, client.clientId);
 	}
 
@@ -804,6 +805,7 @@ export class PiWebRuntime {
 		runtime.clients.delete(connectionId);
 		runtime.lastSeenAtMs = Date.now();
 		if (!this.isControllerConnected(runtime)) this.scheduleControllerHandoff(runtime);
+		this.notifyStatus();
 	}
 
 	private isControllerConnected(runtime: RunningSession): boolean {

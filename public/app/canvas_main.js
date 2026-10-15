@@ -32,6 +32,10 @@ export async function bootCanvas() {
 	// transcript entries a tile keeps: the newest 20 (50 while focused, plus older pages you scroll to)
 	const TRANSCRIPT_WINDOW = { unfocused: intKnob("window", 20), focused: intKnob("focusedWindow", 50), pageSize: 50 };
 	const DORMANT_NOTICE = "Not running. Click this tile to resume it here.";
+	// on-screen tiles whose session is idle (per the host's status stream) let go of their stream after
+	// IDLE_SUSPEND_MS unless focused, so the host can evict them; work or a dialog brings the stream back
+	const IDLE_SUSPEND_MS = intKnob("idleSuspendMs", 30_000);
+	const IDLE_CHECK_MS = Math.min(2_000, Math.max(100, Math.floor(IDLE_SUSPEND_MS / 3)));
 	const SWEEP_MS = Math.min(15_000, Math.max(250, UNMOUNT_AFTER_MS / 2));
 
 	/**
@@ -52,6 +56,9 @@ export async function bootCanvas() {
 	 *   lastVisibleAt: number,
 	 *   extTitle: string | null,
 	 *   readOnly: "none" | "loading" | "shown",
+	 *   status: { id: string, working: boolean, waiting: boolean, viewers: number } | null,
+	 *   idleSuspended: boolean,
+	 *   idleSince: number,
 	 *   shown: { title: string, pill: string },
 	 * }} TileEntry
 	 */
@@ -139,6 +146,104 @@ export async function bootCanvas() {
 		focusedTileId = id;
 		const next = id ? entries.get(id) : null;
 		if (next?.mounted) next.pane.setFocused(true);
+		if (next) wakeFromIdle(next);
+	}
+
+	/** @param {TileEntry} entry */
+	function wakeFromIdle(entry) {
+		entry.idleSince = 0;
+		if (!entry.idleSuspended) return;
+		entry.idleSuspended = false;
+		if (entry.mounted && entry.opened && entry.visible) entry.pane.resume();
+		renderTileChrome(entry.id);
+	}
+
+	/** @type {Map<string, { id: string, path: string | null, working: boolean, waiting: boolean, viewers: number }>} */
+	let statusById = new Map();
+	let statusKnown = false;
+	/** @type {EventSource | null} */
+	let statusSource = null;
+
+	/**
+	 * The host's status stream (GET /api/canvas/status): which sessions run, work or wait on a dialog.
+	 * Hosts without it keep every on-screen tile connected, as before.
+	 */
+	function connectStatus() {
+		statusSource?.close();
+		statusKnown = false;
+		statusById = new Map();
+		const source = api.eventSource("/api/canvas/status");
+		statusSource = source;
+		source.onmessage = (message) => {
+			if (source !== statusSource) return;
+			let event;
+			try {
+				event = JSON.parse(message.data);
+			} catch {
+				return;
+			}
+			if (event?.type !== "canvas_status" || !Array.isArray(event.sessions)) return;
+			statusById = new Map(event.sessions.filter((/** @type {any} */ status) => typeof status?.id === "string").map((/** @type {any} */ status) => [status.id, status]));
+			statusKnown = true;
+			for (const entry of entries.values()) reconcileStatus(entry);
+		};
+		source.onerror = () => {
+			if (source !== statusSource || source.readyState !== EventSource.CLOSED) return;
+			// an older host (404) or a lost one: tiles keep their own streams
+			statusKnown = false;
+			for (const entry of entries.values()) wakeFromIdle(entry);
+		};
+	}
+
+	/** @param {TileEntry} entry */
+	function reconcileStatus(entry) {
+		const status = statusById.get(entry.id) ?? null;
+		entry.status = status;
+		if (!status) {
+			// stopped running while this tile wasn't listening (evicted, released): back to dormant
+			if (!entry.dormant && entry.mounted && entry.opened && entry.pane.getConnection() === "suspended") {
+				entry.dormant = true;
+				entry.opened = false;
+				entry.idleSuspended = false;
+				entry.pane.appendNotice(DORMANT_NOTICE);
+			}
+		} else if (entry.dormant) {
+			// running again (resumed from another device): go live
+			entry.dormant = false;
+			entry.opened = false;
+			openIfReady(entry);
+		} else if (entry.idleSuspended && (status.working || status.waiting)) {
+			wakeFromIdle(entry);
+		}
+		renderTileChrome(entry.id);
+	}
+
+	/** Lets on-screen tiles of idle sessions drop their stream (the focused one keeps it). */
+	function suspendIdleTiles() {
+		if (!statusKnown || IDLE_SUSPEND_MS <= 0) return;
+		const now = Date.now();
+		for (const entry of entries.values()) {
+			if (!entry.mounted || !entry.opened || entry.dormant || !entry.visible || entry.idleSuspended) continue;
+			const status = statusById.get(entry.id);
+			const busy =
+				entry.id === focusedTileId ||
+				!status ||
+				status.working ||
+				status.waiting ||
+				entry.pane.getConnection() !== "live" ||
+				entry.pane.getRunStatus().kind !== "idle" ||
+				entry.pane.extensionUi.isOpen();
+			if (busy) {
+				entry.idleSince = 0;
+			} else if (!entry.idleSince) {
+				entry.idleSince = now;
+			} else if (now - entry.idleSince >= IDLE_SUSPEND_MS) {
+				entry.idleSuspended = true;
+				entry.idleSince = 0;
+				entry.pane.suspend();
+				renderTileChrome(entry.id);
+			}
+		}
 	}
 
 	/** @type {Map<string, ReturnType<typeof createLauncher>>} */
@@ -259,6 +364,10 @@ export async function bootCanvas() {
 		if (entry.dormant) return { text: "not running", kind: "idle" };
 		if (!entry.mounted || !entry.opened) return { text: "offscreen", kind: "idle" };
 		const connection = entry.pane.getConnection();
+		if (connection === "suspended" && entry.idleSuspended) {
+			if (entry.status?.waiting) return { text: "waiting", kind: "waiting" };
+			return entry.status?.working ? { text: "working", kind: "working" } : { text: "idle", kind: "idle" };
+		}
 		if (connection === "suspended") return { text: "offscreen", kind: "idle" };
 		if (connection === "gone") return { text: "ended", kind: "offline" };
 		if (connection === "reconnecting") return { text: "reconnecting", kind: "offline" };
@@ -436,8 +545,8 @@ export async function bootCanvas() {
 		if (visible) {
 			entry.lastVisibleAt = Date.now();
 			if (!entry.mounted) mountPane(entry);
-			if (entry.opened) entry.pane.resume();
-			else openIfReady(entry);
+			if (entry.opened && !entry.idleSuspended) entry.pane.resume();
+			else if (!entry.opened) openIfReady(entry);
 			showDormantTail(entry);
 			renderTileChrome(id);
 			return;
@@ -506,6 +615,9 @@ export async function bootCanvas() {
 			lastVisibleAt: tile.visible ? Date.now() : 0,
 			extTitle: null,
 			readOnly: "none",
+			status: null,
+			idleSuspended: false,
+			idleSince: 0,
 			shown: { title: "", pill: "" },
 		};
 		entries.set(id, entry);
@@ -619,6 +731,9 @@ export async function bootCanvas() {
 		if (origin === api.getBaseUrl()) return;
 		await saveLayout();
 		clearTiles();
+		statusSource?.close();
+		statusSource = null;
+		statusKnown = false;
 		api.setBaseUrl(origin);
 		activeHost = { ...host, url: origin };
 		layoutStore = createLayoutStore(api, window.localStorage);
@@ -627,6 +742,7 @@ export async function bootCanvas() {
 			await clients.ensure();
 			canvas.viewport.setCamera(loadCamera(window.localStorage, origin) ?? DEFAULT_CAMERA);
 			await loadCanvas();
+			connectStatus();
 		} catch (error) {
 			console.error("host switch failed", error);
 		}
@@ -672,6 +788,7 @@ export async function bootCanvas() {
 		for (const entry of entries.values()) if (entry.mounted && entry.opened && !entry.dormant) entry.pane.resumeIfStale();
 	}
 	window.setInterval(sweepOffscreen, SWEEP_MS);
+	window.setInterval(suspendIdleTiles, IDLE_CHECK_MS);
 	window.addEventListener("pageshow", resumeAll);
 	window.addEventListener("focus", resumeAll);
 	window.addEventListener("online", resumeAll);
@@ -693,5 +810,6 @@ export async function bootCanvas() {
 	hosts = await loadHostList(api, activeHost);
 	renderHostButton();
 	await loadCanvas();
-	Object.assign(window, { __canvas: { canvas, entries, launchers, openLauncher } });
+	connectStatus();
+	Object.assign(window, { __canvas: { canvas, entries, launchers, openLauncher, clientId: () => clients.current(), status: () => statusById } });
 }

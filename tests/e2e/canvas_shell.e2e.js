@@ -167,12 +167,14 @@ test("running sessions land on the canvas, the map survives reloads, dormant til
 	}
 });
 
+/** Counts open session streams (/api/sessions/:id/events); the canvas status stream isn't one. */
 function trackEventSources() {
 	const Native = window.EventSource;
 	let open = 0;
 	window.EventSource = class extends Native {
 		constructor(url, init) {
 			super(url, init);
+			if (!String(url).includes("/events")) return;
 			open += 1;
 			const close = this.close.bind(this);
 			let closed = false;
@@ -488,6 +490,85 @@ test("extension dialogs stay inside their tile, leave the keyboard where it is, 
 		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
 		await expect(tile(page, S1).locator(".notice-text").last()).toContainText("went ahead");
 		await expect(tile(page, S1).locator(".cv-title")).toContainText("repo");
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("idle on-screen tiles let go of their stream, and take it back when their session waits or gets focus", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "repo");
+	await mkdir(cwd);
+	await mkdir(join(root, "agent", "extensions"), { recursive: true });
+	await writeFile(join(root, "agent", "extensions", "ask.ts"), ASK_EXTENSION);
+	const paths = [await writeSessionFile(root, cwd, S1, "hello from disk", "hi there"), await writeSessionFile(root, cwd, S2, "second session", "reply two")];
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (resumePaths) => {
+			const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+			for (const resumeSessionPath of resumePaths) {
+				const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, resumeSessionPath }) });
+				if (!res.ok) throw new Error(`start failed: ${res.status}`);
+			}
+		}, paths);
+		await page.addInitScript(trackEventSources);
+		await page.goto(`${base}/?ui=canvas&idleSuspendMs=300`);
+		await expect(page.locator(".cv-tile")).toHaveCount(2);
+		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
+		const openStreams = () => page.evaluate(() => window.__openEventSources);
+		const viewers = () => page.evaluate(() => [...window.__canvas.status().values()].map((status) => status.viewers));
+
+		// nothing focused, nothing working: both tiles let go, and the sessions run on without viewers
+		await expect.poll(openStreams).toBe(0);
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText("idle");
+		await expect(tile(page, S2).locator(".cv-pill")).toHaveText("idle");
+		await expect.poll(viewers).toEqual([0, 0]);
+
+		// S2 asks for a human (prompted from elsewhere): its tile takes the stream back and shows the dialog
+		const clientId = await page.evaluate(() => window.__canvas.clientId());
+		await page.evaluate(
+			async ([id, client]) => {
+				const res = await fetch(`/api/sessions/${id}/command`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "prompt", clientId: client, text: "/ask" }) });
+				if (!res.ok) throw new Error(`prompt failed: ${res.status}`);
+			},
+			[S2, clientId],
+		);
+		const dialog = tile(page, S2).locator(".ext-dialog-overlay");
+		await expect(dialog.locator(".ext-dialog-title")).toHaveText("Proceed?");
+		await expect(tile(page, S2).locator(".cv-pill")).toHaveText("waiting");
+		await expect.poll(openStreams).toBe(1);
+
+		// answered (from anywhere): idle again, so it lets go again
+		/** @param {string} title */
+		const answer = async (title) => {
+			await expect(dialog.locator(".ext-dialog-title")).toHaveText(title);
+			const dialogId = await dialog.getAttribute("data-dialog-id");
+			await page.evaluate(
+				async ([id, dialogIdToAnswer]) => {
+					const res = await fetch(`/api/sessions/${id}/ui-response`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: dialogIdToAnswer, confirmed: true }) });
+					if (!res.ok) throw new Error(`answer failed: ${res.status}`);
+				},
+				[S2, dialogId],
+			);
+		};
+		await answer("Proceed?");
+		await answer("Really?");
+		await expect(dialog).toHaveCount(0);
+		await expect(tile(page, S2).locator(".notice-text").last()).toContainText("went ahead");
+		await expect.poll(openStreams).toBe(0);
+
+		// a focused tile keeps its stream
+		await tile(page, S1).locator(".msgs").click();
+		await expect.poll(openStreams).toBe(1);
+		await page.waitForTimeout(900);
+		expect(await openStreams()).toBe(1);
+		await expect(tile(page, S1).locator("textarea")).toBeEnabled();
 	} finally {
 		server.kill("SIGTERM");
 		await new Promise((resolve) => server.once("exit", resolve));
