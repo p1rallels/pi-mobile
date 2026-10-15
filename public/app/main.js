@@ -224,7 +224,8 @@ function updateFooter() {
 
 	const trust = activeState.projectTrust;
 	const untrusted = trust && trust.gated && !trust.trusted ? " · project .pi resources skipped (untrusted)" : "";
-	footerLine1.textContent = `${activeState.cwd || "—"}${untrusted}`;
+	const elsewhere = elsewhereFooterNote(sessionCtrl.getMode() === "elsewhere" ? sessionCtrl.getFollow() : null);
+	footerLine1.textContent = `${activeState.cwd || "—"}${untrusted}${elsewhere}`;
 
 	const model = activeState.model ? `${activeState.model.provider}/${activeState.model.id}` : "(no model)";
 	const metrics = buildSessionMetrics(activeState);
@@ -235,13 +236,34 @@ function updateFooter() {
 	footerRight2.textContent = `${model} • ${activeState.thinkingLevel}`;
 }
 
+const ELSEWHERE_PILL = { running: "elsewhere", quiet: "quiet", stopped: "stopped", done: "finished", hosted: "viewer" };
+
+function elsewhereFooterNote(follow) {
+	if (!follow) return "";
+	const writers = Array.isArray(follow.writers) && follow.writers.length > 0 ? ` (pi ${follow.writers.join(", ")})` : "";
+	if (follow.state === "running") return ` · running elsewhere${writers}`;
+	if (follow.state === "quiet") return ` · elsewhere, quiet since ${new Date(follow.lastWrite).toLocaleTimeString()}${writers}`;
+	if (follow.state === "stopped") return " · stopped mid-turn, nobody is writing it";
+	if (follow.state === "done") return writers ? ` · finished elsewhere, pi still open there${writers}` : " · finished elsewhere";
+	return "";
+}
+
+function elsewherePlaceholder(follow) {
+	if (!follow || follow.state === "running") return "Running elsewhere, read-only — Esc stops it";
+	if (follow.state === "quiet") return "No writes for a while — type or Take over to continue here";
+	if (follow.state === "stopped") return "Stopped mid-turn — type to continue here";
+	return "Finished elsewhere — type to continue here";
+}
+
 function updateRolePill() {
 	const role = sessionCtrl.getRole();
 	const connection = sessionCtrl.getConnection();
 	const offline = Boolean(sessionCtrl.getActiveSessionId()) && (connection === "reconnecting" || connection === "gone");
-	rolePill.textContent = offline ? (connection === "gone" ? "ended" : "reconnecting") : role;
-	rolePill.classList.remove("controller", "viewer", "offline");
-	rolePill.classList.add(offline ? "offline" : role);
+	const follow = sessionCtrl.getMode() === "elsewhere" ? sessionCtrl.getFollow() : null;
+	const label = follow ? (ELSEWHERE_PILL[follow.state] ?? "elsewhere") : role;
+	rolePill.textContent = offline ? (connection === "gone" ? "ended" : "reconnecting") : label;
+	rolePill.classList.remove("controller", "viewer", "offline", "elsewhere");
+	rolePill.classList.add(offline ? "offline" : follow ? "elsewhere" : role);
 }
 
 function updateTopSelectors() {
@@ -261,6 +283,7 @@ function updateTopSelectors() {
 function workingLabel(status) {
 	if (status.kind === "compacting") return status.reason && status.reason !== "manual" ? `Compacting context (${status.reason})...` : "Compacting context...";
 	if (status.kind === "retrying") return `Retrying (${status.attempt}/${status.maxAttempts})...`;
+	if (status.kind === "elsewhere") return "Running elsewhere...";
 	return "Working...";
 }
 
@@ -289,8 +312,32 @@ function updateWorkingIndicator() {
 	}
 }
 
+/** A followed session: Esc stops its writer, and typing or Take over continue it here once nobody writes it. */
+function updateElsewhereControls() {
+	const canStop = sessionCtrl.canStopWriter();
+	const canResume = sessionCtrl.canResumeHere();
+	btnAbort.disabled = !canStop;
+	btnTakeover.disabled = !canResume;
+	btnRelease.disabled = true;
+	input.disabled = !canResume;
+	if (btnModel) btnModel.disabled = true;
+	if (btnThinking) btnThinking.disabled = true;
+	if (kbEsc) kbEsc.disabled = !canStop;
+	if (kbTakeover) kbTakeover.disabled = !canResume;
+	if (kbRelease) kbRelease.disabled = true;
+	if (kbEnter) kbEnter.disabled = !canResume;
+	input.placeholder = elsewherePlaceholder(sessionCtrl.getFollow());
+	updateTopSelectors();
+	updateWorkingIndicator();
+}
+
 function updateControls() {
 	updateRolePill();
+
+	if (sessionCtrl.getActiveSessionId() && sessionCtrl.getMode() === "elsewhere") {
+		updateElsewhereControls();
+		return;
+	}
 
 	const hasSession = Boolean(sessionCtrl.getActiveSessionId());
 	const isController = hasSession && sessionCtrl.isController();

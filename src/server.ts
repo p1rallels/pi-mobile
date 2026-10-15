@@ -1096,15 +1096,16 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			const before = url.searchParams.get("before")?.trim() || undefined;
 			const limitParam = url.searchParams.get("limit");
 			const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+			const request = { before, limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined };
+			const path = url.searchParams.get("path")?.trim();
 			try {
-				const body: ApiTranscriptPageResponse = runtime.getTranscriptPage(sessionId, {
-					before,
-					limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
-				});
+				const body: ApiTranscriptPageResponse =
+					!runtime.isRunning(sessionId) && path ? await runtime.readTranscriptPage(sessionId, path, request) : runtime.getTranscriptPage(sessionId, request);
 				return json(body, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "unknown_entry") return errorResponse("Unknown transcript entry", 404);
+				if (message.startsWith("session_path_not_allowed")) return errorResponse("Session path not allowed", 403);
 				return errorResponse("Session not running", 404);
 			}
 		}

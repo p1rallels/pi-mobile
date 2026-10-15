@@ -802,6 +802,15 @@ export class PiWebRuntime {
 		});
 	}
 
+	/** Older history of a session pi-web isn't hosting, read from its file, for the read-only follow view. */
+	async readTranscriptPage(sessionId: string, rawPath: string, request: { before?: string; limit?: number }): Promise<TranscriptPage> {
+		const path = this.assertAllowedResumePath(rawPath);
+		const snapshot = await readSessionSnapshot(path);
+		if (snapshot.sessionId !== sessionId) throw new Error("session_path_mismatch");
+		const limit = Math.min(Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_MESSAGES)), MAX_TRANSCRIPT_PAGE_MESSAGES);
+		return transcriptPage(snapshot.branch, { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES });
+	}
+
 	async getTripwireAlerts(sessionId: string, clientId: string): Promise<ApiTripwireAlertsResponse> {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) {
