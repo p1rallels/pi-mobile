@@ -1,5 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { turnOfEntry, turnOfMessage, type Turn } from "./session-turn.ts";
 
 /** What the session lists need from a session file, without the full-text index pi builds. */
 export interface SessionSummary {
@@ -11,6 +12,10 @@ export interface SessionSummary {
 	modified: string;
 	messageCount: number;
 	firstMessage: string;
+	/** Where the last user, assistant or tool result message left the conversation. */
+	turn: Turn;
+	/** The file's last modification, whoever wrote it. */
+	lastWrite: string;
 }
 
 interface IndexedFile {
@@ -22,6 +27,12 @@ interface IndexedFile {
 	headerLine: string;
 	/** Latest user/assistant message time, like pi's own session lists use for "modified". */
 	lastActivityMs: number | null;
+	turn: Turn;
+}
+
+/** The last assistant line of a scan, parsed once the scan is over: only its stop reason matters. */
+interface ScanState {
+	pendingAssistant: Uint8Array | Record<string, unknown> | null;
 }
 
 const CHUNK_BYTES = 1024 * 1024;
@@ -107,11 +118,31 @@ function readMessageLine(prefix: string, line: Uint8Array): MessageLine | null {
 	return { role: typeof message.role === "string" ? message.role : "", timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "", entry };
 }
 
-function applyLine(file: IndexedFile, line: Uint8Array): void {
+function trackTurn(file: IndexedFile, scan: ScanState, message: MessageLine, line: Uint8Array): void {
+	if (message.role === "assistant") {
+		scan.pendingAssistant = message.entry ?? line;
+		return;
+	}
+	const turn = turnOfMessage(message.role, undefined);
+	if (turn === null) return;
+	file.turn = turn;
+	scan.pendingAssistant = null;
+}
+
+function settleTurn(file: IndexedFile, scan: ScanState): void {
+	const pending = scan.pendingAssistant;
+	if (!pending) return;
+	const entry = pending instanceof Uint8Array ? parseJson(decoder.decode(pending)) : pending;
+	file.turn = turnOfEntry(entry) ?? file.turn;
+	scan.pendingAssistant = null;
+}
+
+function applyLine(file: IndexedFile, scan: ScanState, line: Uint8Array): void {
 	const prefix = decoder.decode(line.subarray(0, PREFIX_BYTES));
 	const message = readMessageLine(prefix, line);
 	if (message) {
 		file.summary.messageCount += 1;
+		trackTurn(file, scan, message, line);
 		if (message.role !== "user" && message.role !== "assistant") return;
 		const activity = Date.parse(message.timestamp);
 		if (Number.isFinite(activity)) file.lastActivityMs = Math.max(file.lastActivityMs ?? 0, activity);
@@ -139,6 +170,7 @@ function headerOf(line: Uint8Array): { header: Record<string, unknown>; text: st
 async function scanFromStart(path: string, size: number, mtimeMs: number): Promise<IndexedFile | null> {
 	let file: IndexedFile | null = null;
 	let invalid = false;
+	const scan: ScanState = { pendingAssistant: null };
 	const offset = await scanLines(path, 0, size, (line) => {
 		if (invalid) return;
 		if (!file) {
@@ -157,18 +189,22 @@ async function scanFromStart(path: string, size: number, mtimeMs: number): Promi
 					modified: created,
 					messageCount: 0,
 					firstMessage: "",
+					turn: "done",
+					lastWrite: new Date(mtimeMs).toISOString(),
 				},
 				size,
 				mtimeMs,
 				offset: 0,
 				headerLine: parsed.text,
 				lastActivityMs: null,
+				turn: "done",
 			};
 			return;
 		}
-		applyLine(file, line);
+		applyLine(file, scan, line);
 	});
 	if (invalid || !file) return null;
+	settleTurn(file, scan);
 	return finish(file, offset, size, mtimeMs);
 }
 
@@ -181,6 +217,8 @@ function finish(file: IndexedFile, offset: number, size: number, mtimeMs: number
 		summary: {
 			...file.summary,
 			modified: file.lastActivityMs === null ? file.summary.created : new Date(file.lastActivityMs).toISOString(),
+			turn: file.turn,
+			lastWrite: new Date(mtimeMs).toISOString(),
 		},
 	};
 }
@@ -196,7 +234,9 @@ async function refreshFile(previous: IndexedFile | undefined, path: string, size
 	if (previous && previous.size === size && previous.mtimeMs === mtimeMs) return previous;
 	if (previous && size >= previous.size && (await headerUnchanged(previous))) {
 		const next: IndexedFile = { ...previous, summary: { ...previous.summary } };
-		const offset = await scanLines(path, previous.offset, size, (line) => applyLine(next, line));
+		const scan: ScanState = { pendingAssistant: null };
+		const offset = await scanLines(path, previous.offset, size, (line) => applyLine(next, scan, line));
+		settleTurn(next, scan);
 		return finish(next, offset, size, mtimeMs);
 	}
 	return scanFromStart(path, size, mtimeMs);
@@ -271,5 +311,10 @@ export function createSessionIndex(sessionsDir: string) {
 		return matching.sort((a, b) => b.modified.localeCompare(a.modified));
 	}
 
-	return { list };
+	/** Summaries of just these files, for callers that already know which ones they need. */
+	async function summarize(paths: readonly string[]): Promise<SessionSummary[]> {
+		return refreshPaths([...new Set(paths)]);
+	}
+
+	return { list, summarize };
 }
