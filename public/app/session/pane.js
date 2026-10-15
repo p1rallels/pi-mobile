@@ -337,8 +337,15 @@ export function createSessionPane({
 		getRole: () => sessionCtrl.getRole(),
 		getConnection: () => sessionCtrl.getConnection(),
 		isController: () => sessionCtrl.isController(),
+		/** "hosted", or "elsewhere" while it follows a session another pi writes. */
+		getMode: () => sessionCtrl.getMode(),
+		getFollow: () => sessionCtrl.getFollow(),
+		canStopWriter: () => sessionCtrl.canStopWriter(),
+		canResumeHere: () => sessionCtrl.canResumeHere(),
 		/** @param {any} session */
 		selectSession: (session) => sessionCtrl.selectSession(session),
+		/** Follows a session another pi writes, read-only. @param {string} sessionId @param {string} path @param {any} elsewhere */
+		followElsewhere: (sessionId, path, elsewhere) => sessionCtrl.followElsewhere(sessionId, path, elsewhere),
 		/** @param {string} sessionId */
 		openSessionId(sessionId) {
 			sessionCtrl.openSessionId(sessionId);

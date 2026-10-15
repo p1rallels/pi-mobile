@@ -786,6 +786,14 @@ export function createSessionController({
 		onStateChange();
 	}
 
+	/** For a pane that already knows the session is another pi's (a canvas tile): follow it, whatever its file says now. */
+	function followElsewhere(sessionId, path, elsewhere) {
+		stopRecovery();
+		resetTripwireAlerts();
+		if (sessionId !== activeSessionId) extensionUi.reset();
+		openElsewhere(sessionId, path, elsewhere);
+	}
+
 	function isRunningElsewhereError(error) {
 		return Boolean(error && error.status === 409 && error.body && typeof error.body.elsewhere === "object");
 	}
@@ -1053,6 +1061,7 @@ export function createSessionController({
 		runReplay,
 		resumeIfStale,
 		selectSession,
+		followElsewhere,
 		sendPrompt,
 		abortRun,
 		takeOver,

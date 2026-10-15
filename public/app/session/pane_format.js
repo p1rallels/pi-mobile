@@ -124,3 +124,8 @@ export function roleBadge(role, connection, hasSession, follow = null) {
 	if (follow) return { text: ELSEWHERE_PILL[follow.state] ?? "elsewhere", kind: "elsewhere" };
 	return { text: role, kind: role };
 }
+
+/** A canvas tile following a session another pi writes: the same words as the role badge, glowing while that pi works. @param {any} follow */
+export function elsewhereTilePill(follow) {
+	return { text: ELSEWHERE_PILL[follow?.state] ?? "elsewhere", kind: follow?.state === "running" ? "working" : "idle" };
+}

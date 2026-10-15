@@ -1,7 +1,8 @@
 // The laptop canvas shell (?ui=canvas): Infinite in the browser. No sidebar: every tile is a session
 // pane, and the HUD holds zoom, new tile and the host switcher. One tile per session; the red dot only
 // takes a tile off the canvas (the session keeps running, release stays explicit in the ⋯ menu).
-// Tiles of sessions that aren't running stay dormant (no runtime attached) until you click them.
+// Tiles of sessions that aren't running stay dormant (no runtime attached) until you click them; a
+// session another pi is in the middle of (a terminal pi, a pfs sub) gets a tile that follows its file.
 import { createApi } from "./core/api.js";
 import { installFaceIdGuard } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
@@ -12,6 +13,7 @@ import { nextFreeSlot, rectCenteredAt } from "./canvas/layout.js";
 import { createLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
 import { buildPaneDom } from "./session/pane_dom.js";
 import { createSessionPane } from "./session/pane.js";
+import { elsewhereTilePill } from "./session/pane_format.js";
 import { createMenu } from "./ui/menu.js";
 
 /** Boots the canvas shell (?ui=canvas, remembered; never on phones). */
@@ -47,6 +49,8 @@ export async function bootCanvas() {
 	 *   controls: { btnModel: HTMLButtonElement, btnThinking: HTMLButtonElement, lblModel: HTMLElement, lblThinking: HTMLElement },
 	 *   pill: HTMLElement,
 	 *   dormant: boolean,
+	 *   elsewhere: any | null,
+	 *   forkLabel: string | null,
 	 *   focusWhenReady: boolean,
 	 *   mounted: boolean,
 	 *   opened: boolean,
@@ -77,13 +81,29 @@ export async function bootCanvas() {
 	/** @param {string} id */
 	const byId = (id) => document.getElementById(id);
 
+	/**
+	 * A session another pi is in the middle of (the active list and the launcher name them): its tile follows
+	 * the file read-only. A stopped one has nobody writing it, so it resumes here like any other.
+	 * @param {any} session
+	 */
+	const followable = (session) => !session?.isRunning && (session?.elsewhere?.state === "running" || session?.elsewhere?.state === "quiet");
+
 	/** @param {string | null | undefined} cwd */
 	const repoName = (cwd) => (cwd ? (cwd.split("/").filter(Boolean).at(-1) ?? cwd) : null);
 
-	/** @param {{ id: string, cwd?: string, name?: string, firstMessage?: string }} session */
+	/**
+	 * pfs keeps a repo's forks in <repo>/.forks/<n>: "repo · fork n" when the host sent no fork label (which names the fork).
+	 * @param {string | null | undefined} cwd
+	 */
+	const forkPlace = (cwd) => {
+		const match = cwd ? /^(.+)\/\.forks\/(\d+)(?:\/|$)/.exec(cwd) : null;
+		return match ? `${repoName(match[1])} · fork ${match[2]}` : null;
+	};
+
+	/** @param {{ id: string, cwd?: string, name?: string, firstMessage?: string, forkLabel?: string | null }} session */
 	function sessionTitle(session) {
 		const label = session.name?.trim() || session.firstMessage?.trim().split("\n")[0]?.slice(0, 80) || session.id.slice(0, 8);
-		return [repoName(session.cwd), label].filter(Boolean).join(" · ");
+		return [session.forkLabel || forkPlace(session.cwd) || repoName(session.cwd), label].filter(Boolean).join(" · ");
 	}
 
 	document.documentElement.classList.add("cv-page");
@@ -200,8 +220,9 @@ export async function bootCanvas() {
 		const status = statusById.get(entry.id) ?? null;
 		entry.status = status;
 		if (!status) {
-			// stopped running while this tile wasn't listening (evicted, released): back to dormant
-			if (!entry.dormant && entry.mounted && entry.opened && entry.pane.getConnection() === "suspended") {
+			// stopped running while this tile wasn't listening (evicted, released): back to dormant. A tile
+			// following a session another pi writes is never in this list; its own stream says where it stands.
+			if (!entry.dormant && entry.mounted && entry.opened && entry.pane.getMode() !== "elsewhere" && entry.pane.getConnection() === "suspended") {
 				entry.dormant = true;
 				entry.opened = false;
 				entry.idleSuspended = false;
@@ -212,6 +233,9 @@ export async function bootCanvas() {
 			entry.dormant = false;
 			entry.opened = false;
 			openIfReady(entry);
+		} else if (entry.elsewhere && !entry.opened) {
+			// the host took it over before this tile started following it: open it as a hosted one
+			entry.elsewhere = null;
 		} else if (entry.idleSuspended && (status.working || status.waiting)) {
 			wakeFromIdle(entry);
 		}
@@ -301,12 +325,14 @@ export async function bootCanvas() {
 			return;
 		}
 		const running = pick.kind === "created" || Boolean(pick.session.isRunning);
+		const elsewhere = pick.kind === "session" && followable(pick.session) ? pick.session.elsewhere : null;
 		const title = pick.kind === "created" ? sessionTitle({ id: sessionId, cwd: pick.cwd }) : sessionTitle(pick.session);
 		const path = pick.kind === "created" ? null : pick.session.path;
-		addSessionTile({ id: sessionId, path, title, rect, running });
+		const forkLabel = pick.kind === "session" ? (pick.session.forkLabel ?? null) : null;
+		addSessionTile({ id: sessionId, path, title, rect, running, elsewhere, forkLabel });
 		scheduleSave();
 		canvas.tiles.focusTile(sessionId);
-		if (!running) wake(sessionId);
+		if (!running && !elsewhere) wake(sessionId);
 		focusComposer(sessionId);
 	}
 
@@ -372,21 +398,29 @@ export async function bootCanvas() {
 		if (connection === "gone") return { text: "ended", kind: "offline" };
 		if (connection === "reconnecting") return { text: "reconnecting", kind: "offline" };
 		if (entry.pane.extensionUi.isOpen()) return { text: "waiting", kind: "waiting" };
+		if (entry.pane.getMode() === "elsewhere") return elsewhereTilePill(entry.pane.getFollow());
 		const status = entry.pane.getRunStatus();
 		if (status.kind !== "idle") return { text: status.kind, kind: "working" };
 		return { text: entry.pane.isController() ? "idle" : "viewing", kind: "idle" };
 	}
 
-	/** Learns the session file from the pane, and turns an ended session back into a dormant tile. @param {TileEntry} entry */
+	/**
+	 * Learns the session file from the pane, whether it follows a session another pi writes (or took one over
+	 * here), and turns an ended session back into a dormant tile.
+	 * @param {TileEntry} entry
+	 */
 	function syncFromPane(entry) {
 		const state = entry.pane.getState();
 		if (state?.sessionFile && entry.path !== state.sessionFile) {
 			entry.path = state.sessionFile;
 			scheduleSave();
 		}
+		if (entry.pane.getMode() === "elsewhere") entry.elsewhere = entry.pane.getFollow() ?? entry.elsewhere ?? {};
+		else if (entry.elsewhere && state?.sessionId === entry.id) entry.elsewhere = null;
 		if (!entry.dormant && entry.pane.getConnection() === "gone") {
 			entry.dormant = true;
 			entry.opened = false;
+			entry.elsewhere = null;
 		}
 	}
 
@@ -401,7 +435,7 @@ export async function bootCanvas() {
 			if (canvas.tiles.focusedId() === id) entry.pane.focusComposer();
 		}
 		const state = entry.mounted ? entry.pane.getState() : null;
-		if (state?.sessionName) entry.title = sessionTitle({ id, cwd: state.cwd, name: state.sessionName });
+		if (state?.sessionName) entry.title = sessionTitle({ id, cwd: state.cwd, name: state.sessionName, forkLabel: entry.forkLabel });
 		// an extension's title (ctx.ui.setTitle) names the tile while it's set, the way it names the phone's page
 		const title = entry.extTitle || entry.title;
 		if (entry.shown.title !== title) {
@@ -436,10 +470,20 @@ export async function bootCanvas() {
 				});
 				list.append(row);
 			};
-			if (entry.dormant) item("Resume", "attach this session so it can run here", () => wake(entry.id));
-			else if (pane.isController()) item("Release", "hand the session back to the native cli", pane.release);
-			else item("Take over", "control this session from this browser", pane.takeOver);
-			if (!entry.dormant && pane.getRunStatus().kind !== "idle") item("Abort run", "same as esc", pane.abort);
+			const following = !entry.dormant && pane.getMode() === "elsewhere";
+			if (entry.dormant) {
+				item("Resume", "attach this session so it can run here", () => wake(entry.id));
+			} else if (following) {
+				const writers = pane.getFollow()?.writers;
+				const who = Array.isArray(writers) && writers.length > 0 ? `pi ${writers.join(", ")} · ` : "";
+				if (pane.canStopWriter()) item("Stop the pi writing it", `${who}same as esc`, pane.abort);
+				if (pane.canResumeHere()) item("Continue here", "run it from this browser; typing does the same", pane.takeOver);
+			} else if (pane.isController()) {
+				item("Release", "hand the session back to the native cli", pane.release);
+			} else {
+				item("Take over", "control this session from this browser", pane.takeOver);
+			}
+			if (!entry.dormant && !following && pane.getRunStatus().kind !== "idle") item("Abort run", "same as esc", pane.abort);
 			item("Remove from canvas", "the session keeps running", () => removeSessionTile(entry.id));
 			body.append(list);
 			panel.append(body);
@@ -524,11 +568,16 @@ export async function bootCanvas() {
 		renderTileChrome(entry.id);
 	}
 
-	/** Running sessions open their stream once their tile is on screen, not before. @param {TileEntry} entry */
+	/**
+	 * Running sessions open their stream once their tile is on screen, not before. A session another pi
+	 * writes is followed read-only instead.
+	 * @param {TileEntry} entry
+	 */
 	function openIfReady(entry) {
 		if (entry.dormant || !entry.mounted || entry.opened || !entry.visible) return;
 		entry.opened = true;
-		entry.pane.openSessionId(entry.id);
+		if (entry.elsewhere && entry.path) entry.pane.followElsewhere(entry.id, entry.path, entry.elsewhere);
+		else entry.pane.openSessionId(entry.id);
 	}
 
 	/**
@@ -572,9 +621,11 @@ export async function bootCanvas() {
 	}
 
 	/**
-	 * @param {{ id: string, path: string | null, title: string, rect: import("./canvas/camera.js").Rect, running: boolean }} spec
+	 * `elsewhere`: another pi is in the middle of the session, so the tile follows it instead of attaching it.
+	 * `forkLabel`: the host's name for the pfs fork the session ran in, kept for titles.
+	 * @param {{ id: string, path: string | null, title: string, rect: import("./canvas/camera.js").Rect, running: boolean, elsewhere?: any, forkLabel?: string | null }} spec
 	 */
-	function addSessionTile({ id, path, title, rect, running }) {
+	function addSessionTile({ id, path, title, rect, running, elsewhere = null, forkLabel = null }) {
 		const existing = entries.get(id);
 		if (existing) return existing;
 		const tile = canvas.tiles.addTile({ id, rect, title });
@@ -605,7 +656,9 @@ export async function bootCanvas() {
 			pane: /** @type {any} */ (null),
 			controls: { btnModel, btnThinking, lblModel, lblThinking },
 			pill,
-			dormant: !running,
+			dormant: !running && !elsewhere,
+			elsewhere: running ? null : elsewhere,
+			forkLabel,
 			focusWhenReady: false,
 			mounted: false,
 			opened: false,
@@ -675,14 +728,17 @@ export async function bootCanvas() {
 	}
 
 	/**
-	 * Sessions this host runs. The active list also names sessions another pi is in the middle of
-	 * (isRunning false, with `elsewhere`): those only come onto the canvas when picked in a launcher.
+	 * Sessions this host runs (isRunning) and sessions another pi is in the middle of (isRunning false,
+	 * with `elsewhere`), which tiles follow read-only.
 	 * @returns {Promise<any[]>}
 	 */
 	async function runningSessions() {
 		const data = await api.getJson("/api/active-sessions");
-		return Array.isArray(data?.sessions) ? data.sessions.filter((/** @type {any} */ session) => session?.isRunning === true) : [];
+		return Array.isArray(data?.sessions) ? data.sessions.filter((/** @type {any} */ session) => session?.isRunning === true || followable(session)) : [];
 	}
+
+	/** @param {any} session */
+	const elsewhereOf = (session) => (followable(session) ? session.elsewhere : null);
 
 	/** Puts every running session that isn't on the canvas yet on it (a first visit to a host's empty map). */
 	async function addRunningSessions({ reveal = false } = {}) {
@@ -696,7 +752,9 @@ export async function bootCanvas() {
 		const fresh = sessions.filter((session) => typeof session?.id === "string" && !entries.has(session.id));
 		let last = null;
 		for (const session of fresh) {
-			last = addSessionTile({ id: session.id, path: session.path ?? null, title: sessionTitle(session), rect: nextFreeSlot(canvas.tiles.rects()), running: true });
+			const rect = nextFreeSlot(canvas.tiles.rects());
+			const spec = { id: session.id, path: session.path ?? null, title: sessionTitle(session), rect, running: session.isRunning === true };
+			last = addSessionTile({ ...spec, elsewhere: elsewhereOf(session), forkLabel: session.forkLabel ?? null });
 		}
 		if (fresh.length > 0) scheduleSave();
 		if (reveal && last) {
@@ -722,9 +780,13 @@ export async function bootCanvas() {
 			),
 			runningSessions().catch(() => []),
 		]);
-		const runningIds = new Set(running.map((session) => session.id));
+		const activeById = new Map(running.map((session) => [session.id, session]));
 		for (const tile of layout.tiles) {
-			addSessionTile({ id: tile.sessionId, path: tile.path, title: tile.title ?? tile.sessionId.slice(0, 8), rect: tile, running: runningIds.has(tile.sessionId) });
+			const active = activeById.get(tile.sessionId);
+			const title = tile.title ?? tile.sessionId.slice(0, 8);
+			const path = tile.path ?? active?.path ?? null;
+			const spec = { id: tile.sessionId, path, title, rect: tile, running: active?.isRunning === true };
+			addSessionTile({ ...spec, elsewhere: elsewhereOf(active), forkLabel: active?.forkLabel ?? null });
 		}
 		if (layout.tiles.length === 0) await addRunningSessions();
 	}

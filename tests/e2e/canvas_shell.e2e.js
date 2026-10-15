@@ -1,7 +1,7 @@
 // The canvas shell (?ui=canvas) against an isolated pi-web server with two sessions on disk.
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -318,41 +318,99 @@ test("tiles keep the newest entries of a long transcript and page back on reques
 	}
 });
 
-test("a session another pi is writing doesn't land on the canvas as if this host ran it", async ({ page }) => {
+/** `ps` lists it as pi (pi titles its own process that way) and it leads its own process group, like a pfs run. */
+function spawnFakePi(cwd) {
+	return spawn("node", ["-e", 'process.title = "pi"; setInterval(() => {}, 1000);'], { cwd, stdio: "ignore", detached: true });
+}
+
+const exited = (proc) => (proc.exitCode !== null || proc.signalCode !== null ? Promise.resolve() : new Promise((resolve) => proc.once("exit", resolve)));
+
+/** A session in the middle of a turn: asked, then a bash call nobody answered yet. */
+async function writeMidTurnSession(root, cwd, id, prompt) {
+	const dir = join(root, "agent", "sessions", `--${cwd.replace(/^\//, "").replace(/[/\\:]/g, "-")}--`);
+	await mkdir(dir, { recursive: true });
+	const path = join(dir, `2026-10-15T10-00-00-000Z_${id}.jsonl`);
+	const now = new Date().toISOString();
+	const call = { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "for i in 1 2 3; do echo $i; sleep 1; done" } };
+	const lines = [
+		{ type: "session", version: 3, id, timestamp: now, cwd },
+		{ type: "message", id: "u1", parentId: null, timestamp: now, message: { role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() } },
+		{
+			type: "message",
+			id: "a1",
+			parentId: "u1",
+			timestamp: now,
+			message: { role: "assistant", content: [call], api: "anthropic-messages", provider: "anthropic", model: "m", usage, stopReason: "toolUse", timestamp: Date.now() },
+		},
+	];
+	await writeFile(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+	return path;
+}
+
+const toolResultLine = (id, parentId, text) =>
+	`${JSON.stringify({ type: "message", id, parentId, timestamp: new Date().toISOString(), message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text }], isError: false, timestamp: Date.now() } })}\n`;
+
+test("a session another pi is writing lands as a tile that follows it, keeps following after a trip offscreen, and stops it from the tile menu", async ({ page }) => {
 	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
 	const cwd = join(root, "repo");
 	await mkdir(cwd);
 	const path1 = await writeSessionFile(root, cwd, S1, "hello from disk", "hi there");
-	const path2 = await writeSessionFile(root, cwd, S2, "second session", "reply two");
-	const port = await freePort();
-	const base = `http://127.0.0.1:${port}`;
-	const server = await startServer(root, port);
+	const writer = spawnFakePi(cwd);
+	let server = null;
 	try {
+		// written after the writer started, the way its own session file would be
+		await new Promise((resolve) => setTimeout(resolve, 1_200));
+		const path2 = await writeMidTurnSession(root, cwd, S2, "count slowly");
+		const port = await freePort();
+		const base = `http://127.0.0.1:${port}`;
+		server = await startServer(root, port);
 		await page.setViewportSize({ width: 1440, height: 900 });
-		await page.goto(`${base}/?ui=phone`);
+
+		// a first visit lands what's running: here, only the session the other pi is in the middle of
+		await page.goto(`${base}/?ui=canvas&suspendMs=150`);
+		const t = tile(page, S2);
+		await expect(t.locator(".user-msg")).toHaveText("count slowly");
+		await expect(page.locator(".cv-tile")).toHaveCount(1);
+		await expect(t.locator(".cv-pill")).toHaveText("elsewhere");
+		await expect(t).toHaveClass(/cv-working/);
+		await expect(t.locator("textarea")).toBeDisabled();
+		await expect(t.locator(".footer-line-1")).toContainText(`running elsewhere (pi ${writer.pid})`);
+		await appendFile(path2, toolResultLine("t1", "a1", "1\n2\n3"));
+		await expect(t.locator(".tool-box")).toContainText("1\n2\n3");
+
+		// offscreen it lets go of its stream; a status change on the host meanwhile must not turn it dormant
+		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: -100_000, y: 0, scale: 0.6 }));
+		await expect(t.locator(".cv-pill")).toHaveText("offscreen");
 		await page.evaluate(async (resumeSessionPath) => {
 			const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
 			const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, resumeSessionPath }) });
 			if (!res.ok) throw new Error(`start failed: ${res.status}`);
 		}, path1);
-		// the active list also names sessions a pi outside pi-web is in the middle of (isRunning false)
-		await page.route("**/api/active-sessions", async (route) => {
-			const response = await route.fetch();
-			const body = await response.json();
-			const lastWrite = new Date().toISOString();
-			const elsewhere = { state: "running", turn: "running_tools", lastWrite, writers: [4242] };
-			body.sessions.push({ id: S2, path: path2, cwd, firstMessage: "second session", created: lastWrite, modified: lastWrite, messageCount: 2, isRunning: false, elsewhere });
-			await route.fulfill({ response, json: body });
-		});
+		await expect.poll(() => page.evaluate((id) => window.__canvas.status().has(id), S1)).toBe(true);
+		await page.evaluate(() => window.__canvas.canvas.viewport.setCamera({ x: 48, y: 64, scale: 0.6 }));
+		await expect(t.locator(".cv-pill")).toHaveText("elsewhere");
+		await expect(t.locator(".tool-box")).toContainText("1\n2\n3");
 
-		await page.goto(`${base}/?ui=canvas`);
-		await expect(tile(page, S1).locator(".user-msg")).toHaveText("hello from disk");
-		await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
-		await expect(page.locator(".cv-tile")).toHaveCount(1);
-		await expect(tile(page, S2)).toHaveCount(0);
+		// the tile menu stops the pi writing it, then continues the session here
+		await t.locator(".cv-ctl-more").click();
+		await expect(page.locator(".menu-item .primary")).toHaveText(["Stop the pi writing it", "Remove from canvas"]);
+		await page.locator(".menu-item", { hasText: "Stop the pi writing it" }).click();
+		await exited(writer);
+		await expect(t.locator(".notice-text").last()).toContainText(`Stopped pi (pid ${writer.pid})`);
+		await expect(t.locator(".cv-pill")).toHaveText("stopped");
+		await expect(t.locator("textarea")).toBeEnabled();
+		await t.locator(".cv-ctl-more").click();
+		await page.locator(".menu-item", { hasText: "Continue here" }).click();
+		await expect(t.locator(".cv-pill")).toHaveText(/idle|viewing/);
+		await expect.poll(() => page.evaluate(async (id) => (await (await fetch("/api/active-sessions")).json()).sessions.find((s) => s.id === id)?.isRunning, S2)).toBe(true);
+		await expect(t.locator(".user-msg")).toHaveText("count slowly");
+		await expect(t.locator(".tool-box")).toHaveCount(1);
 	} finally {
-		server.kill("SIGTERM");
-		await new Promise((resolve) => server.once("exit", resolve));
+		if (writer.exitCode === null && writer.signalCode === null) writer.kill("SIGKILL");
+		if (server) {
+			server.kill("SIGTERM");
+			await exited(server);
+		}
 		await rm(root, { recursive: true, force: true });
 	}
 });
