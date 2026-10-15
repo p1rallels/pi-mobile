@@ -1,4 +1,4 @@
-import { fauxProvider, type FauxProviderHandle, type FauxResponseStep } from "@earendil-works/pi-ai";
+import { fauxProvider, type FauxProviderHandle, type FauxResponseStep, type RegisterFauxProviderOptions } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,9 +11,15 @@ export interface FauxSession {
 	sessionId: string;
 	clientId: string;
 	events: SseEvent[];
+	frames: SseFrame[];
 	faux: FauxProviderHandle;
 	modelRuntime: ModelRuntime;
 	agentDir: string;
+}
+
+export interface SseFrame {
+	event: SseEvent;
+	id?: string;
 }
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -43,11 +49,11 @@ type RuntimeOptions = Omit<NonNullable<ConstructorParameters<typeof PiWebRuntime
 
 export async function startFauxSession(
 	responses: FauxResponseStep[] = [],
-	options: { settings?: Record<string, unknown>; runtime?: RuntimeOptions } = {},
+	options: { settings?: Record<string, unknown>; runtime?: RuntimeOptions; faux?: RegisterFauxProviderOptions } = {},
 ): Promise<FauxSession> {
 	const agentDir = await makeAgentDir(options.settings);
 	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
-	const faux = fauxProvider();
+	const faux = fauxProvider(options.faux);
 	modelRuntime.registerNativeProvider(faux.provider);
 	await modelRuntime.setRuntimeApiKey(faux.provider.id, "test-key");
 	faux.setResponses(responses);
@@ -57,8 +63,13 @@ export async function startFauxSession(
 	const clientId = "client-1";
 	const { sessionId } = await runtime.startSession({ cwd: process.cwd(), clientId });
 	const events: SseEvent[] = [];
-	runtime.addClient(sessionId, { connectionId: "connection-1", clientId, send: (event) => events.push(event), close() {} });
-	return { runtime, sessionId, clientId, events, faux, modelRuntime, agentDir };
+	const frames: SseFrame[] = [];
+	const send = (event: SseEvent, id?: string) => {
+		events.push(event);
+		frames.push({ event, id });
+	};
+	runtime.addClient(sessionId, { connectionId: "connection-1", clientId, send, close() {} });
+	return { runtime, sessionId, clientId, events, frames, faux, modelRuntime, agentDir };
 }
 
 export async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {

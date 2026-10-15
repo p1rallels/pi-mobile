@@ -16,8 +16,9 @@ import { existsSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
+import { EMPTY_LIVE_SNAPSHOT, reduceLiveSnapshot, type LiveSnapshot } from "./live-snapshot.ts";
 import { createSessionIndex, type SessionSummary } from "./session-index.ts";
-import { transcriptPage, type TranscriptPage } from "./transcript.ts";
+import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
 import { TripwireService } from "./tripwire.ts";
 import { toWireEvent } from "./wire-events.ts";
 import type {
@@ -26,7 +27,9 @@ import type {
 	ApiCreateSessionRequest,
 	ApiPromptDisposition,
 	ApiModelInfo,
+	ApiResyncTranscript,
 	ApiSessionState,
+	ApiSessionStatus,
 	ApiSessionSummary,
 	ClientRole,
 	ApiSessionPatch,
@@ -38,9 +41,12 @@ import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from ".
 export interface SessionClient {
 	connectionId: string;
 	clientId: string;
-	send(event: SseEvent): void;
+	/** `id` is the entry cursor a reconnect can resume from. */
+	send(event: SseEvent, id?: string): void;
 	close(): void;
 }
+
+export type InitSseEvent = Extract<SseEvent, { type: "init" }>;
 
 interface RunningSession {
 	session: AgentSession;
@@ -55,6 +61,9 @@ interface RunningSession {
 	unsubscribe: (() => void) | null;
 	tripwireAllowedRoots: Set<string>;
 	tripwireStopRequested: boolean;
+	live: LiveSnapshot;
+	outbox: SseEvent[];
+	flushScheduled: boolean;
 }
 
 interface PiWebRuntimeOptions {
@@ -195,11 +204,22 @@ function safeQueuedMessagesSnapshot(session: AgentSession): ApiSessionState["que
 	}
 }
 
+const INITIAL_TRANSCRIPT_LIMITS = { maxMessages: INITIAL_TRANSCRIPT_MESSAGES, maxBytes: INITIAL_TRANSCRIPT_BYTES };
+
 function buildState(session: AgentSession, cwd: string): ApiSessionState {
-	const transcript = transcriptPage(session.sessionManager.getBranch(), {
-		maxMessages: INITIAL_TRANSCRIPT_MESSAGES,
-		maxBytes: INITIAL_TRANSCRIPT_BYTES,
-	});
+	const transcript = transcriptPage(session.sessionManager.getBranch(), INITIAL_TRANSCRIPT_LIMITS);
+	return { ...buildStatus(session, cwd), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
+}
+
+function buildResyncTranscript(session: AgentSession, since: string | undefined): ApiResyncTranscript {
+	const branch = session.sessionManager.getBranch();
+	const missing = since === undefined ? null : transcriptSince(branch, since, INITIAL_TRANSCRIPT_LIMITS);
+	if (since !== undefined && missing !== null) return { mode: "append", since, messages: missing };
+	const page = transcriptPage(branch, INITIAL_TRANSCRIPT_LIMITS);
+	return { mode: "replace", messages: page.messages, hasOlder: page.hasOlder };
+}
+
+function buildStatus(session: AgentSession, cwd: string): ApiSessionStatus {
 	return {
 		sessionId: session.sessionId,
 		cwd,
@@ -216,8 +236,6 @@ function buildState(session: AgentSession, cwd: string): ApiSessionState {
 		queuedMessages: safeQueuedMessagesSnapshot(session),
 		stats: safeStatsSnapshot(session),
 		contextUsage: safeContextUsageSnapshot(session),
-		messages: transcript.messages,
-		hasOlderMessages: transcript.hasOlder,
 	};
 }
 
@@ -618,6 +636,35 @@ export class PiWebRuntime {
 		return this.getSessionRole(sessionId, client.clientId);
 	}
 
+	/**
+	 * Registers a viewer and builds its init event in one synchronous step, after delivering queued events
+	 * to the existing viewers, so the snapshot and the live stream that follows neither overlap nor leave a gap.
+	 */
+	connectClient(sessionId: string, client: SessionClient, since?: string): { init: InitSseEvent; cursor: string | undefined } {
+		const runtime = this.runningById.get(sessionId);
+		if (!runtime) {
+			throw new Error("session_not_running");
+		}
+		this.flushOutbox(runtime);
+		const transcript = buildResyncTranscript(runtime.session, since);
+		const cursor = runtime.session.sessionManager.getLeafId();
+		const live = runtime.live;
+		const { role, controllerClientId } = this.addClient(sessionId, client);
+		return {
+			init: {
+				type: "init",
+				state: buildStatus(runtime.session, runtime.cwd),
+				transcript,
+				live,
+				cursor,
+				yourClientId: client.clientId,
+				controllerClientId,
+				role,
+			},
+			cursor: cursor ?? undefined,
+		};
+	}
+
 	removeClient(sessionId: string, connectionId: string): void {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) return;
@@ -852,6 +899,7 @@ export class PiWebRuntime {
 	private disposeRuntime(runtime: RunningSession): void {
 		const sessionId = runtime.session.sessionId;
 		this.cancelControllerHandoff(runtime);
+		this.flushOutbox(runtime);
 		for (const client of runtime.clients.values()) {
 			client.close();
 		}
@@ -1040,10 +1088,14 @@ export class PiWebRuntime {
 			unsubscribe: null,
 			tripwireAllowedRoots,
 			tripwireStopRequested: false,
+			live: EMPTY_LIVE_SNAPSHOT,
+			outbox: [],
+			flushScheduled: false,
 		};
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			runtime.modifiedAtMs = Date.now();
+			runtime.live = reduceLiveSnapshot(runtime.live, event);
 			const inspection = this.tripwireService.inspectEvent(
 				{
 					sessionId,
@@ -1088,14 +1140,30 @@ export class PiWebRuntime {
 		}
 	}
 
+	/**
+	 * Queues an event for every viewer. Delivery waits for the emitting call stack to unwind because pi
+	 * persists a message only after its message_end listeners ran, and the frame should carry its entry id.
+	 */
 	private broadcast(sessionId: string, event: SseEvent): void {
 		const runtime = this.runningById.get(sessionId);
 		if (!runtime) return;
-		for (const client of runtime.clients.values()) {
-			try {
-				client.send(event);
-			} catch {
-				// ignore broken clients
+		runtime.outbox.push(event);
+		if (runtime.flushScheduled) return;
+		runtime.flushScheduled = true;
+		queueMicrotask(() => this.flushOutbox(runtime));
+	}
+
+	private flushOutbox(runtime: RunningSession): void {
+		runtime.flushScheduled = false;
+		for (const queued of runtime.outbox.splice(0)) {
+			const entryId = queued.type === "agent_event" ? announcedEntryId(runtime.session.sessionManager, queued.event) : undefined;
+			const event: SseEvent = entryId && queued.type === "agent_event" ? { ...queued, entryId } : queued;
+			for (const client of runtime.clients.values()) {
+				try {
+					client.send(event, entryId);
+				} catch {
+					// ignore broken clients
+				}
 			}
 		}
 	}

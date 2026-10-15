@@ -8,6 +8,7 @@ import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
 import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
+import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PING_INTERVAL_MS } from "./sse.ts";
 import type {
 	ApiActiveSessionsResponse,
 	ApiAddRepoRequest,
@@ -466,10 +467,11 @@ function createSseStream(signal: AbortSignal) {
 	const stream = new ReadableStream<Uint8Array>({
 		start(c) {
 			controller = c;
+			controller.enqueue(encoder.encode(sseRetryFrame()));
 			keepAlive = setInterval(() => {
 				if (!controller) return;
-				controller.enqueue(encoder.encode(`: ping\n\n`));
-			}, 5_000);
+				controller.enqueue(encoder.encode(ssePingFrame()));
+			}, SSE_PING_INTERVAL_MS);
 		},
 		cancel() {
 			controller = null;
@@ -490,9 +492,9 @@ function createSseStream(signal: AbortSignal) {
 		keepAlive = null;
 	};
 
-	const send = (event: SseEvent) => {
+	const send = (event: SseEvent, id?: string) => {
 		if (!controller) return;
-		controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+		controller.enqueue(encoder.encode(sseEventFrame(event, id)));
 	};
 
 	signal.addEventListener("abort", close, { once: true });
@@ -1082,12 +1084,6 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		if (req.method === "GET" && action === "events") {
 			const client = resolveClientCookie(req);
 			if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
-			let state: ApiSessionState;
-			try {
-				state = runtime.getSessionState(sessionId);
-			} catch {
-				return errorResponse("Session not running", 404);
-			}
 
 			const stream = createSseStream(req.signal);
 			const clientSession: SessionClient = {
@@ -1097,28 +1093,16 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				close: stream.close,
 			};
 
-			let role: ReturnType<typeof runtime.getSessionRole>["role"];
-			let controllerClientId: string | null;
+			const since = resolveResumeCursor(req.headers.get("last-event-id"), url.searchParams.get("since"));
 			try {
-				runtime.addClient(sessionId, clientSession);
-				const resolvedRole = runtime.getSessionRole(sessionId, client.clientId);
-				role = resolvedRole.role;
-				controllerClientId = resolvedRole.controllerClientId;
+				const { init, cursor } = runtime.connectClient(sessionId, clientSession, since);
+				stream.send(init, cursor);
 			} catch (error) {
 				stream.close();
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "too_many_clients") return errorResponse("Too many live viewers for this session", 429);
 				return errorResponse("Session not running", 404);
 			}
-
-			const init: SseEvent = {
-				type: "init",
-				state,
-				yourClientId: client.clientId,
-				controllerClientId,
-				role,
-			};
-			stream.send(init);
 
 			req.signal.addEventListener(
 				"abort",

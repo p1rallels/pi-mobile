@@ -1,4 +1,5 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { LiveSnapshot } from "./live-snapshot.ts";
 import type { TranscriptMessage, TranscriptPage } from "./transcript.ts";
 
 export type ClientRole = "controller" | "viewer";
@@ -96,7 +97,7 @@ export interface ApiQueuedMessages {
 	followUp: string[];
 }
 
-export interface ApiSessionState {
+export interface ApiSessionStatus {
 	sessionId: string;
 	cwd: string;
 	sessionFile: string | null;
@@ -112,11 +113,21 @@ export interface ApiSessionState {
 	queuedMessages: ApiQueuedMessages;
 	stats: ApiSessionStats | null;
 	contextUsage: ApiContextUsage | null;
+}
+
+export interface ApiSessionState extends ApiSessionStatus {
 	messages: TranscriptMessage[];
 	hasOlderMessages: boolean;
 }
 
 export type ApiTranscriptPageResponse = TranscriptPage;
+
+export type ApiLiveSnapshot = LiveSnapshot;
+
+/** What a connecting viewer is missing: everything after its cursor, or a fresh last page. */
+export type ApiResyncTranscript =
+	| { mode: "replace"; messages: TranscriptMessage[]; hasOlder: boolean }
+	| { mode: "append"; since: string; messages: TranscriptMessage[] };
 
 export type ApiPromptDisposition = "started" | "queued" | "handled";
 
@@ -191,12 +202,15 @@ export interface ApiReleaseRequest {
 export type SseEvent =
 	| {
 			type: "init";
-			state: ApiSessionState;
+			state: ApiSessionStatus;
+			transcript: ApiResyncTranscript;
+			live: ApiLiveSnapshot;
+			cursor: string | null;
 			yourClientId: string;
 			controllerClientId: string | null;
 			role: ClientRole;
 	  }
-	| { type: "agent_event"; event: JsonAgentSessionEvent }
+	| { type: "agent_event"; event: JsonAgentSessionEvent; entryId?: string }
 	| { type: "tripwire_alert"; alert: ApiTripwireAlert }
 	| { type: "state_patch"; patch: ApiSessionPatch }
 	| { type: "command_error"; command: ApiCommandRequest["type"]; message: string }

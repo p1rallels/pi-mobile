@@ -61,19 +61,32 @@ async function writeSessionFile(root: string, cwd: string): Promise<{ path: stri
 	return { path, id };
 }
 
-async function readInit(url: string, cookie: string): Promise<{ status: number; init?: { state: { messages: Array<{ role: string; entryId: string }> } } }> {
+interface InitFrame {
+	id: string | null;
+	init: {
+		cursor: string | null;
+		transcript: { mode: "replace" | "append"; since?: string; messages: Array<{ role: string; entryId: string }> };
+	};
+}
+
+async function readInit(url: string, cookie: string, lastEventId?: string): Promise<{ status: number } & Partial<InitFrame>> {
 	const controller = new AbortController();
-	const res = await fetch(url, { headers: { cookie }, signal: controller.signal });
+	const headers: Record<string, string> = lastEventId ? { cookie, "last-event-id": lastEventId } : { cookie };
+	const res = await fetch(url, { headers, signal: controller.signal });
 	if (!res.ok || !res.body) return { status: res.status };
 	const reader = res.body.getReader();
 	let buffer = "";
-	while (!buffer.includes("\n\n")) {
+	const dataFrame = () => buffer.split("\n\n").find((frame) => frame.includes("data: "));
+	while (!dataFrame() || !buffer.endsWith("\n\n")) {
 		const { value, done } = await reader.read();
 		if (done) break;
 		buffer += new TextDecoder().decode(value);
 	}
 	controller.abort();
-	return { status: res.status, init: JSON.parse(buffer.slice(buffer.indexOf("data: ") + 6, buffer.indexOf("\n\n"))) };
+	const lines = (dataFrame() ?? "").split("\n");
+	const id = lines.find((line) => line.startsWith("id: "))?.slice(4) ?? null;
+	const data = lines.find((line) => line.startsWith("data: "))?.slice(6) ?? "{}";
+	return { status: res.status, id, init: JSON.parse(data) };
 }
 
 describe("server sessions", () => {
@@ -109,8 +122,26 @@ describe("server sessions", () => {
 
 		await startServer(root, port);
 		expect((await readInit(`${base}/api/sessions/${id}/events`, cookie)).status).toBe(404);
-		const attached = await readInit(`${base}/api/sessions/${id}/events?path=${encodeURIComponent(path)}`, cookie);
+		const events = `${base}/api/sessions/${id}/events?path=${encodeURIComponent(path)}`;
+		const attached = await readInit(events, cookie);
 		expect(attached.status).toBe(200);
-		expect(attached.init?.state.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		const cursor = attached.init?.cursor ?? "";
+		expect(cursor).not.toBe("");
+		expect(attached.id).toBe(cursor);
+		expect(attached.init?.transcript.mode).toBe("replace");
+		expect(attached.init?.transcript.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+
+		const caughtUp = await readInit(events, cookie, cursor);
+		expect(caughtUp.init?.transcript).toEqual({ mode: "append", since: cursor, messages: [] });
+
+		const behind = await readInit(`${events}&since=u0000001`, cookie);
+		expect(behind.init?.transcript.mode).toBe("append");
+		expect(behind.init?.transcript.messages.map((message) => message.entryId)).toEqual(["a0000001"]);
+
+		const headerWins = await readInit(`${events}&since=u0000001`, cookie, cursor);
+		expect(headerWins.init?.transcript.messages).toEqual([]);
+
+		const unknown = await readInit(`${events}&since=gone0001`, cookie);
+		expect(unknown.init?.transcript.mode).toBe("replace");
 	});
 });

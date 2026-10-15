@@ -308,6 +308,10 @@ export function createSessionController({
 			role = event.role;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
 
+			if (event.transcript) {
+				activeState.messages = event.transcript.messages;
+				activeState.hasOlderMessages = Boolean(event.transcript.hasOlder);
+			}
 			const sameSession = renderedSessionId !== null && renderedSessionId === activeState.sessionId;
 			renderedSessionId = activeState.sessionId;
 			renderStateMessages(activeState.messages || [], { keepPosition: sameSession });
