@@ -203,7 +203,9 @@ Remote unlock has three windows:
 
 - an unlock session for read access (4 hours, `PI_WEB_FACEID_SESSION_MINUTES`)
 - prompts, aborts, settings and take over need a check within the last 60 minutes (`PI_WEB_FACEID_COMMAND_MINUTES`)
-- starting sessions, adding repos and releasing need a check within the last 10 minutes (`PI_WEB_FACEID_FRESH_MINUTES`)
+- starting sessions, adding repos and releasing need a check within the last 15 minutes (`PI_WEB_FACEID_FRESH_MINUTES`)
+
+The page asks when it loads, and again when you come back to it (tab, window or app) once the last check is older than the shortest of those windows, 15 minutes by default. Inside that window, switching away and back or reloading doesn't ask, and other tabs on the same browser count the same check. Phones and tablets cover the page while it's in the background so the app switcher doesn't show the session. After a cancelled check the page waits for Try again.
 
 If a control action says fresh Face ID / Touch ID is required, the browser prompts again, and a prompt that was refused goes back into the composer.
 

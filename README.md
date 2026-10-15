@@ -109,7 +109,7 @@ Do not open the same session in `pi-web` and the native `pi` CLI simultaneously.
 - Secure mode requires pi-web to bind to localhost behind a trusted local mTLS proxy.
 - Direct non-loopback binding is disabled by default. A Tailscale-only testing escape hatch requires `PI_WEB_ALLOW_DIRECT_TAILSCALE=1`.
 - First remote WebAuthn enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.
-- Non-loopback control actions require recent WebAuthn verification: within 60 minutes for prompts, aborts and take over (`PI_WEB_FACEID_COMMAND_MINUTES`), within 10 minutes for new sessions, repo changes and release (`PI_WEB_FACEID_FRESH_MINUTES`), inside a 4 hour Face ID session (`PI_WEB_FACEID_SESSION_MINUTES`).
+- Non-loopback control actions require recent WebAuthn verification: within 60 minutes for prompts, aborts and take over (`PI_WEB_FACEID_COMMAND_MINUTES`), within 15 minutes for new sessions, repo changes and release (`PI_WEB_FACEID_FRESH_MINUTES`), inside a 4 hour Face ID session (`PI_WEB_FACEID_SESSION_MINUTES`). The page asks again when you come back to it after the shortest of those windows, not on every tab or app switch.
 - Browser and Face ID sessions are HMAC-signed cookies keyed by `~/.pi-web/cookie-key` and, in secure mode, bound to the device certificate that received them. Restarts keep devices signed in; deleting the key signs every device out.
 - Browser responses ship with a strict CSP and related security headers.
 - The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS`, `PI_WEB_MAX_CLIENTS_PER_SESSION` and `PI_WEB_CLIENT_SESSIONS_PER_MINUTE` (browser session handshakes per client IP, default 20) if needed.

@@ -71,8 +71,8 @@ const FACEID_COOKIE = "pi_web_faceid";
 
 const CLIENT_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const FACEID_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_SESSION_MINUTES, 240, "PI_WEB_FACEID_SESSION_MINUTES");
-/** Starting sessions, adding repos and releasing need a recent Face ID check. */
-const FACEID_FRESH_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_FRESH_MINUTES, 10, "PI_WEB_FACEID_FRESH_MINUTES");
+/** Starting sessions, adding repos and releasing need a recent Face ID check; the browser asks again when you come back after this long. */
+const FACEID_FRESH_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_FRESH_MINUTES, 15, "PI_WEB_FACEID_FRESH_MINUTES");
 /** Prompts, aborts, settings and take over need a check within this window. */
 const FACEID_COMMAND_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_COMMAND_MINUTES, 60, "PI_WEB_FACEID_COMMAND_MINUTES");
 
@@ -301,7 +301,7 @@ Env:
   PI_WEB_CLIENT_SESSIONS_PER_MINUTE (browser session handshakes per client IP, default 20)
   PI_WEB_FACEID_SESSION_MINUTES (Face ID session length, default 240)
   PI_WEB_FACEID_COMMAND_MINUTES (Face ID age allowed for prompts and take over, default 60)
-  PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, default 10)
+  PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, and before the page asks again, default 15)
   PI_WEB_SECURE_MODE=1
   PI_WEB_DEVICE_REGISTRY
   PI_WEB_HOST_REGISTRY
@@ -668,6 +668,13 @@ function ensureTrustedRequest(req: Request, url: URL, requestProtocol: string): 
 	return null;
 }
 
+/** The Face ID check this browser passed for this host, if its cookie is live and was issued to this browser session. */
+function resolveBrowserFaceIdCheck(req: Request, url: URL, client: { clientId: string } | null): { verifiedAt: number } | null {
+	const session = resolveFaceIdCookie(req);
+	if (!client || !session || session.rpId !== url.hostname || session.clientId !== client.clientId) return null;
+	return session;
+}
+
 function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 	if (!isApiPath(url.pathname)) return null;
 	if (isFaceIdExemptPath(url.pathname)) return null;
@@ -675,10 +682,8 @@ function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 
 	const client = resolveClientCookie(req);
 	if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
-	const session = resolveFaceIdCookie(req);
-	if (!session || session.rpId !== url.hostname || session.clientId !== client.clientId) {
-		return errorResponse("Face ID verification required.", 401);
-	}
+	const session = resolveBrowserFaceIdCheck(req, url, client);
+	if (!session) return errorResponse("Face ID verification required.", 401);
 	const freshness = faceIdFreshnessFor(req.method, url.pathname);
 	if (freshness !== null && Date.now() - session.verifiedAt > freshness) {
 		return errorResponse("Fresh Face ID verification required.", 401);
@@ -805,7 +810,7 @@ const runtime = new PiWebRuntime({
 });
 runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
-const faceId = new FaceIdService();
+const faceId = new FaceIdService(join(getAgentDir(), "pi-web", "faceid-credentials.json"));
 const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));
 const revokedFaceIdTokens = new Map<string, number>();
 
@@ -1031,12 +1036,14 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 		if (req.method === "GET" && url.pathname === "/api/faceid/status") {
 			try {
 				const status = await faceId.status(url.hostname);
+				const check = resolveBrowserFaceIdCheck(req, url, resolveClientCookie(req));
 				const body = {
 					...status,
 					canRegister: canRegisterFaceId(url, status.credentialCount),
 					freshForSeconds: Math.floor(FACEID_FRESH_TTL_MS / 1000),
 					commandFreshForSeconds: Math.floor(FACEID_COMMAND_TTL_MS / 1000),
 					sessionForSeconds: Math.floor(FACEID_TTL_MS / 1000),
+					verifiedSecondsAgo: check ? Math.max(0, Math.floor((Date.now() - check.verifiedAt) / 1000)) : null,
 				};
 				return json(body, 200);
 			} catch (error) {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createCookieSigner } from "../src/signed-cookies.ts";
 import { sandboxServerEnv } from "./support/sandbox_env.js";
 
 const tempDirs: string[] = [];
@@ -68,5 +69,32 @@ describe("server auth", () => {
 
 		const forged = (await (await fetch(url, { method: "POST", headers: { cookie: `${cookie}x` } })).json()) as { clientId: string };
 		expect(forged.clientId).not.toBe(clientId);
+	});
+
+	test("face id status says how long ago this browser passed a check, and only for its own check", async () => {
+		const home = await mkdtemp(join(await realpath(tmpdir()), "pi-web-auth-"));
+		tempDirs.push(home);
+		const port = await freePort();
+		const base = `http://127.0.0.1:${String(port)}`;
+		await startServer(home, port);
+
+		const created = await fetch(`${base}/api/client`, { method: "POST" });
+		const clientCookie = created.headers.get("set-cookie")?.split(";")[0] ?? "";
+		const { clientId } = (await created.json()) as { clientId: string };
+		const signer = createCookieSigner(await readFile(join(home, "cookie-key")));
+		const checkCookie = (forClient: string, secondsAgo: number): string => {
+			const verifiedAt = Date.now() - secondsAgo * 1000;
+			const token = signer.sign({ kind: "faceid", clientId: forClient, rpId: "127.0.0.1", verifiedAt, exp: verifiedAt + 3_600_000, jti: crypto.randomUUID(), dev: null });
+			return `pi_web_faceid=${token}`;
+		};
+		const status = async (cookie: string) =>
+			(await (await fetch(`${base}/api/faceid/status`, { headers: { cookie } })).json()) as { freshForSeconds: number; verifiedSecondsAgo: number | null };
+
+		const mine = await status(`${clientCookie}; ${checkCookie(clientId, 125)}`);
+		expect(mine.freshForSeconds).toBe(15 * 60);
+		expect(mine.verifiedSecondsAgo).toBeGreaterThanOrEqual(125);
+		expect(mine.verifiedSecondsAgo).toBeLessThanOrEqual(127);
+		expect((await status(`${clientCookie}; ${checkCookie("another-browser", 5)}`)).verifiedSecondsAgo).toBeNull();
+		expect((await status(clientCookie)).verifiedSecondsAgo).toBeNull();
 	});
 });
