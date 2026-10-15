@@ -62,12 +62,12 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 		}
 	}
 
-	function dialogBody(request, card, errorEl) {
-		const submitValue = (value) => void answer(request, { value }, errorEl);
+	function dialogBody(request, card, onAnswer) {
+		const submitValue = (value) => onAnswer({ value });
 		const actions = el("div", "ext-dialog-actions");
 		const cancel = el("button", "ext-dialog-btn", "Cancel");
 		cancel.type = "button";
-		cancel.addEventListener("click", () => void answer(request, { cancelled: true }, errorEl));
+		cancel.addEventListener("click", () => onAnswer({ cancelled: true }));
 
 		if (request.method === "select") {
 			const list = el("div", "ext-dialog-options");
@@ -86,10 +86,10 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 			if (request.message) card.appendChild(el("div", "ext-dialog-message", request.message));
 			const no = el("button", "ext-dialog-btn", "No");
 			no.type = "button";
-			no.addEventListener("click", () => void answer(request, { confirmed: false }, errorEl));
+			no.addEventListener("click", () => onAnswer({ confirmed: false }));
 			const yes = el("button", "ext-dialog-btn primary", "Yes");
 			yes.type = "button";
-			yes.addEventListener("click", () => void answer(request, { confirmed: true }, errorEl));
+			yes.addEventListener("click", () => onAnswer({ confirmed: true }));
 			actions.append(no, yes);
 			return { actions, focus: yes };
 		}
@@ -137,7 +137,7 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 		card.setAttribute("aria-modal", "true");
 		card.appendChild(el("div", "ext-dialog-title", request.title || "Extension"));
 		const errorEl = el("div", "ext-dialog-error");
-		const { actions, focus } = dialogBody(request, card, errorEl);
+		const { actions, focus } = dialogBody(request, card, (response) => void answer(request, response, errorEl));
 		const meta = el("div", "ext-dialog-meta");
 		refreshMeta = () => {
 			const parts = [];
@@ -236,7 +236,37 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 		applyChrome(null);
 	}
 
+	let localCancel = null;
+
+	/** A dialog pi-web itself needs (e.g. project trust), drawn like an extension dialog but answered locally. */
+	function askLocal(request) {
+		localCancel?.();
+		return new Promise((resolve) => {
+			const localOverlay = el("div", "ext-dialog-overlay");
+			const card = el("div", "ext-dialog-card");
+			card.setAttribute("role", "dialog");
+			card.setAttribute("aria-modal", "true");
+			card.appendChild(el("div", "ext-dialog-title", request.title || ""));
+			if (request.method !== "confirm" && request.message) card.appendChild(el("div", "ext-dialog-message", request.message));
+			const finish = (response) => {
+				localOverlay.remove();
+				localCancel = null;
+				resolve(response);
+			};
+			const { actions, focus } = dialogBody(request, card, finish);
+			card.appendChild(actions);
+			localOverlay.appendChild(card);
+			document.body.appendChild(localOverlay);
+			localCancel = () => finish({ cancelled: true });
+			focus?.focus();
+		});
+	}
+
 	function cancelShown() {
+		if (localCancel) {
+			localCancel();
+			return true;
+		}
 		const request = dialogs.find((dialog) => dialog.id === shownId);
 		if (!request) return false;
 		const errorEl = overlay?.querySelector(".ext-dialog-error");
@@ -244,5 +274,5 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 		return true;
 	}
 
-	return { applySnapshot, handleEvent, reset, isOpen: () => shownId !== null, cancelShown };
+	return { applySnapshot, handleEvent, reset, askLocal, isOpen: () => shownId !== null || localCancel !== null, cancelShown };
 }

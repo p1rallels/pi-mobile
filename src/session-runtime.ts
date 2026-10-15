@@ -3,6 +3,7 @@ import {
 	DefaultResourceLoader,
 	getAgentDir,
 	ModelRuntime,
+	ProjectTrustStore,
 	SessionManager,
 	SettingsManager,
 	type AgentSession,
@@ -18,6 +19,16 @@ import { randomUUID } from "node:crypto";
 import { dirname, extname, join, resolve } from "node:path";
 import { createExtensionUiBridge, type ApiExtensionUiResponse, type ExtensionUiBridge } from "./extension-ui.ts";
 import { EMPTY_LIVE_SNAPSHOT, reduceLiveSnapshot, type LiveSnapshot } from "./live-snapshot.ts";
+import {
+	applyProjectTrustChoice,
+	DEFAULT_PROJECT_TRUST_MODE,
+	ProjectTrustRequiredError,
+	projectTrustPrompt,
+	resolveProjectTrust,
+	type ApiProjectTrust,
+	type ApiProjectTrustChoice,
+	type ProjectTrustMode,
+} from "./project-trust.ts";
 import { createSessionIndex, type SessionSummary } from "./session-index.ts";
 import { announcedEntryId, transcriptPage, transcriptSince, type TranscriptPage } from "./transcript.ts";
 import { TripwireService } from "./tripwire.ts";
@@ -52,6 +63,7 @@ export type InitSseEvent = Extract<SseEvent, { type: "init" }>;
 interface RunningSession {
 	session: AgentSession;
 	ui: ExtensionUiBridge;
+	projectTrust: ApiProjectTrust;
 	cwd: string;
 	sessionFile: string | null;
 	createdAtMs: number;
@@ -74,6 +86,7 @@ interface PiWebRuntimeOptions {
 	idleSessionTtlMs?: number;
 	controllerGraceMs?: number;
 	modelRuntime?: ModelRuntime;
+	projectTrustMode?: ProjectTrustMode;
 }
 
 interface DetachedSession {
@@ -81,6 +94,8 @@ interface DetachedSession {
 	size: number;
 	mtimeMs: number;
 	detachedAtMs: number;
+	/** The trust decision the session ran with, so an unanswered "ask" never comes back on re-attach. */
+	projectTrusted?: boolean;
 }
 
 const DETACHED_RECORD_TTL_MS = 30 * 24 * 60 * 60_000;
@@ -90,9 +105,20 @@ function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
 	if (!Array.isArray(raw)) return [];
 	return raw.flatMap((record): Array<[string, DetachedSession]> => {
 		if (!record || typeof record !== "object") return [];
-		const { path, sessionId, size, mtimeMs, detachedAtMs } = record as Record<string, unknown>;
+		const { path, sessionId, size, mtimeMs, detachedAtMs, projectTrusted } = record as Record<string, unknown>;
 		if (typeof path !== "string" || typeof sessionId !== "string" || typeof size !== "number" || typeof mtimeMs !== "number") return [];
-		return [[path, { sessionId, size, mtimeMs, detachedAtMs: typeof detachedAtMs === "number" ? detachedAtMs : Date.now() }]];
+		return [
+			[
+				path,
+				{
+					sessionId,
+					size,
+					mtimeMs,
+					detachedAtMs: typeof detachedAtMs === "number" ? detachedAtMs : Date.now(),
+					...(typeof projectTrusted === "boolean" ? { projectTrusted } : {}),
+				},
+			],
+		];
 	});
 }
 
@@ -208,9 +234,9 @@ function safeQueuedMessagesSnapshot(session: AgentSession): ApiSessionState["que
 
 const INITIAL_TRANSCRIPT_LIMITS = { maxMessages: INITIAL_TRANSCRIPT_MESSAGES, maxBytes: INITIAL_TRANSCRIPT_BYTES };
 
-function buildState(session: AgentSession, cwd: string): ApiSessionState {
+function buildState(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust): ApiSessionState {
 	const transcript = transcriptPage(session.sessionManager.getBranch(), INITIAL_TRANSCRIPT_LIMITS);
-	return { ...buildStatus(session, cwd), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
+	return { ...buildStatus(session, cwd, projectTrust), messages: transcript.messages, hasOlderMessages: transcript.hasOlder };
 }
 
 function buildResyncTranscript(session: AgentSession, since: string | undefined): ApiResyncTranscript {
@@ -221,9 +247,10 @@ function buildResyncTranscript(session: AgentSession, since: string | undefined)
 	return { mode: "replace", messages: page.messages, hasOlder: page.hasOlder };
 }
 
-function buildStatus(session: AgentSession, cwd: string): ApiSessionStatus {
+function buildStatus(session: AgentSession, cwd: string, projectTrust: ApiProjectTrust): ApiSessionStatus {
 	return {
 		sessionId: session.sessionId,
+		projectTrust,
 		cwd,
 		sessionFile: session.sessionFile ?? null,
 		sessionName: session.sessionName,
@@ -361,12 +388,15 @@ export class PiWebRuntime {
 	private maxClientsPerSession: number;
 	private idleSessionTtlMs: number;
 	private controllerGraceMs: number;
+	private projectTrustMode: ProjectTrustMode;
+	private trustStore = new ProjectTrustStore(this.agentDir);
 
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.maxRunningSessions = options.maxRunningSessions ?? 24;
 		this.maxClientsPerSession = options.maxClientsPerSession ?? 8;
 		this.idleSessionTtlMs = options.idleSessionTtlMs ?? DEFAULT_IDLE_SESSION_TTL_MS;
 		this.controllerGraceMs = options.controllerGraceMs ?? DEFAULT_CONTROLLER_GRACE_MS;
+		this.projectTrustMode = options.projectTrustMode ?? DEFAULT_PROJECT_TRUST_MODE;
 		this.modelRuntimePromise = options.modelRuntime
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
@@ -395,8 +425,24 @@ export class PiWebRuntime {
 		return modelRuntime;
 	}
 
-	private async createRuntimeSession(cwd: string, sessionManager: SessionManager): Promise<{ session: AgentSession; ui: ExtensionUiBridge }> {
-		const settingsManager = SettingsManager.create(cwd, this.agentDir);
+	/**
+	 * trust.json first, then PI_WEB_PROJECT_TRUST. A re-attach reuses the decision the session ran with
+	 * instead of asking again; "ask" without an answer is reported so the page can prompt and retry.
+	 */
+	private decideProjectTrust(cwd: string, choice?: ApiProjectTrustChoice, restored?: boolean): ApiProjectTrust {
+		const resolved = resolveProjectTrust(cwd, this.trustStore, this.projectTrustMode);
+		if (resolved) return resolved;
+		if (restored !== undefined) return { trusted: restored, gated: true, source: "restored" };
+		if (choice) return applyProjectTrustChoice(cwd, choice, this.trustStore);
+		throw new ProjectTrustRequiredError(projectTrustPrompt(cwd));
+	}
+
+	private async createRuntimeSession(
+		cwd: string,
+		sessionManager: SessionManager,
+		projectTrust: ApiProjectTrust,
+	): Promise<{ session: AgentSession; ui: ExtensionUiBridge }> {
+		const settingsManager = SettingsManager.create(cwd, this.agentDir, { projectTrusted: projectTrust.trusted });
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir: this.agentDir,
@@ -602,7 +648,7 @@ export class PiWebRuntime {
 		if (!runtime) {
 			throw new Error("session_not_running");
 		}
-		return buildState(runtime.session, runtime.cwd);
+		return buildState(runtime.session, runtime.cwd, runtime.projectTrust);
 	}
 
 	getTranscriptPage(sessionId: string, request: { before?: string; limit?: number }): TranscriptPage {
@@ -668,7 +714,7 @@ export class PiWebRuntime {
 		return {
 			init: {
 				type: "init",
-				state: buildStatus(runtime.session, runtime.cwd),
+				state: buildStatus(runtime.session, runtime.cwd, runtime.projectTrust),
 				transcript,
 				live,
 				ui: runtime.ui.snapshot(),
@@ -724,16 +770,17 @@ export class PiWebRuntime {
 		const clientId = request.clientId ?? randomUUID();
 
 		if (request.resumeSessionPath) {
-			const runtime = await this.resumeSession(this.assertAllowedResumePath(request.resumeSessionPath), clientId);
+			const runtime = await this.resumeSession(this.assertAllowedResumePath(request.resumeSessionPath), clientId, { choice: request.projectTrust });
 			return { sessionId: runtime.session.sessionId };
 		}
 
 		const cwd = await this.assertAllowedCwd(request.cwd ?? process.cwd());
+		const projectTrust = this.decideProjectTrust(cwd, request.projectTrust);
 		this.ensureCapacity();
 		const sessionManager = SessionManager.create(cwd);
-		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager);
+		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager, projectTrust);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
-		const runtime = this.registerSession(session, ui, cwd, clientId, tripwireAllowedRoots);
+		const runtime = this.registerSession(session, ui, projectTrust, cwd, clientId, tripwireAllowedRoots);
 		return { sessionId: runtime.session.sessionId };
 	}
 
@@ -748,7 +795,7 @@ export class PiWebRuntime {
 		if (!this.resumingByPath.has(path) && !this.isUnchangedSinceDetach(path, sessionId)) {
 			throw new Error("session_not_attachable");
 		}
-		await this.resumeSession(path, clientId, sessionId);
+		await this.resumeSession(path, clientId, { expectedSessionId: sessionId, restoredTrust: this.detachedByPath.get(path)?.projectTrusted });
 	}
 
 	private isUnchangedSinceDetach(path: string, sessionId: string): boolean {
@@ -762,7 +809,12 @@ export class PiWebRuntime {
 	private rememberDetached(runtime: RunningSession): void {
 		const fingerprint = runtime.sessionFile ? fileFingerprint(runtime.sessionFile) : null;
 		if (!runtime.sessionFile || !fingerprint) return;
-		this.detachedByPath.set(runtime.sessionFile, { sessionId: runtime.session.sessionId, ...fingerprint, detachedAtMs: Date.now() });
+		this.detachedByPath.set(runtime.sessionFile, {
+			sessionId: runtime.session.sessionId,
+			...fingerprint,
+			detachedAtMs: Date.now(),
+			projectTrusted: runtime.projectTrust.trusted,
+		});
 		this.persistDetached();
 	}
 
@@ -815,7 +867,12 @@ export class PiWebRuntime {
 		await this.detachedWrites;
 	}
 
-	private async resumeSession(path: string, clientId: string, expectedSessionId?: string): Promise<RunningSession> {
+	private async resumeSession(
+		path: string,
+		clientId: string,
+		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; restoredTrust?: boolean } = {},
+	): Promise<RunningSession> {
+		const { expectedSessionId } = options;
 		const existingId = this.runningByPath.get(path);
 		const existing = existingId ? this.runningById.get(existingId) : undefined;
 		if (existing) {
@@ -836,7 +893,7 @@ export class PiWebRuntime {
 		}
 
 		this.ensureCapacity();
-		const resuming = this.openSessionFile(path, clientId, expectedSessionId)
+		const resuming = this.openSessionFile(path, clientId, options)
 			.then((runtime) => {
 				if (this.detachedByPath.delete(path)) this.persistDetached();
 				return runtime;
@@ -848,18 +905,23 @@ export class PiWebRuntime {
 		return resuming;
 	}
 
-	private async openSessionFile(path: string, clientId: string, expectedSessionId?: string): Promise<RunningSession> {
+	private async openSessionFile(
+		path: string,
+		clientId: string,
+		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; restoredTrust?: boolean },
+	): Promise<RunningSession> {
 		if (!existsSync(path)) {
 			throw new Error(`session file does not exist: ${path}`);
 		}
 		const sessionManager = SessionManager.open(path);
-		if (expectedSessionId !== undefined && sessionManager.getSessionId() !== expectedSessionId) {
+		if (options.expectedSessionId !== undefined && sessionManager.getSessionId() !== options.expectedSessionId) {
 			throw new Error("session_path_mismatch");
 		}
 		const cwd = sessionManager.getCwd();
-		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager);
+		const projectTrust = this.decideProjectTrust(cwd, options.choice, options.restoredTrust);
+		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager, projectTrust);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
-		return this.registerSession(session, ui, cwd, clientId, tripwireAllowedRoots);
+		return this.registerSession(session, ui, projectTrust, cwd, clientId, tripwireAllowedRoots);
 	}
 
 	private claimControllerIfVacant(runtime: RunningSession, clientId: string): void {
@@ -1102,6 +1164,7 @@ export class PiWebRuntime {
 	private registerSession(
 		session: AgentSession,
 		ui: ExtensionUiBridge,
+		projectTrust: ApiProjectTrust,
 		cwd: string,
 		controllerClientId: string,
 		tripwireAllowedRoots: Set<string>,
@@ -1119,6 +1182,7 @@ export class PiWebRuntime {
 		const runtime: RunningSession = {
 			session,
 			ui,
+			projectTrust,
 			cwd,
 			sessionFile,
 			createdAtMs,

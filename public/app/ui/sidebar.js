@@ -73,6 +73,7 @@ export function createSidebar({
 	getHosts = () => [],
 	getActiveHost = () => null,
 	onSelectHost = () => {},
+	createSession = (payload) => api.postJson("/api/sessions", payload),
 }) {
 	const REPO_PAGE_SIZE = 100;
 	let isOpen = false;
@@ -294,7 +295,7 @@ export function createSidebar({
 		const cwd = repoCwd.trim();
 		if (!cwd) return;
 		try {
-			const result = await api.postJson("/api/sessions", { clientId: getClientId(), cwd });
+			const result = await createSession({ clientId: getClientId(), cwd });
 			if (!result?.sessionId) throw new Error("Session did not start.");
 			onSessionIdSelected(result.sessionId);
 			setOpen(false);

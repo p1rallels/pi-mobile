@@ -55,6 +55,7 @@ export async function startFauxSession(
 		faux?: RegisterFauxProviderOptions;
 		/** Extension sources by file name, loaded like ~/.pi/agent/extensions. */
 		extensions?: Record<string, string>;
+		cwd?: string;
 	} = {},
 ): Promise<FauxSession> {
 	const agentDir = await makeAgentDir(options.settings);
@@ -69,9 +70,10 @@ export async function startFauxSession(
 	faux.setResponses(responses);
 
 	const runtime = new PiWebRuntime({ ...options.runtime, modelRuntime });
-	await runtime.addRepo(process.cwd());
+	const cwd = options.cwd ?? process.cwd();
+	await runtime.addRepo(cwd);
 	const clientId = "client-1";
-	const { sessionId } = await runtime.startSession({ cwd: process.cwd(), clientId });
+	const { sessionId } = await runtime.startSession({ cwd, clientId });
 	const events: SseEvent[] = [];
 	const frames: SseFrame[] = [];
 	const send = (event: SseEvent, id?: string) => {

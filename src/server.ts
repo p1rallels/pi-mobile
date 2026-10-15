@@ -5,6 +5,7 @@ import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { FaceIdService } from "./faceid.ts";
+import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
@@ -22,6 +23,7 @@ import type {
 	ApiListReposResponse,
 	ApiListSessionsResponse,
 	ApiOkResponse,
+	ApiProjectTrustRequiredResponse,
 	ApiReleaseRequest,
 	ApiSessionState,
 	ApiTakeoverRequest,
@@ -771,7 +773,8 @@ const commandLimiter = createRateLimiter(60_000, 90);
 const faceIdChallengeLimiter = createRateLimiter(60_000, 12);
 const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
 
-const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession, idleSessionTtlMs: idleSessionMinutes * 60_000 });
+const projectTrustMode = parseProjectTrustMode(process.env.PI_WEB_PROJECT_TRUST);
+const runtime = new PiWebRuntime({ maxRunningSessions, maxClientsPerSession, idleSessionTtlMs: idleSessionMinutes * 60_000, projectTrustMode });
 runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
 const faceId = new FaceIdService();
@@ -1027,9 +1030,14 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
 			try {
 				const raw = (await requireJsonBody(req)) as ApiCreateSessionRequest;
+				if (raw.projectTrust !== undefined && !isProjectTrustChoice(raw.projectTrust)) return errorResponse("Invalid project trust choice", 400);
 				const result = await runtime.startSession({ ...raw, clientId: client.clientId });
 				return json(result, 200);
 			} catch (error) {
+				if (error instanceof ProjectTrustRequiredError) {
+					const body: ApiProjectTrustRequiredResponse = { error: "Project trust required", projectTrust: error.prompt };
+					return json(body, 409);
+				}
 				const message = error instanceof Error ? error.message : String(error);
 				if (message === "too_many_active_sessions") return errorResponse("Too many active sessions", 429);
 				if (message === "session_already_running") return errorResponse("Session already running", 409);
@@ -1227,7 +1235,7 @@ if (secureMode) {
 	console.log(`Secure mode enabled: client certificate fingerprints must be allowed in ${deviceRegistryPath}.`);
 	console.log(`Trusted client certificate header: ${clientCertHeader}.`);
 }
-console.log("SDK extension auto-loading is enabled.");
+console.log(`SDK extension auto-loading is enabled. Projects without a trust.json decision: ${projectTrustMode} (PI_WEB_PROJECT_TRUST).`);
 if (restoredSessions > 0) console.log(`${String(restoredSessions)} session(s) from before the restart can re-attach.`);
 
 let shuttingDown = false;

@@ -1,6 +1,7 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ApiExtensionUiSnapshot, ExtensionUiEvent } from "./extension-ui.ts";
 import type { LiveSnapshot } from "./live-snapshot.ts";
+import type { ApiProjectTrust, ApiProjectTrustChoice, ApiProjectTrustPrompt } from "./project-trust.ts";
 import type { TranscriptMessage, TranscriptPage } from "./transcript.ts";
 
 export type ClientRole = "controller" | "viewer";
@@ -70,6 +71,14 @@ export interface ApiCreateSessionRequest {
 	clientId?: string;
 	cwd?: string;
 	resumeSessionPath?: string;
+	/** The answer to a project trust prompt, sent when the first attempt was refused with one. */
+	projectTrust?: ApiProjectTrustChoice;
+}
+
+/** 409 from POST /api/sessions in PI_WEB_PROJECT_TRUST=ask mode: answer with `projectTrust` and retry. */
+export interface ApiProjectTrustRequiredResponse {
+	error: string;
+	projectTrust: ApiProjectTrustPrompt;
 }
 
 export interface ApiCreateSessionResponse {
@@ -100,6 +109,7 @@ export interface ApiQueuedMessages {
 
 export interface ApiSessionStatus {
 	sessionId: string;
+	projectTrust: ApiProjectTrust;
 	cwd: string;
 	sessionFile: string | null;
 	sessionName?: string;

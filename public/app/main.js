@@ -2,6 +2,7 @@ import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
 import { createSessionController } from "./session/controller.js";
+import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./session/project_trust.js";
 import { createExtensionUi } from "./ui/extension_ui.js";
 import { createMenu } from "./ui/menu.js";
 import { createSidebar } from "./ui/sidebar.js";
@@ -221,7 +222,9 @@ function updateFooter() {
 		return;
 	}
 
-	footerLine1.textContent = activeState.cwd || "—";
+	const trust = activeState.projectTrust;
+	const untrusted = trust && trust.gated && !trust.trusted ? " · project .pi resources skipped (untrusted)" : "";
+	footerLine1.textContent = `${activeState.cwd || "—"}${untrusted}`;
 
 	const model = activeState.model ? `${activeState.model.provider}/${activeState.model.id}` : "(no model)";
 	const metrics = buildSessionMetrics(activeState);
@@ -377,6 +380,13 @@ const extensionUi = createExtensionUi({
 	belowEl: document.getElementById("ext-widgets-below"),
 });
 
+async function askProjectTrust(prompt) {
+	const response = await extensionUi.askLocal(trustPromptRequest(prompt));
+	return response.cancelled ? null : choiceForLabel(prompt, response.value);
+}
+
+const createSession = (payload) => createSessionWithTrust({ api, payload, ask: askProjectTrust });
+
 const sessionCtrl = createSessionController({
 	msgsEl: msgs,
 	queuedEl: queuedPanel,
@@ -392,6 +402,7 @@ const sessionCtrl = createSessionController({
 	onSidebarClose: () => sidebarCtrl?.setOpen(false),
 	onSidebarRefresh: () => sidebarCtrl?.refresh(),
 	extensionUi,
+	createSession,
 });
 
 sidebarCtrl = createSidebar({
@@ -413,6 +424,7 @@ sidebarCtrl = createSidebar({
 	getHosts: () => hosts,
 	getActiveHost: () => activeHost,
 	onSelectHost: switchHost,
+	createSession,
 });
 
 menuCtrl = createMenu({

@@ -11,6 +11,7 @@ async function handleJsonResponse(res) {
 	}
 	const error = new Error(message);
 	error.status = res.status;
+	error.body = body;
 	throw error;
 }
 

@@ -18,6 +18,7 @@ export function createSessionController({
 	onSidebarClose,
 	onSidebarRefresh,
 	extensionUi = { applySnapshot() {}, handleEvent: () => false, reset() {} },
+	createSession = (payload) => api.postJson("/api/sessions", payload),
 }) {
 	let activeSessionId = null;
 	let activeState = null;
@@ -651,7 +652,7 @@ export function createSessionController({
 			throw new Error("Missing session path");
 		}
 
-		const result = await api.postJson("/api/sessions", { clientId: getClientId(), resumeSessionPath: session.path });
+		const result = await createSession({ clientId: getClientId(), resumeSessionPath: session.path });
 		activeSessionId = result.sessionId;
 		activeSessionPath = session.path;
 		connectEvents(activeSessionId);
