@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { sandboxServerEnv, scrubbedEnv } from "../support/sandbox_env.js";
 
 const PI_CLI = resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
 const FAUX_EXTENSION = resolve("tests/support/faux_pi_extension.ts");
@@ -26,7 +27,7 @@ function exited(proc) {
 async function startServer(root, port) {
 	const proc = spawn(process.env.BUN_BINARY || "bun", ["src/server.ts"], {
 		stdio: "ignore",
-		env: { ...process.env, PI_WEB_HOME: join(root, "home"), PI_CODING_AGENT_DIR: join(root, "agent"), PI_WEB_HOST: "127.0.0.1", PI_WEB_PORT: String(port), PI_WEB_REPLAY: "" },
+		env: sandboxServerEnv(root, { PI_WEB_PORT: String(port) }),
 	});
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
@@ -45,7 +46,7 @@ function startPi(root, cwd, seconds) {
 	return spawn(
 		"node",
 		[PI_CLI, "-p", "--offline", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "-e", FAUX_EXTENSION, "--provider", "pi-web-faux", "--model", "faux-slow", "count slowly"],
-		{ cwd, stdio: "ignore", detached: true, env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "agent"), PI_WEB_FAUX_SECONDS: String(seconds) } },
+		{ cwd, stdio: "ignore", detached: true, env: { ...scrubbedEnv(), PI_CODING_AGENT_DIR: join(root, "agent"), PI_WEB_FAUX_SECONDS: String(seconds) } },
 	);
 }
 
