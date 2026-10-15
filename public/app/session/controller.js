@@ -358,6 +358,7 @@ export function createSessionController({
 	function applyFollowState(next) {
 		follow = next && typeof next === "object" ? next : follow;
 		if (activeState && follow) activeState.isStreaming = follow.state === "running" || follow.state === "quiet";
+		if (follow?.state === "stopped") chatView.markPendingToolsAborted("Stopped: the pi running it is gone");
 		if (follow?.state === "hosted") {
 			leaveElsewhere();
 			connectEvents(activeSessionId);

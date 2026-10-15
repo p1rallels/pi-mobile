@@ -110,6 +110,7 @@ test("a real pi -p shows as running elsewhere; Esc stops it and take over contin
 		expect(await exited(env.pi)).not.toBe(0);
 		await expect(page.locator(".notice-text").last()).toContainText(`Stopped pi (pid ${env.pi.pid})`);
 		await expect(page.locator("#role-pill")).toHaveText("stopped");
+		await expect(page.locator(".tool-box.error")).toContainText("Stopped: the pi running it is gone");
 
 		await page.locator(phone(testInfo) ? "#kb-takeover" : "#btn-takeover").click();
 		await expect(page.locator("#role-pill")).toHaveText("controller");
