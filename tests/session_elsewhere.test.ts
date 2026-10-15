@@ -207,6 +207,12 @@ describe("sessions another process is writing", () => {
 		if (init.type !== "follow_init") throw new Error("expected init");
 		expect(init.transcript.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 
+		const tail = await runtime.followSession(id, path, client, undefined, { limit: 1 });
+		tail.stop();
+		if (tail.init.type !== "follow_init") throw new Error("expected init");
+		expect(tail.init.transcript).toMatchObject({ mode: "replace", hasOlder: true });
+		expect(tail.init.transcript.messages.map((message) => message.entryId)).toEqual(["a1"]);
+
 		await appendFile(path, toolResult("t1", "a1", "call-a1"));
 		await waitFor(() => events.some(({ event }) => event.type === "follow_entries"));
 		const appended = events.find(({ event }) => event.type === "follow_entries");

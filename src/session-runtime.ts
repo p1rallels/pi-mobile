@@ -1066,9 +1066,16 @@ export class PiWebRuntime {
 
 	/**
 	 * Streams a session file pi-web isn't hosting: a snapshot, then each batch of whole entries appended to it,
-	 * and where the turn and its writer stand. Read-only: nothing here ever writes the file.
+	 * and where the turn and its writer stand. Read-only: nothing here ever writes the file. `limit` asks
+	 * for a smaller first page, like connectClient's, for a pane that only shows the tail (a canvas tile).
 	 */
-	async followSession(sessionId: string, rawPath: string, client: FollowClient, since?: string): Promise<{ init: FollowSseEvent; cursor: string | undefined; stop: () => void }> {
+	async followSession(
+		sessionId: string,
+		rawPath: string,
+		client: FollowClient,
+		since?: string,
+		options: { limit?: number } = {},
+	): Promise<{ init: FollowSseEvent; cursor: string | undefined; stop: () => void }> {
 		const path = this.assertAllowedResumePath(rawPath);
 		const snapshot = await readSessionSnapshot(path);
 		if (snapshot.sessionId !== sessionId) throw new Error("session_path_mismatch");
@@ -1124,7 +1131,7 @@ export class PiWebRuntime {
 		}
 		followers.add(follower);
 
-		const transcript = resyncTranscript(snapshot.branch, since, INITIAL_TRANSCRIPT_LIMITS);
+		const transcript = resyncTranscript(snapshot.branch, since, initialTranscriptLimits(options.limit));
 		const init: FollowSseEvent = { type: "follow_init", session: describe(), transcript, follow, cursor: snapshot.leafId };
 		return { init, cursor: snapshot.leafId ?? undefined, stop };
 	}

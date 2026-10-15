@@ -1184,8 +1184,11 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			const stream = createSseStream(req.signal);
 			const follower: FollowClient = { send: stream.send, close: stream.close };
 			const since = resolveResumeCursor(req.headers.get("last-event-id"), url.searchParams.get("since"));
+			const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
 			try {
-				const { init, cursor, stop } = await runtime.followSession(sessionId, path, follower, since);
+				const { init, cursor, stop } = await runtime.followSession(sessionId, path, follower, since, {
+					limit: Number.isFinite(limitParam) ? limitParam : undefined,
+				});
 				if (req.signal.aborted) {
 					stop();
 				} else {
