@@ -23,8 +23,32 @@ export function formatStatuses(statuses) {
 /**
  * Shows what extensions ask through ctx.ui: dialogs answered by POST from any device (first answer wins),
  * footer statuses, text widgets around the composer, notifications and the page title.
+ * The phone uses the defaults: dialogs over the whole page, the title on the document. A canvas tile
+ * keeps its dialogs inside itself (`dialogHost`), takes the keyboard only when it has it
+ * (`shouldFocus`), shows the title itself (`onTitle`) and hears when a dialog opens or closes (`onChange`).
  */
-export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, statusEl, aboveEl, belowEl }) {
+export function createExtensionUi({
+	api,
+	getSessionId,
+	onNotice,
+	onEditorText,
+	statusEl,
+	aboveEl,
+	belowEl,
+	dialogHost = null,
+	shouldFocus = () => true,
+	onTitle = null,
+	onChange = () => {},
+}) {
+	const host = () => dialogHost ?? document.body;
+	let open = false;
+	function notifyIfChanged() {
+		const next = shownId !== null || localCancel !== null;
+		if (next === open) return;
+		open = next;
+		onChange();
+	}
+
 	let dialogs = [];
 	let chrome = { statuses: {}, widgets: {}, title: null };
 	let overlay = null;
@@ -43,6 +67,7 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 		overlay = null;
 		shownId = null;
 		refreshMeta = () => {};
+		notifyIfChanged();
 	}
 
 	async function answer(request, response, errorEl) {
@@ -150,8 +175,9 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 		if (typeof request.expiresAt === "number") countdown = setInterval(() => refreshMeta(), 1000);
 		card.append(errorEl, actions, meta);
 		overlay.appendChild(card);
-		document.body.appendChild(overlay);
-		focus?.focus();
+		host().appendChild(overlay);
+		if (shouldFocus()) focus?.focus(dialogHost ? { preventScroll: true } : undefined);
+		notifyIfChanged();
 	}
 
 	function removeDialog(id) {
@@ -185,7 +211,8 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 			statusEl.hidden = !text;
 		}
 		renderWidgets();
-		document.title = chrome.title || DEFAULT_TITLE;
+		if (onTitle) onTitle(chrome.title);
+		else document.title = chrome.title || DEFAULT_TITLE;
 	}
 
 	function applyChrome(next) {
@@ -251,14 +278,16 @@ export function createExtensionUi({ api, getSessionId, onNotice, onEditorText, s
 			const finish = (response) => {
 				localOverlay.remove();
 				localCancel = null;
+				notifyIfChanged();
 				resolve(response);
 			};
 			const { actions, focus } = dialogBody(request, card, finish);
 			card.appendChild(actions);
 			localOverlay.appendChild(card);
-			document.body.appendChild(localOverlay);
+			host().appendChild(localOverlay);
 			localCancel = () => finish({ cancelled: true });
-			focus?.focus();
+			if (shouldFocus()) focus?.focus(dialogHost ? { preventScroll: true } : undefined);
+			notifyIfChanged();
 		});
 	}
 

@@ -399,3 +399,87 @@ test("the launcher lists a directory's sessions, resumes one in place, starts ne
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+const ASK_EXTENSION = `
+export default function (pi) {
+	pi.registerCommand("ask", {
+		description: "asks twice before acting",
+		handler: async (_args, ctx) => {
+			ctx.ui.setTitle("asking a human");
+			const first = await ctx.ui.confirm("Proceed?", "This needs a human");
+			const second = await ctx.ui.confirm("Really?", "Asking twice");
+			ctx.ui.setTitle("");
+			ctx.ui.notify(first && second ? "went ahead" : "stopped", "info");
+		},
+	});
+}
+`;
+
+test("extension dialogs stay inside their tile, leave the keyboard where it is, and turn the tile to waiting", async ({ page }) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "repo");
+	await mkdir(cwd);
+	await mkdir(join(root, "agent", "extensions"), { recursive: true });
+	await writeFile(join(root, "agent", "extensions", "ask.ts"), ASK_EXTENSION);
+	const paths = [await writeSessionFile(root, cwd, S1, "hello from disk", "hi there"), await writeSessionFile(root, cwd, S2, "second session", "reply two")];
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (resumePaths) => {
+			const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+			for (const resumeSessionPath of resumePaths) {
+				const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, resumeSessionPath }) });
+				if (!res.ok) throw new Error(`start failed: ${res.status}`);
+			}
+		}, paths);
+		await page.goto(`${base}/?ui=canvas`);
+		await expect(page.locator(".cv-tile")).toHaveCount(2);
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
+		const pageTitle = await page.title();
+
+		// ask from S1: the dialog opens inside S1's tile and, since S1 has the keyboard, takes it
+		await tile(page, S1).locator(".msgs").click();
+		await tile(page, S1).locator("textarea").fill("/ask");
+		await tile(page, S1).locator("textarea").press("Enter");
+		const dialog = tile(page, S1).locator(".ext-dialog-overlay");
+		await expect(dialog.locator(".ext-dialog-title")).toHaveText("Proceed?");
+		await expect(page.locator("body > .ext-dialog-overlay")).toHaveCount(0);
+		await expect(dialog.locator("button:focus")).toHaveCount(1);
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText("waiting");
+		await expect(tile(page, S1)).toHaveClass(/cv-waiting/);
+		await expect(tile(page, S1).locator(".cv-title")).toHaveText("asking a human");
+		expect(await page.title()).toBe(pageTitle);
+
+		// typing in S2 meanwhile: S1's next dialog (answered from elsewhere) must not take the keyboard
+		await tile(page, S2).locator(".msgs").click();
+		await expect(tile(page, S2).locator("textarea")).toBeFocused();
+		const firstId = await dialog.getAttribute("data-dialog-id");
+		await page.evaluate(
+			async ([id, dialogId]) => {
+				const res = await fetch(`/api/sessions/${id}/ui-response`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: dialogId, confirmed: true }) });
+				if (!res.ok) throw new Error(`answer failed: ${res.status}`);
+			},
+			[S1, firstId],
+		);
+		await expect(dialog.locator(".ext-dialog-title")).toHaveText("Really?");
+		await expect(tile(page, S2).locator("textarea")).toBeFocused();
+		await expect(tile(page, S1)).toHaveClass(/cv-waiting/);
+
+		// clicking the waiting tile hands the keyboard to its dialog; answering clears the waiting state
+		await dialog.click({ position: { x: 8, y: 8 } });
+		await expect(dialog.locator("button:focus")).toHaveCount(1);
+		await dialog.getByRole("button", { name: "Yes", exact: true }).click();
+		await expect(dialog).toHaveCount(0);
+		await expect(tile(page, S1)).not.toHaveClass(/cv-waiting/);
+		await expect(tile(page, S1).locator(".cv-pill")).toHaveText(/idle|viewing/);
+		await expect(tile(page, S1).locator(".notice-text").last()).toContainText("went ahead");
+		await expect(tile(page, S1).locator(".cv-title")).toContainText("repo");
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});

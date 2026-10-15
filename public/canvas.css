@@ -157,7 +157,10 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
   -webkit-user-select: text;
 }
 .cv-body .msgs { overscroll-behavior: contain; }
-.cv-body .chat { flex: 1; min-height: 0; }
+.cv-body .chat { flex: 1; min-height: 0; position: relative; }
+/* extension dialogs stay inside their tile (the frame clips them), over the pane they belong to */
+.cv-body .ext-dialog-overlay { position: absolute; z-index: 5; padding: 12px; }
+.cv-body .ext-dialog-card { max-height: 100%; }
 .cv-placeholder { margin: auto; padding: 0 24px; color: #505058; font-size: 12px; text-align: center; }
 /* one footer line in tiles: the title bar already shows the repo, the model and the thinking level */
 .cv-body .footer-line-1, .cv-body .footer-right { display: none; }

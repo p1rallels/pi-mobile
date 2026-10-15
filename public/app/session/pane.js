@@ -60,8 +60,10 @@ export function autoResize(el) {
  *   onSidebarClose?: () => void,
  *   onSidebarRefresh?: () => void,
  *   transcriptWindow?: { unfocused: number, focused: number, pageSize: number } | null,
+ *   tileUi?: { dialogHost: HTMLElement, hasKeyboard: () => boolean, onTitle: (title: string | null) => void } | null,
  * }} options
  * `transcriptWindow` keeps only the newest entries of the transcript (canvas tiles); the phone keeps them all.
+ * `tileUi` keeps extension dialogs and the extension title inside a canvas tile instead of on the page.
  */
 export function createSessionPane({
 	refs,
@@ -74,6 +76,7 @@ export function createSessionPane({
 	onSidebarClose,
 	onSidebarRefresh,
 	transcriptWindow = null,
+	tileUi = null,
 }) {
 	const { input } = refs;
 	/** @type {ReturnType<typeof setInterval> | null} */
@@ -92,6 +95,14 @@ export function createSessionPane({
 		statusEl: refs.footerExtStatus ?? null,
 		aboveEl: refs.extAbove ?? null,
 		belowEl: refs.extBelow ?? null,
+		...(tileUi
+			? {
+					dialogHost: tileUi.dialogHost,
+					shouldFocus: tileUi.hasKeyboard,
+					onTitle: tileUi.onTitle,
+					onChange: () => onStateChange?.(),
+				}
+			: {}),
 	});
 
 	/** @param {any} prompt */

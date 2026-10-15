@@ -49,6 +49,7 @@ export async function bootCanvas() {
 	 *   suspendTimer: number,
 	 *   hiddenAt: number,
 	 *   lastVisibleAt: number,
+	 *   extTitle: string | null,
 	 *   shown: { title: string, pill: string },
 	 * }} TileEntry
 	 */
@@ -200,6 +201,12 @@ export async function bootCanvas() {
 		const entry = entries.get(id);
 		if (!entry) return;
 		if (!entry.mounted) mountPane(entry);
+		// a tile waiting on an extension dialog: the keyboard goes to the dialog, not the composer under it
+		const dialog = entry.pane.extensionUi.isOpen() ? canvas.tiles.get(id)?.body.querySelector(".ext-dialog-overlay :is(input, textarea, button)") : null;
+		if (dialog instanceof HTMLElement) {
+			dialog.focus({ preventScroll: true });
+			return;
+		}
 		entry.focusWhenReady = entry.pane.refs.input.disabled;
 		entry.pane.focusComposer();
 	}
@@ -246,6 +253,7 @@ export async function bootCanvas() {
 		if (connection === "suspended") return { text: "offscreen", kind: "idle" };
 		if (connection === "gone") return { text: "ended", kind: "offline" };
 		if (connection === "reconnecting") return { text: "reconnecting", kind: "offline" };
+		if (entry.pane.extensionUi.isOpen()) return { text: "waiting", kind: "waiting" };
 		const status = entry.pane.getRunStatus();
 		if (status.kind !== "idle") return { text: status.kind, kind: "working" };
 		return { text: entry.pane.isController() ? "idle" : "viewing", kind: "idle" };
@@ -276,10 +284,12 @@ export async function bootCanvas() {
 		}
 		const state = entry.mounted ? entry.pane.getState() : null;
 		if (state?.sessionName) entry.title = sessionTitle({ id, cwd: state.cwd, name: state.sessionName });
-		if (entry.shown.title !== entry.title) {
-			entry.shown.title = entry.title;
-			tile.titleEl.textContent = entry.title;
-			tile.titleEl.title = entry.title;
+		// an extension's title (ctx.ui.setTitle) names the tile while it's set, the way it names the phone's page
+		const title = entry.extTitle || entry.title;
+		if (entry.shown.title !== title) {
+			entry.shown.title = title;
+			tile.titleEl.textContent = title;
+			tile.titleEl.title = title;
 		}
 		const pill = pillFor(entry);
 		const pillKey = `${pill.kind}:${pill.text}`;
@@ -343,6 +353,14 @@ export async function bootCanvas() {
 			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 			onStateChange: () => renderTileChrome(entry.id),
 			transcriptWindow: TRANSCRIPT_WINDOW,
+			tileUi: {
+				dialogHost: el,
+				hasKeyboard: () => canvas.tiles.focusedId() === entry.id,
+				onTitle: (title) => {
+					entry.extTitle = title;
+					renderTileChrome(entry.id);
+				},
+			},
 		});
 		entry.mounted = true;
 		entry.opened = false;
@@ -450,6 +468,7 @@ export async function bootCanvas() {
 			suspendTimer: 0,
 			hiddenAt: tile.visible ? 0 : Date.now(),
 			lastVisibleAt: tile.visible ? Date.now() : 0,
+			extTitle: null,
 			shown: { title: "", pill: "" },
 		};
 		entries.set(id, entry);
