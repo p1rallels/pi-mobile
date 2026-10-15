@@ -1587,6 +1587,11 @@ export class PiWebRuntime {
 				if (event.type === "compaction_end") patch.isCompacting = false;
 				this.broadcast(sessionId, { type: "state_patch", patch });
 			}
+			// token totals and context use move with every message that lands, not just when the run ends (like
+			// pi's own footer); pi writes the message to the session after message_end listeners ran, so read then
+			if (event.type === "message_end") {
+				queueMicrotask(() => this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session) }));
+			}
 		});
 		runtime.unsubscribe = unsubscribe;
 
