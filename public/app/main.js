@@ -456,14 +456,12 @@ window.addEventListener("keydown", (e) => {
 fillBorders();
 window.addEventListener("resize", fillBorders);
 window.addEventListener("resize", () => sidebarCtrl.setOpen(false));
-window.addEventListener("pageshow", () => void sessionCtrl.syncState());
-window.addEventListener("focus", () => void sessionCtrl.syncState());
+window.addEventListener("pageshow", () => sessionCtrl.resumeIfStale());
+window.addEventListener("focus", () => sessionCtrl.resumeIfStale());
+window.addEventListener("online", () => sessionCtrl.resumeIfStale());
 document.addEventListener("visibilitychange", () => {
-	if (document.visibilityState === "visible") void sessionCtrl.syncState();
+	if (document.visibilityState === "visible") sessionCtrl.resumeIfStale();
 });
-setInterval(() => {
-	if (document.visibilityState === "visible" && sessionCtrl.getActiveState()?.isCompacting) void sessionCtrl.syncState();
-}, 1500);
 
 updateFooter();
 updateControls();

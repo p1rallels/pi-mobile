@@ -818,7 +818,7 @@ function corsPreflightResponse(req: Request): Response | null {
 	headers.set("access-control-allow-origin", origin);
 	headers.set("access-control-allow-credentials", "true");
 	headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
-	headers.set("access-control-allow-headers", "content-type");
+	headers.set("access-control-allow-headers", "content-type, last-event-id");
 	headers.set("access-control-max-age", "600");
 	appendVary(headers, "Origin");
 	return new Response(null, { status: 204, headers });

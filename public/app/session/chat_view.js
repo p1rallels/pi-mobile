@@ -77,8 +77,28 @@ function appendStreamedText(el, raw, shownLength) {
 	return raw.length;
 }
 
+function markProvisional(el) {
+	el.dataset.provisional = "1";
+}
+
+function confirmNode(el, entryId) {
+	if (!el) return;
+	delete el.dataset.provisional;
+	if (entryId) el.dataset.entryId = entryId;
+}
+
+function toolEventsFromLive(tool) {
+	const base = { toolCallId: tool.toolCallId, toolName: tool.toolName };
+	const nested = typeof tool.parentToolCallId === "string" ? { parentToolCallId: tool.parentToolCallId } : {};
+	const events = [{ type: "tool_execution_start", ...base, ...nested, args: tool.args }];
+	if (tool.partialResult !== undefined) events.push({ type: "tool_execution_update", ...base, ...nested, args: tool.args, partialResult: tool.partialResult });
+	if (tool.done) events.push({ type: "tool_execution_end", ...base, ...nested, result: tool.result, isError: Boolean(tool.isError), durationMs: tool.durationMs });
+	return events;
+}
+
 export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking, shownText, shownThinking }
+	let renderedEntryIds = new Set();
 	let appendedUserMessageKeys = new Set();
 	let expandedCompactionIds = new Set();
 	let appendedCompactionIds = new Set();
@@ -134,6 +154,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		currentAssistant = null;
 		streamingBlocks.clear();
 		tools.clear();
+		renderedEntryIds = new Set();
 		appendedUserMessageKeys = new Set();
 		expandedCompactionIds = new Set();
 		appendedCompactionIds = new Set();
@@ -174,9 +195,10 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		queuedEl.classList.add("open");
 	}
 
-	function appendAssistantBlock() {
+	function appendAssistantBlock({ provisional = false } = {}) {
 		const block = document.createElement("div");
 		block.className = "assistant-block";
+		if (provisional) markProvisional(block);
 
 		const thinking = document.createElement("div");
 		thinking.className = "thinking-text";
@@ -194,8 +216,14 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		return currentAssistant;
 	}
 
-	function ensureAssistantBlock() {
-		return currentAssistant || appendAssistantBlock();
+	function ensureLiveAssistantBlock() {
+		return currentAssistant || appendAssistantBlock({ provisional: true });
+	}
+
+	function setLiveToolCall(id, name, args) {
+		const isNew = !tools.has(id);
+		tools.setCall(id, name, args);
+		if (isNew) tools.setProvisional(id, true);
 	}
 
 	function appendUserMessage(text, opts = {}) {
@@ -210,6 +238,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 			mount(el);
 		}
 		scheduleFrame();
+		return el;
 	}
 
 	function userMessageKey(msg, text) {
@@ -218,20 +247,25 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		return `u:${text}`;
 	}
 
+	/** Live user messages show on message_start and are confirmed by their message_end. */
 	function maybeAppendUserMessage(msg) {
-		if (!msg || typeof msg !== "object") return;
+		if (!msg || typeof msg !== "object") return null;
 		const text = extractTextContent(msg.content);
-		if (!text) return;
+		if (!text) return null;
 
 		const key = userMessageKey(msg, text);
-		if (appendedUserMessageKeys.has(key)) return;
+		const existing = msgsEl.querySelector(`.user-msg[data-provisional][data-user-key="${CSS.escape(key)}"]`);
+		if (existing || appendedUserMessageKeys.has(key)) return existing;
 		appendedUserMessageKeys.add(key);
 		if (appendedUserMessageKeys.size > 200) appendedUserMessageKeys.clear();
 
 		const assistant = currentAssistant;
 		const assistantIsEmpty = Boolean(assistant && assistant.rawText === "" && assistant.rawThinking === "");
 		const insertBeforeEl = assistantIsEmpty && assistant.block ? assistant.block : null;
-		appendUserMessage(text, { insertBefore: insertBeforeEl });
+		const el = appendUserMessage(text, { insertBefore: insertBeforeEl });
+		markProvisional(el);
+		el.dataset.userKey = key;
+		return el;
 	}
 
 	function appendNotice(text, kind = "info") {
@@ -359,9 +393,15 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		tools.setText(id, "bash", message.cancelled ? `${output}\n(cancelled)`.trim() : output);
 	}
 
+	/** Renders persisted messages, skipping entries already on screen so resyncs can overlap safely. */
 	function renderHistory(messages) {
+		const seen = new Set(renderedEntryIds);
 		for (const [index, m] of orderMessagesForDisplay(messages).entries()) {
 			if (!m || typeof m !== "object") continue;
+			if (typeof m.entryId === "string") {
+				if (seen.has(m.entryId)) continue;
+				renderedEntryIds.add(m.entryId);
+			}
 			if (m.role === "user") {
 				const text = extractTextContent(m.content);
 				if (text) appendUserMessage(text);
@@ -469,6 +509,42 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		return msgsEl.scrollTop <= thresholdPx;
 	}
 
+	/** Removes what live events drew but no entry confirmed, before a resync redraws it from the server. */
+	function dropProvisional() {
+		for (const el of msgsEl.querySelectorAll("[data-provisional]")) {
+			if (el.dataset.userKey) appendedUserMessageKeys.delete(el.dataset.userKey);
+			el.remove();
+		}
+		tools.prune();
+		for (const block of streamingBlocks) {
+			if (!block.block.isConnected) streamingBlocks.delete(block);
+		}
+		if (currentAssistant && !currentAssistant.block.isConnected) currentAssistant = null;
+	}
+
+	/** Draws the in-flight part of a run: running tools, then the assistant message still streaming. */
+	function renderLive(live) {
+		if (!live || typeof live !== "object") return;
+		for (const tool of Array.isArray(live.tools) ? live.tools : []) {
+			if (!tool || typeof tool.toolCallId !== "string") continue;
+			for (const event of toolEventsFromLive(tool)) handleAgentEvent(event);
+		}
+		const message = live.streamingMessage;
+		if (!message || message.role !== "assistant") return;
+		const block = ensureLiveAssistantBlock();
+		const parsed = parseAssistantContent(message.content);
+		block.rawThinking = parsed.thinking;
+		block.rawText = parsed.text;
+		markStreaming(block);
+		for (const call of parsed.toolCalls) setLiveToolCall(call.id, call.name, call.arguments);
+	}
+
+	function confirmAssistant(block, message, entryId) {
+		if (block) confirmNode(block.block, entryId);
+		for (const call of parseAssistantContent(message.content).toolCalls) tools.setProvisional(call.id, false);
+		if (entryId) renderedEntryIds.add(entryId);
+	}
+
 	function renderReleased({ cliCommand }) {
 		clear();
 
@@ -497,11 +573,11 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		follower.pin();
 	}
 
-	function handleAgentEvent(event) {
+	function handleAgentEvent(event, entryId) {
 		if (!event || typeof event.type !== "string") return;
 
 		if (event.type === "turn_start") {
-			ensureAssistantBlock();
+			ensureLiveAssistantBlock();
 			return;
 		}
 
@@ -516,7 +592,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 				return;
 			}
 			if (event.message && event.message.role === "assistant") {
-				ensureAssistantBlock();
+				ensureLiveAssistantBlock();
 			}
 			return;
 		}
@@ -527,24 +603,24 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 
 			if (update.type === "toolcall_start") {
 				if (typeof update.id === "string" && update.id && typeof update.toolName === "string" && update.toolName) {
-					tools.setCall(update.id, update.toolName, {});
+					setLiveToolCall(update.id, update.toolName, {});
 				}
 				return;
 			}
 			if (update.type === "toolcall_end") {
 				const call = update.toolCall;
 				if (call && typeof call.id === "string" && typeof call.name === "string") {
-					tools.setCall(call.id, call.name, call.arguments);
+					setLiveToolCall(call.id, call.name, call.arguments);
 				}
 				return;
 			}
 			if (typeof update.delta !== "string") return;
 			if (update.type === "thinking_delta" || update.type === "reasoning_delta") {
-				const block = ensureAssistantBlock();
+				const block = ensureLiveAssistantBlock();
 				block.rawThinking += update.delta;
 				markStreaming(block);
 			} else if (update.type === "text_delta") {
-				const block = ensureAssistantBlock();
+				const block = ensureLiveAssistantBlock();
 				block.rawText += update.delta;
 				markStreaming(block);
 			}
@@ -554,7 +630,27 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		if (event.type === "message_end") {
 			const msg = event.message;
 			if (!msg) return;
-			if (msg.role === "user") maybeAppendUserMessage(msg);
+			if (entryId && renderedEntryIds.has(entryId)) {
+				if (msg.role === "assistant") currentAssistant = null;
+				return;
+			}
+			if (msg.role === "user") {
+				const el = maybeAppendUserMessage(msg);
+				if (entryId) {
+					confirmNode(el, entryId);
+					renderedEntryIds.add(entryId);
+				}
+				return;
+			}
+			if (msg.role === "custom") {
+				if (msg.display !== false) appendCustomMessage(msg);
+				if (entryId) renderedEntryIds.add(entryId);
+				return;
+			}
+			if (msg.role === "toolResult") {
+				if (entryId) renderedEntryIds.add(entryId);
+				return;
+			}
 			if (msg.role === "assistant") {
 				const final = parseAssistantContent(msg.content);
 				const block = currentAssistant || (final.text || final.thinking ? appendAssistantBlock() : null);
@@ -595,6 +691,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 						appendNotice(stopReason === "aborted" ? abortMessage : errMessage, "error");
 					}
 				}
+				if (entryId) confirmAssistant(block, msg, entryId);
 				currentAssistant = null;
 			}
 			return;
@@ -645,7 +742,13 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null }) {
 		isPinned: follower.isPinned,
 		getScrollTop: follower.getScrollTop,
 		appendNotice,
-		appendCompactionSummary,
+		appendCompactionSummary: (message, entryId) => {
+			if (entryId && renderedEntryIds.has(entryId)) return;
+			if (entryId) renderedEntryIds.add(entryId);
+			appendCompactionSummary(message);
+		},
+		dropProvisional,
+		renderLive,
 		prependHistory,
 		setOlderControl,
 		isNearTop,

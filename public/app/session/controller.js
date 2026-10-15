@@ -2,6 +2,10 @@ import { computeCliCommand } from "./cli.js";
 import { createChatView } from "./chat_view.js";
 import { parseCompactCommand, parseQueueCommand } from "./commands.js";
 
+/** The server pings every 5s; a stream silent for longer is dead even if the browser still calls it open. */
+const STALE_STREAM_MS = 15_000;
+const STALE_CHECK_MS = 5_000;
+
 export function createSessionController({
 	msgsEl,
 	queuedEl,
@@ -21,9 +25,6 @@ export function createSessionController({
 	let eventSource = null;
 	let lastCliCommand = null;
 	let shownTripwireAlertIds = new Set();
-	let pendingCompactionSummary = null;
-	let syncInFlight = false;
-	let followUpSyncTimer = null;
 
 	let pendingPrompt = false;
 	let renderedSessionId = null;
@@ -37,9 +38,14 @@ export function createSessionController({
 	let connection = "idle";
 	let recoveryTimer = null;
 	let recoveryAttempt = 0;
+	let cursor = null;
+	let lastFrameAtMs = 0;
 
 	const chatView = createChatView({ msgsEl, queuedEl, pillEl });
 	msgsEl.addEventListener("scroll", () => maybeLoadOlderMessages(), { passive: true });
+	setInterval(() => {
+		if (connection === "live" && isStale()) reconnectNow();
+	}, STALE_CHECK_MS);
 
 	function closeEvents() {
 		if (eventSource) {
@@ -60,23 +66,42 @@ export function createSessionController({
 		recoveryAttempt = 0;
 	}
 
-	function sessionUrl(sessionId, action) {
-		const query = activeSessionPath ? `?path=${encodeURIComponent(activeSessionPath)}` : "";
-		return `/api/sessions/${encodeURIComponent(sessionId)}/${action}${query}`;
+	function sessionUrl(sessionId, action, params = {}) {
+		const query = new URLSearchParams();
+		if (activeSessionPath) query.set("path", activeSessionPath);
+		for (const [key, value] of Object.entries(params)) {
+			if (typeof value === "string" && value) query.set(key, value);
+		}
+		const search = query.toString();
+		return `/api/sessions/${encodeURIComponent(sessionId)}/${action}${search ? `?${search}` : ""}`;
 	}
 
+	function isStale() {
+		return Date.now() - lastFrameAtMs > STALE_STREAM_MS;
+	}
+
+	/** Resumes from the last entry this page rendered, so the server sends only what is missing. */
 	function connectEvents(sessionId) {
 		closeEvents();
 		setConnection("connecting");
-		const source = api.eventSource(sessionUrl(sessionId, "events"));
+		const since = renderedSessionId === sessionId ? cursor : null;
+		const source = api.eventSource(sessionUrl(sessionId, "events", { since }));
 		eventSource = source;
+		lastFrameAtMs = Date.now();
 		source.onopen = () => {
 			if (source !== eventSource) return;
 			recoveryAttempt = 0;
+			lastFrameAtMs = Date.now();
 			setConnection("live");
 		};
+		source.addEventListener("ping", () => {
+			if (source !== eventSource) return;
+			lastFrameAtMs = Date.now();
+		});
 		source.onmessage = (msg) => {
 			if (source !== eventSource) return;
+			lastFrameAtMs = Date.now();
+			if (msg.lastEventId) cursor = msg.lastEventId;
 			handleSse(JSON.parse(msg.data));
 		};
 		source.onerror = () => {
@@ -119,19 +144,23 @@ export function createSessionController({
 		}
 	}
 
-	function clearFollowUpSync() {
-		if (!followUpSyncTimer) return;
-		clearTimeout(followUpSyncTimer);
-		followUpSyncTimer = null;
+	function reconnectNow() {
+		if (!activeSessionId || activeSessionId === "replay") return;
+		stopRecovery();
+		connectEvents(activeSessionId);
 	}
 
-	function scheduleFollowUpSync(delayMs = 1500) {
-		if (followUpSyncTimer || !activeSessionId || activeSessionId === "replay") return;
-		followUpSyncTimer = setTimeout(() => {
-			followUpSyncTimer = null;
-			if (document.visibilityState === "hidden") return;
-			void syncState();
-		}, delayMs);
+	/** Called when the page comes back: phones often keep a dead stream that never reports an error. */
+	function resumeIfStale() {
+		if (!activeSessionId || activeSessionId === "replay") return;
+		if (connection === "gone" || connection === "idle") return;
+		if (connection === "reconnecting" && recoveryTimer) {
+			scheduleRecovery(activeSessionId, 0);
+			return;
+		}
+		if (connection === "live" && !isStale()) return;
+		if (connection === "connecting" && !isStale()) return;
+		reconnectNow();
 	}
 
 	function resetTripwireAlerts() {
@@ -145,36 +174,10 @@ export function createSessionController({
 		};
 	}
 
-	function compactionMatches(message, pending) {
-		return (
-			message &&
-			pending &&
-			message.role === "compactionSummary" &&
-			message.summary === pending.summary &&
-			message.tokensBefore === pending.tokensBefore
-		);
-	}
-
 	function applyQueuedMessages(queuedMessages) {
 		const normalized = normalizeQueuedMessages(queuedMessages);
 		if (activeState) activeState.queuedMessages = normalized;
 		chatView.renderQueuedMessages(normalized);
-	}
-
-	function messageFingerprint(message) {
-		if (!message || typeof message !== "object") return "";
-		if (typeof message.entryId === "string") return message.entryId;
-		const role = typeof message.role === "string" ? message.role : "";
-		const timestamp = typeof message.timestamp === "number" ? message.timestamp : "";
-		const summary = typeof message.summary === "string" ? message.summary.length : "";
-		const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
-		return `${role}:${timestamp}:${summary}:${stopReason}`;
-	}
-
-	function messagesChanged(previousMessages, nextMessages) {
-		if (!Array.isArray(previousMessages) || !Array.isArray(nextMessages)) return true;
-		if (previousMessages.length !== nextMessages.length) return true;
-		return messageFingerprint(previousMessages[previousMessages.length - 1]) !== messageFingerprint(nextMessages[nextMessages.length - 1]);
 	}
 
 	function firstEntryId(messages) {
@@ -216,18 +219,14 @@ export function createSessionController({
 		}
 	}
 
-	function renderStateMessages(messages, { keepPosition = false } = {}) {
+	function replaceTranscript(transcript, live, { keepPosition = false } = {}) {
 		const restoreTop = keepPosition && !chatView.isPinned() ? chatView.getScrollTop() : null;
 		renderGeneration += 1;
 		chatView.clear();
-		chatView.renderHistory(messages || []);
-		if (pendingCompactionSummary && !(messages || []).some((message) => compactionMatches(message, pendingCompactionSummary))) {
-			chatView.appendCompactionSummary(pendingCompactionSummary);
-		}
-		pendingCompactionSummary = null;
-		applyQueuedMessages(activeState?.queuedMessages);
-		hasOlderMessages = Boolean(activeState?.hasOlderMessages);
-		oldestEntryId = firstEntryId(messages);
+		chatView.renderHistory(transcript.messages);
+		chatView.renderLive(live);
+		hasOlderMessages = transcript.hasOlder;
+		oldestEntryId = firstEntryId(transcript.messages);
 		olderLoading = false;
 		syncOlderControl();
 		chatView.flush();
@@ -237,6 +236,27 @@ export function createSessionController({
 			chatView.restoreScroll(restoreTop);
 		}
 		maybeLoadOlderMessages();
+	}
+
+	/** A reconnect within the same session: redraw only the unconfirmed tail and what was missed. */
+	function appendTranscript(transcript, live) {
+		const wasPinned = chatView.isPinned();
+		chatView.dropProvisional();
+		chatView.renderHistory(transcript.messages);
+		chatView.renderLive(live);
+		chatView.flush();
+		if (wasPinned) chatView.pin();
+	}
+
+	function initTranscript(event) {
+		if (event.transcript && typeof event.transcript === "object") {
+			return {
+				mode: event.transcript.mode === "append" ? "append" : "replace",
+				messages: Array.isArray(event.transcript.messages) ? event.transcript.messages : [],
+				hasOlder: Boolean(event.transcript.hasOlder),
+			};
+		}
+		return { mode: "replace", messages: Array.isArray(event.state?.messages) ? event.state.messages : [], hasOlder: Boolean(event.state?.hasOlderMessages) };
 	}
 
 	function appendTripwireAlert(alert) {
@@ -278,7 +298,7 @@ export function createSessionController({
 		stopRecovery();
 		setConnection("idle");
 		activeSessionPath = null;
-		clearFollowUpSync();
+		cursor = null;
 		retryStatus = null;
 		compactionReason = null;
 		hasOlderMessages = false;
@@ -289,7 +309,6 @@ export function createSessionController({
 		controllerClientId = null;
 		role = "viewer";
 		lastCliCommand = null;
-		pendingCompactionSummary = null;
 		pendingPrompt = false;
 		renderedSessionId = null;
 		resetTripwireAlerts();
@@ -301,20 +320,33 @@ export function createSessionController({
 		if (!event || typeof event.type !== "string") return;
 
 		if (event.type === "init") {
-			onCloseMenu();
-			activeState = event.state;
+			const transcript = initTranscript(event);
+			const sameSession = renderedSessionId !== null && renderedSessionId === event.state?.sessionId;
+			if (transcript.mode === "append" && !sameSession) {
+				cursor = null;
+				connectEvents(activeSessionId);
+				return;
+			}
+			if (!sameSession) onCloseMenu();
+			const { messages: _messages, hasOlderMessages: _hasOlder, ...status } = event.state;
+			activeState = status;
 			activeSessionPath = activeState.sessionFile || activeSessionPath;
 			controllerClientId = event.controllerClientId || null;
 			role = event.role;
 			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
+			if (typeof event.cursor === "string") cursor = event.cursor;
+			const live = event.live && typeof event.live === "object" ? event.live : null;
+			retryStatus = live?.retry ? { attempt: live.retry.attempt, maxAttempts: live.retry.maxAttempts } : null;
+			compactionReason = live?.compaction?.reason ?? null;
+			if (!activeState.isStreaming) pendingPrompt = false;
 
-			if (event.transcript) {
-				activeState.messages = event.transcript.messages;
-				activeState.hasOlderMessages = Boolean(event.transcript.hasOlder);
-			}
-			const sameSession = renderedSessionId !== null && renderedSessionId === activeState.sessionId;
 			renderedSessionId = activeState.sessionId;
-			renderStateMessages(activeState.messages || [], { keepPosition: sameSession });
+			if (transcript.mode === "append") {
+				appendTranscript(transcript, live);
+			} else {
+				replaceTranscript(transcript, live, { keepPosition: sameSession });
+			}
+			applyQueuedMessages(activeState.queuedMessages);
 			onStateChange();
 			if (activeSessionId) {
 				void loadTripwireAlerts(activeSessionId);
@@ -346,14 +378,13 @@ export function createSessionController({
 			stopRecovery();
 			setConnection("idle");
 			activeSessionPath = null;
-			clearFollowUpSync();
+			cursor = null;
 			activeSessionId = null;
 			activeState = null;
 			controllerClientId = null;
 			role = "viewer";
 			renderedSessionId = null;
 			resetTripwireAlerts();
-			pendingCompactionSummary = null;
 			chatView.renderQueuedMessages({ steering: [], followUp: [] });
 
 			chatView.renderReleased({ cliCommand: cmd });
@@ -375,12 +406,12 @@ export function createSessionController({
 		}
 
 		if (event.type === "agent_event") {
-			handleAgentEvent(event.event);
+			handleAgentEvent(event.event, typeof event.entryId === "string" ? event.entryId : undefined);
 			return;
 		}
 	}
 
-	function handleAgentEvent(event) {
+	function handleAgentEvent(event, entryId) {
 		if (!event || typeof event.type !== "string") return;
 
 		if (event.type === "queue_update") {
@@ -392,7 +423,7 @@ export function createSessionController({
 
 		if (event.type === "turn_start") {
 			pendingPrompt = false;
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
@@ -400,14 +431,14 @@ export function createSessionController({
 			pendingPrompt = false;
 			if (activeState) activeState.isStreaming = true;
 			onStateChange();
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
 		if (event.type === "agent_end") {
 			pendingPrompt = false;
 			onStateChange();
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
@@ -419,7 +450,7 @@ export function createSessionController({
 			pendingPrompt = false;
 			retryStatus = null;
 			onStateChange();
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
@@ -464,24 +495,17 @@ export function createSessionController({
 		if (event.type === "compaction_start") {
 			if (activeState) activeState.isCompacting = true;
 			compactionReason = typeof event.reason === "string" ? event.reason : null;
-			scheduleFollowUpSync();
 			onStateChange();
 			return;
 		}
 
 		if (event.type === "compaction_end") {
-			clearFollowUpSync();
 			if (activeState) activeState.isCompacting = false;
 			compactionReason = null;
 			onStateChange();
 			if (event.result && typeof event.result === "object") {
-				pendingCompactionSummary = {
-					role: "compactionSummary",
-					summary: event.result.summary,
-					tokensBefore: event.result.tokensBefore,
-					timestamp: Date.now(),
-				};
-				chatView.appendCompactionSummary(pendingCompactionSummary);
+				const summary = { role: "compactionSummary", summary: event.result.summary, tokensBefore: event.result.tokensBefore, timestamp: Date.now() };
+				chatView.appendCompactionSummary(summary, entryId);
 			} else if (event.aborted) {
 				chatView.appendNotice("Error: compaction cancelled", "error");
 			} else {
@@ -493,35 +517,35 @@ export function createSessionController({
 		if (event.type === "message_start") {
 			if (event.message && event.message.role === "assistant") {
 				pendingPrompt = false;
-				chatView.handleAgentEvent(event);
+				chatView.handleAgentEvent(event, entryId);
 				return;
 			}
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
 		if (event.type === "message_update") {
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
 		if (event.type === "message_end") {
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
 		if (event.type === "tool_execution_start") {
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
 		if (event.type === "tool_execution_update") {
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 
 		if (event.type === "tool_execution_end") {
-			chatView.handleAgentEvent(event);
+			chatView.handleAgentEvent(event, entryId);
 			return;
 		}
 	}
@@ -551,7 +575,8 @@ export function createSessionController({
 		activeState = null;
 		controllerClientId = null;
 		role = "viewer";
-		pendingCompactionSummary = null;
+		renderedSessionId = null;
+		cursor = null;
 		resetTripwireAlerts();
 
 		chatView.clear();
@@ -600,44 +625,8 @@ export function createSessionController({
 		}
 	}
 
-	async function syncState() {
-		if (!activeSessionId || activeSessionId === "replay" || syncInFlight) return;
-		if (connection === "reconnecting") {
-			scheduleRecovery(activeSessionId, 0);
-			return;
-		}
-		if (connection === "gone") return;
-		syncInFlight = true;
-		try {
-			const previousState = activeState;
-			const state = await api.getJson(sessionUrl(activeSessionId, "state"));
-			activeState = state;
-			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
-			// a live event stream already rendered everything; reconnects re-render from their init event
-			const shouldRenderMessages =
-				connection !== "live" &&
-				!activeState.isStreaming &&
-				!activeState.isCompacting &&
-				(Boolean(previousState?.isCompacting) || messagesChanged(previousState?.messages, activeState.messages));
-			if (shouldRenderMessages) {
-				renderStateMessages(activeState.messages || [], { keepPosition: true });
-			} else {
-				applyQueuedMessages(activeState.queuedMessages);
-			}
-			onStateChange();
-			if (activeState?.isCompacting) scheduleFollowUpSync();
-		} catch (error) {
-			console.error("Failed to sync session state", error);
-			if (activeState?.isCompacting) scheduleFollowUpSync(3000);
-		} finally {
-			syncInFlight = false;
-		}
-	}
-
 	async function selectSession(session) {
-		clearFollowUpSync();
 		stopRecovery();
-		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		if (session.isRunning) {
 			activeSessionId = session.id;
@@ -667,7 +656,6 @@ export function createSessionController({
 			activeState.isStreaming = false;
 		}
 		pendingPrompt = false;
-		scheduleFollowUpSync();
 		onStateChange();
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/command`, {
@@ -676,7 +664,6 @@ export function createSessionController({
 				customInstructions,
 			});
 		} catch (error) {
-			clearFollowUpSync();
 			if (activeState?.isCompacting) activeState.isCompacting = false;
 			const message = error instanceof Error ? error.message : String(error);
 			chatView.appendNotice(message, "error");
@@ -746,9 +733,7 @@ export function createSessionController({
 	}
 
 	function openSessionId(sessionId) {
-		clearFollowUpSync();
 		stopRecovery();
-		pendingCompactionSummary = null;
 		resetTripwireAlerts();
 		activeSessionId = sessionId;
 		activeSessionPath = null;
@@ -768,7 +753,7 @@ export function createSessionController({
 		appendNotice: chatView.appendNotice,
 		reset,
 		runReplay,
-		syncState,
+		resumeIfStale,
 		selectSession,
 		sendPrompt,
 		abortRun,

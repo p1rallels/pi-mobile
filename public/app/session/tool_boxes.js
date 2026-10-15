@@ -206,6 +206,18 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 		entry.box.classList.add(status);
 	}
 
+	/** Boxes created while a message streams go away with it if a resync replaces the unpersisted tail. */
+	function setProvisional(toolCallId, provisional) {
+		const entry = toolBoxes.get(toolCallId);
+		if (!entry) return;
+		if (provisional) entry.box.dataset.provisional = "1";
+		else delete entry.box.dataset.provisional;
+	}
+
+	function prune() {
+		toolBoxes = new Map([...toolBoxes].filter(([, entry]) => entry.box.isConnected));
+	}
+
 	function hasPendingTools() {
 		for (const entry of toolBoxes.values()) {
 			if (entry.box.classList.contains("pending")) return true;
@@ -224,6 +236,8 @@ export function createToolBoxManager({ mount, onContentChange = () => {} }) {
 	return {
 		clear,
 		ensure,
+		prune,
+		setProvisional,
 		has: (toolCallId) => toolBoxes.has(toolCallId),
 		setCall,
 		setDuration,
