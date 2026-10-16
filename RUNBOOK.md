@@ -62,7 +62,7 @@ On an always-on host, let launchd own pi-web and Caddy so a crash or reboot brin
 ```bash
 bun run cli -- service print     # review the generated LaunchAgents first
 bun run cli -- service install   # refuses while another pi-web answers on the port
-bun run cli -- service restart   # restart the server agent, e.g. after a deploy
+bun run cli -- service restart   # restart the server agent (inside pi-web: scripts/deploy-live)
 bun run cli -- service status    # launchd state plus /health
 bun run cli -- service uninstall
 ```
@@ -72,31 +72,6 @@ The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-
 On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime.
 
 `GET /health` reports the pi SDK version, uptime, memory, running/busy/viewer counts, and the tripwire and project trust modes.
-
-### Working on pi-web from pi-web
-
-The server serves `public/` straight from its checkout, so run the live server from a separate git worktree and edit the main checkout. Half-finished UI work then never reaches your phone, and testing never restarts the server you are talking through.
-
-```bash
-git worktree add --detach ../pi-web-live main              # once
-(cd ../pi-web-live && bun install)                          # once; deploys reinstall when bun.lock changes
-(cd ../pi-web-live && bun run cli -- service install)       # once: launchd runs the worktree
-```
-
-Run `service install` only from the worktree; from the main checkout it would point launchd at your work in progress.
-
-Deploy with `scripts/deploy-live [commit]` from the main checkout. The commit defaults to `HEAD` and can come from any branch, since the worktree runs a detached commit. A restart aborts running turns, including the one that asked for it, so the script queues itself in tmux and returns right away. The queued run waits until no session is mid-turn, then:
-
-1. checks the commit out in `../pi-web-live`
-2. runs `bun install --frozen-lockfile` there if `package.json` or `bun.lock` changed
-3. restarts the service and waits for a new server process to answer `/health`
-4. if none does within 90 seconds, puts back the commit that was live and restarts that
-
-A session still mid-turn after 10 minutes gets cut off (`PI_WEB_DEPLOY_MAX_WAIT=0` waits as long as it takes). The log is `/tmp/pi-web-deploy.log`; `--dry-run` shows what a deploy would do. Deploying the commit that is already live just restarts it, which makes the script the safe way to restart too. Open pages keep running the old frontend until you reload them. An agent working inside pi-web runs the script as the last step of its turn, and the deploy goes out once that turn is over.
-
-Tests and dev servers started from a pi-web session inherit the live server's `PI_WEB_*` settings. Run them through `scripts/sandbox` (`scripts/sandbox bun test`, `scripts/sandbox bun run test:e2e`). It starts them with a scrubbed environment and throwaway `PI_CODING_AGENT_DIR` and `PI_WEB_HOME` directories, so tests never read or write `~/.pi/agent` or `~/.pi-web`.
-
-Without launchd, run the worktree in tmux instead (`tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'`) and restart with Ctrl+C in that pane. In that setup, deploy by checking the commit out in the worktree yourself, or give `scripts/deploy-live` a restart command in `PI_WEB_DEPLOY_RESTART`.
 
 ### Toggles
 
@@ -285,6 +260,60 @@ Tune live-session limits with environment variables:
 PI_WEB_MAX_RUNNING_SESSIONS=24
 PI_WEB_MAX_CLIENTS_PER_SESSION=8
 ```
+
+---
+
+## Working on pi-web from pi-web
+
+The server serves `public/` straight from its checkout, so the live server runs from a separate git worktree and you edit the main checkout. Half-finished UI work then never reaches your phone, and testing never restarts the server you are talking through.
+
+```bash
+git worktree add --detach ../pi-web-live main              # once
+(cd ../pi-web-live && bun install)                          # once; deploys reinstall when bun.lock changes
+(cd ../pi-web-live && bun run cli -- service install)       # once: launchd runs the worktree
+```
+
+Run `service install` only from the worktree; from the main checkout it would point launchd at your work in progress. Without launchd, run the worktree in tmux instead (`tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'`) and restart with Ctrl+C in that pane.
+
+### Deploying
+
+Run `scripts/deploy-live [commit]` from the main checkout. The commit defaults to `HEAD` and can come from any branch, since the worktree runs a detached commit. A restart aborts running turns, including the one that asked for it, so the script queues itself in tmux and returns right away. The queued run waits until no session is mid-turn, then:
+
+1. checks the commit out in `../pi-web-live`
+2. runs `bun install --frozen-lockfile` there if `package.json` or `bun.lock` changed
+3. restarts the service and waits for a new server process to answer `/health`
+4. if none does within 90 seconds, puts back the commit that was live and restarts that
+
+- A session still mid-turn after 10 minutes gets cut off; `PI_WEB_DEPLOY_MAX_WAIT=0` waits as long as it takes.
+- The log is `/tmp/pi-web-deploy.log`, and `--dry-run` shows what a deploy would do.
+- Deploying the commit that is already live just restarts it, so this is also the safe way to restart.
+- What's live: `git -C ../pi-web-live log -1 --oneline` and `curl -s 127.0.0.1:4317/health`.
+- After a restart, the sessions that were running come back on their own. A session nobody ever sent a message to is gone, and its tile or page starts fresh in the same folder.
+- Open pages keep the old frontend until you reload them. A reload doesn't touch running sessions, which run on the host, but it drops unsent composer text.
+- Without launchd, check the commit out in the worktree yourself, or give the script a restart command in `PI_WEB_DEPLOY_RESTART`.
+
+### Tests and dev servers
+
+Shells inside a pi-web session inherit the live server's `PI_WEB_*` settings. Run anything that starts a server, a test suite, Playwright or the mock UI through `scripts/sandbox`. It starts the command with a scrubbed environment and throwaway `PI_CODING_AGENT_DIR` and `PI_WEB_HOME` directories, so nothing reads or writes `~/.pi/agent` or `~/.pi-web`.
+
+```bash
+scripts/sandbox bun run typecheck
+scripts/sandbox bun test                  # one file: scripts/sandbox bun test tests/x.test.ts
+scripts/sandbox bun run test:e2e          # one test: scripts/sandbox bunx playwright test tests/e2e/x.e2e.js --project=chromium -g "name"
+scripts/sandbox bun run mock              # the fake-data UI shell on :8787
+```
+
+Dev ports are 4318 (e2e), 4319 (a manual sandbox server), 8787 (mock UI), and anything from 4320 up. 4317, 8443 and 2019 belong to the live server and Caddy.
+
+### Rules for agents working inside pi-web
+
+You are most likely talking to the user through the live server, so a restart ends your own turn and every other session's.
+
+- Deploy only when the user asks for it. Then, with the checks passing and everything committed, run `scripts/deploy-live` as the last tool call of your turn, and reply. The deploy goes out once your turn is over. Tell the user three things: whether another session is mid-turn (`busySessions` in `/health` counts yours too), that open tabs need a reload once it's live (copy unsent drafts first), and where the log is.
+- The live worktree changes only through `scripts/deploy-live`. Never edit, build, `bun install` or run git in it by hand, and never run `launchctl` or `pi-web service|start|secure|config|device|host` yourself. Leave `~/.pi-web`, `~/Library/LaunchAgents` and the Caddyfile alone.
+- Never kill processes by name (`pkill`, `killall`, `kill $(pgrep bun)`): the live server is a bun process. Only kill pids you started, or tmux sessions on your own socket.
+- Run tests and servers only through `scripts/sandbox`, and never bind or kill anything on 4317, 8443 or 2019.
+- Don't read or print `~/.pi/agent/auth.json`, and don't edit pi's own settings (`~/.pi/agent/settings.json`, `models.json`, `trust.json`, anything in `~/.pi/agent/pi-web/`).
 
 ---
 
