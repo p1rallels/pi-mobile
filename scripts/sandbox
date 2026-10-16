@@ -1,0 +1,37 @@
+#!/bin/bash
+# Runs a command with a scrubbed environment and throwaway pi / pi-web state. A shell inside a pi-web session
+# inherits the live server's PI_WEB_* settings, and tests must never read or write ~/.pi-web or ~/.pi/agent
+# (sessions, detached-sessions.json, repos, trust, auth). See RUNBOOK.md, "Working on pi-web from pi-web".
+#
+# usage: scripts/sandbox <cmd...>
+#   scripts/sandbox bun run typecheck | scripts/sandbox bun test | scripts/sandbox bun run test:e2e
+# state: $PI_WEB_SANDBOX_DIR, default $TMPDIR/pi-web-sandbox (kept between runs)
+set -euo pipefail
+
+if [ "$#" -eq 0 ]; then
+	echo "usage: scripts/sandbox <cmd...>" >&2
+	exit 2
+fi
+
+state="${PI_WEB_SANDBOX_DIR:-${TMPDIR:-/tmp}/pi-web-sandbox}"
+mkdir -p "$state/agent" "$state/pi-web-home"
+
+# bun run puts node_modules/.bin on PATH; a server launched that way must not hand its checkout's tools on
+path="$(printf '%s' "$PATH" | tr ':' '\n' | { grep -v '/node_modules/\.bin$' || true; } | paste -sd ':' -)"
+
+keep=()
+[ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && keep+=("PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH")
+
+exec env -i \
+	"HOME=$HOME" \
+	"USER=${USER:-$(id -un)}" \
+	"LOGNAME=${LOGNAME:-$(id -un)}" \
+	"SHELL=/bin/bash" \
+	"LANG=${LANG:-en_US.UTF-8}" \
+	"TERM=${TERM:-xterm-256color}" \
+	"TMPDIR=${TMPDIR:-/tmp/}" \
+	"PATH=$path" \
+	"PI_CODING_AGENT_DIR=$state/agent" \
+	"PI_WEB_HOME=$state/pi-web-home" \
+	${keep[@]+"${keep[@]}"} \
+	"$@"

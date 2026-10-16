@@ -79,13 +79,24 @@ The server serves `public/` straight from its checkout, so run the live server f
 
 ```bash
 git worktree add --detach ../pi-web-live main              # once
-(cd ../pi-web-live && bun install)                          # once, and when dependencies change
+(cd ../pi-web-live && bun install)                          # once; deploys reinstall when bun.lock changes
 (cd ../pi-web-live && bun run cli -- service install)       # once: launchd runs the worktree
 ```
 
-Deploy a new build: commit on `main`, then `git -C ../pi-web-live checkout --detach main`, run `bun install` there if `bun.lock` changed, and `bun run cli -- service restart`. A restart aborts running turns, including the one that asked for it, so make it the last step. Run `service install` only from the worktree; from the main checkout it would point launchd at your work in progress.
+Run `service install` only from the worktree; from the main checkout it would point launchd at your work in progress.
 
-Without launchd, run the worktree in tmux instead (`tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'`) and restart with Ctrl+C in that pane.
+Deploy with `scripts/deploy-live [commit]` from the main checkout. The commit defaults to `HEAD` and can come from any branch, since the worktree runs a detached commit. A restart aborts running turns, including the one that asked for it, so the script queues itself in tmux and returns right away. The queued run waits until no session is mid-turn, then:
+
+1. checks the commit out in `../pi-web-live`
+2. runs `bun install --frozen-lockfile` there if `package.json` or `bun.lock` changed
+3. restarts the service and waits for a new server process to answer `/health`
+4. if none does within 90 seconds, puts back the commit that was live and restarts that
+
+A session still mid-turn after 10 minutes gets cut off (`PI_WEB_DEPLOY_MAX_WAIT=0` waits as long as it takes). The log is `/tmp/pi-web-deploy.log`; `--dry-run` shows what a deploy would do. Deploying the commit that is already live just restarts it, which makes the script the safe way to restart too. Open pages keep running the old frontend until you reload them. An agent working inside pi-web runs the script as the last step of its turn, and the deploy goes out once that turn is over.
+
+Tests and dev servers started from a pi-web session inherit the live server's `PI_WEB_*` settings. Run them through `scripts/sandbox` (`scripts/sandbox bun test`, `scripts/sandbox bun run test:e2e`). It starts them with a scrubbed environment and throwaway `PI_CODING_AGENT_DIR` and `PI_WEB_HOME` directories, so tests never read or write `~/.pi/agent` or `~/.pi-web`.
+
+Without launchd, run the worktree in tmux instead (`tmux new-session -d -s piweb -c ../pi-web-live 'bun run cli -- start; exec zsh'`) and restart with Ctrl+C in that pane. In that setup, deploy by checking the commit out in the worktree yourself, or give `scripts/deploy-live` a restart command in `PI_WEB_DEPLOY_RESTART`.
 
 ### Toggles
 
