@@ -575,6 +575,87 @@ test("the launcher lists a directory's sessions, resumes one in place, starts ne
 	}
 });
 
+test("/quit in a tile stops its session and leaves a launcher at the directory step in its place; a quit the host refuses keeps the tile and the /quit", async ({ page }, testInfo) => {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
+	const cwd = join(root, "quit-repo");
+	await mkdir(cwd);
+	await writeSessionFile(root, cwd, S1, "hello from disk", "hi there");
+	const port = await freePort();
+	const base = `http://127.0.0.1:${port}`;
+	const server = await startServer(root, port);
+	const activeIds = () => page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.map((s) => s.id));
+	const savedIds = () => page.evaluate(async () => (await (await fetch("/api/canvas")).json()).tiles.map((t) => t.sessionId));
+	const launcherRect = () =>
+		page.evaluate(() => {
+			const { canvas, launchers } = window.__canvas;
+			return canvas.tiles.get([...launchers.keys()][0])?.rect ?? null;
+		});
+	try {
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await page.goto(`${base}/?ui=phone`);
+		await page.evaluate(async (repo) => {
+			await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+			const res = await fetch("/api/repos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo }) });
+			if (!res.ok) throw new Error(`repo not added: ${res.status}`);
+		}, cwd);
+
+		await page.goto(`${base}/?ui=canvas`);
+		await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
+		await page.locator('.cv-hud-btn[data-act="new"]').click();
+		const launcher = page.locator(".cv-tile.cv-launcher");
+		await launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`).click();
+		await launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`).click();
+		await expect(launcher).toHaveCount(0);
+		const composer = tile(page, S1).locator("textarea");
+		await expect(composer).toBeEnabled();
+		await expect(composer).toBeFocused();
+		await expect.poll(activeIds).toEqual([S1]);
+		await expect.poll(savedIds).toEqual([S1]);
+		const rect = await page.evaluate((id) => window.__canvas.canvas.tiles.get(id).rect, S1);
+
+		// the host refuses the release: the tile and its session stay, and /quit goes back in the composer
+		await page.route("**/api/sessions/*/release", (route) => route.fulfill({ status: 500, json: { error: "host said no" } }));
+		await composer.fill("/quit");
+		await composer.press("Enter");
+		await expect(tile(page, S1).locator(".notice-text.error")).toHaveText("Not quit: host said no");
+		await expect(composer).toHaveValue("/quit");
+		await expect(launcher).toHaveCount(0);
+		expect(await activeIds()).toEqual([S1]);
+		await page.unroute("**/api/sessions/*/release");
+
+		// enter again: the session stops and a launcher takes the tile's place, back at picking a directory; the tile
+		// never shows the release on its way out
+		await page.evaluate((id) => {
+			const el = document.querySelector(`.cv-tile[data-tile-id="${id}"]`);
+			window.__showedRelease = false;
+			new MutationObserver(() => {
+				if (el?.textContent?.includes("Released.")) window.__showedRelease = true;
+			}).observe(el, { childList: true, subtree: true, characterData: true });
+		}, S1);
+		await composer.press("Enter");
+		await expect(tile(page, S1)).toHaveCount(0);
+		expect(await page.evaluate(() => window.__showedRelease)).toBe(false);
+		await expect(launcher).toHaveCount(1);
+		await expect(launcher).toHaveClass(/cv-focused/);
+		await expect(launcher.locator(".cv-launch-crumb")).toHaveText("open a session · pick a directory");
+		await expect(launcher.locator(".cv-launch-search")).toBeFocused();
+		expect(await launcherRect()).toEqual(rect);
+		await expect.poll(activeIds).toEqual([]);
+		await expect.poll(savedIds).toEqual([]);
+		await page.screenshot({ path: testInfo.outputPath("quit-launcher.png") });
+		await testInfo.attach("quit-launcher", { path: testInfo.outputPath("quit-launcher.png"), contentType: "image/png" });
+
+		// its file stays: the directory still lists it, not running, to pick up again
+		await launcher.locator(`.cv-launch-row[data-key="repo:${cwd}"]`).click();
+		await expect(launcher.locator(`.cv-launch-row[data-key="session:${S1}"]`)).toContainText("hello from disk");
+		await expect(launcher.locator(`.cv-launch-row[data-key="session:${S1}"] .cv-launch-badge`)).toHaveCount(0);
+	} finally {
+		server.kill("SIGTERM");
+		await new Promise((resolve) => server.once("exit", resolve));
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("the launcher browses folders from a typed path: tab drills in, enter adds and opens, a new name makes one folder inside home", async ({ page }, testInfo) => {
 	const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-canvas-e2e-"));
 	const home = join(root, "me");

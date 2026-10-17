@@ -1,6 +1,8 @@
 // The laptop canvas shell (?ui=canvas): Infinite in the browser. No sidebar: every tile is a session
 // pane, and the HUD holds zoom, new tile and the host switcher. One tile per session; the red dot only
 // takes a tile off the canvas (the session keeps running, release stays explicit in the ⋯ menu).
+// /quit in a tile's composer stops its session like quitting pi, and the tile goes back to picking a
+// directory in the same place, the way a terminal tile is back at the shell once pi exits.
 // Tiles of sessions that aren't running stay dormant (no runtime attached) until you click them; a
 // session another pi is in the middle of (a terminal pi, a pfs sub) gets a tile that follows its file.
 // A tile whose session never got a message (so pi never wrote it) and stopped running goes fresh instead:
@@ -540,6 +542,7 @@ export async function bootCanvas() {
 			getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 			onStateChange: () => renderTileChrome(entry.id),
 			onFreshStarted: (sessionId) => adoptSession(entry, sessionId),
+			onQuit: () => backToLauncher(entry),
 			goneNotice: null,
 			transcriptWindow: TRANSCRIPT_WINDOW,
 			tileUi: {
@@ -647,6 +650,18 @@ export async function bootCanvas() {
 		if (focusedTileId === previous) focusedTileId = sessionId;
 		scheduleSave();
 		renderTileChrome(sessionId);
+	}
+
+	/**
+	 * /quit stopped the tile's session (session/pane.js): a launcher takes its place, at the directory step, and the
+	 * tile leaves the map.
+	 * @param {TileEntry} entry
+	 */
+	function backToLauncher(entry) {
+		const rect = canvas.tiles.get(entry.id)?.rect;
+		if (!rect || entries.get(entry.id) !== entry) return;
+		openLauncher(rect);
+		removeSessionTile(entry.id);
 	}
 
 	/** @param {TileEntry} entry */

@@ -199,6 +199,38 @@ test.describe("canvas", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+
+	test("/quit in a fresh tile starts no session and leaves a launcher in its place", async ({ page }) => {
+		const { root, cwd, port, base } = await setup();
+		let server = await startServer(root, port);
+		try {
+			await page.setViewportSize({ width: 1440, height: 900 });
+			await page.goto(`${base}/?ui=phone`);
+			await addRepo(page, cwd);
+			await page.goto(`${base}/?ui=canvas`);
+			await expect.poll(() => page.evaluate(() => Boolean(window.__canvas))).toBe(true);
+
+			const first = await newSessionTile(page, cwd);
+			await stopServer(server);
+			server = await startServer(root, port);
+			await expect.poll(() => isFresh(page, first), { timeout: 20_000 }).toBe(true);
+
+			const composer = tile(page, first).locator("textarea");
+			await composer.fill("/quit");
+			await composer.press("Enter");
+			const launcher = page.locator(".cv-tile.cv-launcher");
+			await expect(launcher).toHaveCount(1);
+			await expect(tile(page, first)).toHaveCount(0);
+			await expect(launcher.locator(".cv-launch-crumb")).toHaveText("open a session \u00b7 pick a directory");
+			await expect(launcher.locator(".cv-launch-search")).toBeFocused();
+			await expect.poll(() => savedTiles(page)).toEqual([]);
+			expect(await tileIds(page)).toEqual([]);
+			expect(await activeSessions(page)).toEqual([]);
+		} finally {
+			await stopServer(server).catch(() => {});
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 });
 
 test("the phone keeps its draft across a restart that took a never-messaged session, and sending starts a new one", async ({ page }, testInfo) => {
