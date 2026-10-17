@@ -1,0 +1,4 @@
+#!/bin/sh
+# pi-web terminal tiles never read the browser's clipboard: paste with cmd+v instead.
+echo "pbpaste: not in pi-web terminals, the clipboard lives in your browser (paste with cmd+v)" >&2
+exit 1

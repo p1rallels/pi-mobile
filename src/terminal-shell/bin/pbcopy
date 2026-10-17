@@ -1,0 +1,5 @@
+#!/bin/sh
+# pi-web terminal tiles: the shell runs on the host but the clipboard you paste from is the browser's, so pbcopy hands
+# stdin to the browser (OSC 52) instead of the host's pasteboard. The real pbcopy's flags don't apply and are ignored.
+payload=$(base64 | tr -d '\r\n') || exit 1
+printf '\033]52;c;%s\007' "$payload" > /dev/tty
