@@ -1,6 +1,7 @@
 // The laptop canvas shell (?ui=canvas): Infinite in the browser. No sidebar: every tile is a session
-// pane, and the HUD holds zoom, new tile and the host switcher. One tile per session; the red dot only
-// takes a tile off the canvas (the session keeps running, release stays explicit in the ⋯ menu).
+// pane (or a terminal, see terminal/terminal_tile.js), and the HUD holds zoom, new tile and the host switcher.
+// One tile per session; the red dot only takes a session tile off the canvas (the session keeps running,
+// release stays explicit in the ⋯ menu), while on a terminal tile it closes the shell.
 // /quit in a tile's composer stops its session like quitting pi, and the tile goes back to picking a
 // directory in the same place, the way a terminal tile is back at the shell once pi exits.
 // Tiles of sessions that aren't running stay dormant (no runtime attached) until you click them; a
@@ -130,6 +131,19 @@ export async function bootCanvas() {
 	let layoutStore = createLayoutStore(api, window.localStorage);
 	/** @type {Map<string, TileEntry>} */
 	const entries = new Map();
+	/**
+	 * Terminal tiles, keyed by the shell's id on the host (`terminal-new-<n>` until it opens). `tile` is null until the
+	 * terminal code (and xterm) loads, which happens with the first one.
+	 * @typedef {{ id: string, cwd: string | null, title: string | null, tile: ReturnType<typeof import("./terminal/terminal_tile.js").createTerminalTile> | null }} TerminalEntry
+	 */
+	/** @type {Map<string, TerminalEntry>} */
+	const terminals = new Map();
+	let terminalSeq = 0;
+	/** @type {Promise<typeof import("./terminal/terminal_tile.js")> | null} */
+	let terminalModule = null;
+	/** Terminal tiles of another host's map, kept as they are: shells only open on the host serving this page. @type {any[]} */
+	let keptTerminalTiles = [];
+	const terminalsHere = () => api.getBaseUrl() === window.location.origin;
 	let saveTimer = 0;
 	let layoutLoaded = false;
 
@@ -142,16 +156,21 @@ export async function bootCanvas() {
 		focusComposer: (id) => {
 			const launcher = launchers.get(id);
 			if (launcher) launcher.focus();
+			else if (terminals.has(id)) terminals.get(id)?.tile?.focus();
 			else focusComposer(id);
 		},
 		onActivate: (id) => wake(id),
 		onCloseRequest: (id) => {
 			if (launchers.has(id)) closeLauncher(id);
+			else if (terminals.has(id)) closeTerminal(id);
 			else removeSessionTile(id);
 		},
 		onGeometryCommit: () => scheduleSave(),
 		onCameraSettle: (camera) => saveCamera(window.localStorage, api.getBaseUrl(), camera),
-		onVisibilityChange: (id, visible) => onTileVisibility(id, visible),
+		onVisibilityChange: (id, visible) => {
+			if (terminals.has(id)) terminals.get(id)?.tile?.setVisible(visible);
+			else onTileVisibility(id, visible);
+		},
 		onEscape: (id, event) => {
 			// the host menu first: esc must never reach a tile's abort while a menu is open over it
 			if (shellMenu.isOpen()) {
@@ -299,6 +318,7 @@ export async function bootCanvas() {
 			doc: document,
 			api,
 			getClientId: () => clients.current(),
+			canOpenTerminal: terminalsHere,
 			isOnCanvas: (sessionId) => entries.has(sessionId),
 			onPick: (pick) => onLauncherPick(id, pick),
 			onClose: () => closeLauncher(id),
@@ -327,6 +347,11 @@ export async function bootCanvas() {
 	function onLauncherPick(launcherId, pick) {
 		const rect = canvas.tiles.get(launcherId)?.rect;
 		if (!rect) return;
+		if (pick.kind === "terminal") {
+			closeLauncher(launcherId);
+			addTerminalTile({ terminalId: null, cwd: pick.cwd, title: null, rect, focus: true });
+			return;
+		}
 		const sessionId = pick.kind === "created" ? pick.sessionId : pick.session.id;
 		closeLauncher(launcherId);
 		if (entries.has(sessionId)) {
@@ -390,8 +415,15 @@ export async function bootCanvas() {
 			const tile = canvas.tiles.get(entry.id);
 			return tile ? [{ sessionId: entry.id, path: entry.path, title: entry.title, ...tile.rect }] : [];
 		});
+		// a terminal tile whose shell never opened has nothing to come back to
+		const terminalTiles = [...terminals.values()].flatMap((entry) => {
+			const tile = canvas.tiles.get(entry.id);
+			const terminalId = entry.tile ? entry.tile.getId() : entry.id.startsWith("terminal-new-") ? null : entry.id;
+			if (!tile || !terminalId) return [];
+			return [{ kind: "terminal", terminalId, cwd: entry.tile?.getCwd() ?? entry.cwd, title: entry.tile?.getTitle() ?? entry.title, ...tile.rect }];
+		});
 		try {
-			await layoutStore.save({ tiles });
+			await layoutStore.save({ tiles: [...tiles, ...terminalTiles, ...keptTerminalTiles] });
 		} catch (error) {
 			console.warn("canvas layout not saved", error);
 		}
@@ -839,8 +871,99 @@ export async function bootCanvas() {
 		scheduleSave();
 	}
 
+	/**
+	 * A terminal tile: with no `terminalId` it opens a new shell in `cwd`; with one it attaches to that shell, or opens a
+	 * new one in `cwd` when the host no longer has it (a restart). Only on the host serving the page.
+	 * @param {{ terminalId: string | null, cwd: string | null, title: string | null, rect: import("./canvas/camera.js").Rect, focus?: boolean }} spec
+	 */
+	function addTerminalTile({ terminalId, cwd, title, rect, focus = false }) {
+		terminalSeq += 1;
+		const id = terminalId ?? `terminal-new-${terminalSeq}`;
+		if (terminals.has(id) || canvas.tiles.has(id)) return;
+		const tile = canvas.tiles.addTile({ id, rect, title: title || repoName(cwd) || "terminal" });
+		tile.el.classList.add("cv-terminal");
+		/** @type {TerminalEntry} */
+		const entry = { id, cwd, title, tile: null };
+		terminals.set(id, entry);
+		if (focus) canvas.tiles.focusTile(id);
+		terminalModule ??= import("./terminal/terminal_tile.js");
+		terminalModule.then(
+			({ createTerminalTile }) => {
+				if (terminals.get(entry.id) !== entry) return;
+				entry.tile = createTerminalTile({
+					doc: document,
+					api,
+					tile,
+					terminalId,
+					cwd,
+					title,
+					getScale: () => canvas.viewport.getCamera().scale,
+					isFocused: () => canvas.tiles.focusedId() === entry.id,
+					refreshClient: () => clients.refresh(),
+					onIdChange: (next) => renameTerminal(entry, next),
+					onChange: () => scheduleSave(),
+					onRemove: () => removeTerminalTile(entry.id),
+				});
+				entry.tile.setVisible(tile.visible);
+			},
+			(/** @type {unknown} */ error) => notice(`Couldn't load the terminal: ${error instanceof Error ? error.message : String(error)}`),
+		);
+	}
+
+	/** The tile takes the id of the shell it opened; the map and the saved layout follow. @param {TerminalEntry} entry @param {string} next */
+	function renameTerminal(entry, next) {
+		const previous = entry.id;
+		if (previous === next || terminals.get(previous) !== entry || canvas.tiles.has(next)) return;
+		if (!canvas.tiles.renameTile(previous, next)) return;
+		renameKey(terminals, previous, next);
+		entry.id = next;
+		if (focusedTileId === previous) focusedTileId = next;
+		scheduleSave();
+	}
+
+	/** The red dot on a terminal tile closes its shell (asking first if vim, ssh or the like runs in it). @param {string} id */
+	function closeTerminal(id) {
+		const entry = terminals.get(id);
+		if (entry?.tile) void entry.tile.requestClose();
+		else removeTerminalTile(id);
+	}
+
+	/** @param {string} id */
+	function removeTerminalTile(id) {
+		const entry = terminals.get(id);
+		if (!entry) return;
+		terminals.delete(id);
+		entry.tile?.destroy();
+		canvas.tiles.removeTile(id);
+		scheduleSave();
+	}
+
+	/** Shells the host runs that no tile shows (opened in another browser, or dropped from the map) get tiles. */
+	async function addOrphanTerminals() {
+		let list;
+		try {
+			const data = await api.getJson("/api/terminals");
+			list = Array.isArray(data?.terminals) ? data.terminals : [];
+		} catch {
+			// an older host, or terminals turned off
+			return;
+		}
+		for (const info of list) {
+			if (typeof info?.id !== "string" || terminals.has(info.id)) continue;
+			const cwd = typeof info.cwd === "string" ? info.cwd : null;
+			const title = typeof info.title === "string" ? info.title : null;
+			addTerminalTile({ terminalId: info.id, cwd, title, rect: nextFreeSlot(canvas.tiles.rects()) });
+		}
+	}
+
 	function clearTiles() {
 		for (const id of [...launchers.keys()]) closeLauncher(id);
+		// leaving this host's map: the shells keep running
+		for (const [id, entry] of [...terminals.entries()]) {
+			terminals.delete(id);
+			entry.tile?.destroy();
+			canvas.tiles.removeTile(id);
+		}
 		for (const id of [...entries.keys()]) {
 			const entry = entries.get(id);
 			entries.delete(id);
@@ -905,13 +1028,20 @@ export async function bootCanvas() {
 			runningSessions().catch(() => []),
 		]);
 		const activeById = new Map(running.map((session) => [session.id, session]));
+		keptTerminalTiles = [];
 		for (const tile of layout.tiles) {
+			if ("kind" in tile) {
+				if (!terminalsHere()) keptTerminalTiles.push(tile);
+				else addTerminalTile({ terminalId: tile.terminalId, cwd: tile.cwd, title: tile.title, rect: tile });
+				continue;
+			}
 			const active = activeById.get(tile.sessionId);
 			const title = tile.title ?? tile.sessionId.slice(0, 8);
 			const path = tile.path ?? active?.path ?? null;
 			const spec = { id: tile.sessionId, path, title, rect: tile, running: active?.isRunning === true };
 			addSessionTile({ ...spec, elsewhere: elsewhereOf(active), forkLabel: active?.forkLabel ?? null });
 		}
+		if (terminalsHere()) await addOrphanTerminals();
 		if (layout.tiles.length === 0) await addRunningSessions();
 	}
 
@@ -1001,5 +1131,5 @@ export async function bootCanvas() {
 	renderHostButton();
 	await loadCanvas();
 	connectStatus();
-	Object.assign(window, { __canvas: { canvas, entries, launchers, openLauncher, clientId: () => clients.current(), status: () => statusById } });
+	Object.assign(window, { __canvas: { canvas, entries, launchers, terminals, openLauncher, clientId: () => clients.current(), status: () => statusById } });
 }

@@ -132,6 +132,8 @@ export function installFaceIdGuard({
 		setLocked(false);
 		if (wasLocked) restoreFocus();
 		resolveInitialUnlock();
+		// what waited on a check (a terminal tile opening its shell) tries again
+		if (wasLocked) window.dispatchEvent(new Event("pi-web-faceid-unlocked"));
 	}
 
 	function checkIsFresh() {

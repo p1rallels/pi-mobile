@@ -136,21 +136,29 @@ export function createViewport({ root, world, camera: initialCamera, isEmptyCanv
 		scheduleGestureEnd();
 	}
 
-	/** @param {WheelEvent} event */
+	/**
+	 * Runs in the capture phase and stops what it acts on (pinch, cmd+wheel, a pan that started on empty canvas), so a
+	 * tile that takes every wheel itself (a terminal running vim) never eats a zoom or a pan. Plain wheels over a tile
+	 * go on to the tile.
+	 * @param {WheelEvent} event
+	 */
 	function onWheel(event) {
 		if (safariPinch) {
 			event.preventDefault();
+			event.stopPropagation();
 			return;
 		}
 		const delta = wheelPixels(event, size);
 		if (event.ctrlKey) {
 			event.preventDefault();
+			event.stopPropagation();
 			liveFromWheel(zoomAt(camera, local(event), camera.scale * wheelZoomFactor(delta.y)));
 			return;
 		}
 		// a wheel pan that started on empty canvas keeps panning when the cursor drifts over a tile
 		if (!event.metaKey && !wheelPanLatched && !isEmptyCanvas(event.target)) return;
 		event.preventDefault();
+		event.stopPropagation();
 		wheelPanLatched = true;
 		const horizontal = event.shiftKey && delta.x === 0;
 		liveFromWheel(panBy(camera, horizontal ? -delta.y : -delta.x, horizontal ? 0 : -delta.y));
@@ -229,7 +237,7 @@ export function createViewport({ root, world, camera: initialCamera, isEmptyCanv
 	});
 	resizeObserver.observe(root);
 
-	root.addEventListener("wheel", onWheel, { passive: false });
+	root.addEventListener("wheel", onWheel, { passive: false, capture: true });
 	root.addEventListener("gesturestart", onGestureStart);
 	root.addEventListener("gesturechange", onGestureChange);
 	root.addEventListener("gestureend", onGestureEnd);
@@ -263,7 +271,7 @@ export function createViewport({ root, world, camera: initialCamera, isEmptyCanv
 			view.clearTimeout(idleTimer);
 			cancelPan?.();
 			resizeObserver.disconnect();
-			root.removeEventListener("wheel", onWheel);
+			root.removeEventListener("wheel", onWheel, { capture: true });
 			root.removeEventListener("gesturestart", onGestureStart);
 			root.removeEventListener("gesturechange", onGestureChange);
 			root.removeEventListener("gestureend", onGestureEnd);

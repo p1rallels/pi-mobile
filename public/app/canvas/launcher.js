@@ -1,5 +1,6 @@
 // The launcher tile: pick a directory (saved repos + the server's cwd, folders pi has been used in, or a typed /path or ~/path
-// that browses the host's folders and adds or creates one), then a session from it (newest first) or a new one. The host turns
+// that browses the host's folders and adds or creates one), then a session from it (newest first), a new one, or a terminal
+// there (on the host serving the page). The host turns
 // the launcher into that session's tile in place, or flies to the tile when the session is already on the canvas. Answers a
 // project trust prompt inline.
 import { createSessionWithTrust } from "../session/project_trust.js";
@@ -10,7 +11,7 @@ const DIR_DEBOUNCE_MS = 120;
 
 /**
  * @typedef {{ id: string, path: string | null, cwd: string, name?: string, firstMessage?: string, modified?: string, isRunning?: boolean, elsewhere?: { state: string }, forkLabel?: string }} SessionSummary
- * @typedef {{ kind: "created", sessionId: string, cwd: string } | { kind: "session", session: SessionSummary }} LauncherPick
+ * @typedef {{ kind: "created", sessionId: string, cwd: string } | { kind: "session", session: SessionSummary } | { kind: "terminal", cwd: string }} LauncherPick
  * @typedef {{ key: string, primary: string, secondary: string, badge?: string, muted?: boolean, pick: () => void, complete?: string }} Row
  * @typedef {{ name: string, path: string }} DirEntry
  * @typedef {{ query: string, path: string, exists: boolean, parent: string, parentExists: boolean, insideHome: boolean, canCreate: boolean, entries: DirEntry[], truncated: boolean }} DirListing
@@ -152,9 +153,10 @@ export function matchesQuery(query, text) {
  *   onPick: (pick: LauncherPick) => void,
  *   onClose: () => void,
  *   onTitle?: (title: string) => void,
+ *   canOpenTerminal?: () => boolean,
  * }} options
  */
-export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onClose, onTitle = () => {} }) {
+export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onClose, onTitle = () => {}, canOpenTerminal = () => false }) {
 	/** @template {keyof HTMLElementTagNameMap} K @param {K} tag @param {string} className @param {string} [text] */
 	function h(tag, className, text) {
 		const el = doc.createElement(tag);
@@ -307,6 +309,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		const { cwd } = view;
 		const now = Date.now();
 		const fresh = { key: "new", primary: "+ new session", secondary: cwd, pick: () => void startSession(cwd) };
+		const terminal = canOpenTerminal() ? [{ key: "terminal", primary: "+ new terminal", secondary: cwd, pick: () => onPick({ kind: "terminal", cwd }) }] : [];
 		const listed = sessions
 			.filter((session) => matchesQuery(query, `${sessionLabel(session)} ${session.id}`))
 			.map((session) => ({
@@ -316,7 +319,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 				badge: isOnCanvas(session.id) ? "on canvas" : session.isRunning ? "running" : elsewhereBadge(session) || undefined,
 				pick: () => onPick({ kind: "session", session }),
 			}));
-		return [fresh, ...listed];
+		return [fresh, ...terminal, ...listed];
 	}
 
 	/** @param {number} shown */

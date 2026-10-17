@@ -1,0 +1,393 @@
+// A terminal tile on the canvas. It opens a shell on the host (POST /api/terminals) or attaches to the one it had, and
+// keeps attaching through dropped sockets and host restarts: a shell that's gone (the host restarted) comes back as a
+// new one in the same folder, never re-running what the old one ran. The red dot asks first when vim, ssh or anything
+// else runs in the foreground; exit in the shell closes the tile. Shells end when the Face ID check they run under
+// runs out, so the tile counts down the last minutes and offers a check that keeps them open.
+import { createTerminalView, loadTerminalStyles } from "./terminal_view.js";
+
+const EXPIRY_WARNING_MS = 10 * 60_000;
+const RETRY_MS = [500, 1_000, 2_000, 4_000, 8_000];
+const FLASH_MS = 2_000;
+
+/** @param {string | null | undefined} cwd */
+const folderName = (cwd) => (cwd ? (cwd.split("/").filter(Boolean).at(-1) ?? cwd) : "terminal");
+
+/** "4:05" @param {number} ms */
+function clock(ms) {
+	const seconds = Math.max(0, Math.ceil(ms / 1000));
+	return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** @param {string} text */
+function lineCount(text) {
+	const lines = text.replace(/\n$/, "").split("\n").length;
+	return `${lines} line${lines === 1 ? "" : "s"}`;
+}
+
+/** @param {unknown} error */
+const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+/** @param {unknown} error */
+const statusOf = (error) => /** @type {any} */ (error)?.status;
+/** The host wants a (fresher) Face ID check; other 401s mean the browser session cookie is gone. @param {unknown} error */
+const needsFaceId = (error) => statusOf(error) === 401 && /face id/i.test(messageOf(error));
+
+/** @typedef {"waiting" | "opening" | "attaching" | "live" | "reconnecting" | "faceid" | "ended" | "failed"} TerminalTileState */
+
+/**
+ * One run at a time: a call while one is in flight gets that one (a retry timer, a passed Face ID check and a click
+ * can all ask at once, and two opens would start two shells).
+ * @param {() => Promise<void>} run
+ */
+function exclusive(run) {
+	/** @type {Promise<void> | null} */
+	let running = null;
+	return () => {
+		running ??= run().finally(() => {
+			running = null;
+		});
+		return running;
+	};
+}
+
+/** @type {Record<TerminalTileState, { text: string, kind: string }>} */
+const PILLS = {
+	waiting: { text: "terminal", kind: "idle" },
+	opening: { text: "opening…", kind: "idle" },
+	attaching: { text: "connecting…", kind: "idle" },
+	live: { text: "terminal", kind: "idle" },
+	reconnecting: { text: "reconnecting…", kind: "offline" },
+	faceid: { text: "face id", kind: "waiting" },
+	ended: { text: "closed", kind: "offline" },
+	failed: { text: "error", kind: "error" },
+};
+
+/**
+ * @param {{
+ *   doc: Document,
+ *   api: { getJson: (path: string) => Promise<any>, postJson: (path: string, body: unknown) => Promise<any>, resolveUrl: (path: string) => string },
+ *   tile: { body: HTMLElement, titleEl: HTMLElement, statusEl: HTMLElement },
+ *   terminalId: string | null,
+ *   cwd: string | null,
+ *   title: string | null,
+ *   getScale: () => number,
+ *   isFocused: () => boolean,
+ *   refreshClient: () => Promise<unknown>,
+ *   onIdChange: (id: string) => void,
+ *   onChange: () => void,
+ *   onRemove: () => void,
+ * }} options
+ */
+export function createTerminalTile(options) {
+	const { doc, api, tile } = options;
+	const view = /** @type {Window} */ (doc.defaultView);
+	let id = options.terminalId;
+	let cwd = options.cwd;
+	let title = options.title;
+	/** @type {TerminalTileState} */
+	let state = "waiting";
+	let note = "";
+	/** @type {number | null} */
+	let expiresAt = null;
+	let visible = false;
+	let destroyed = false;
+	let retries = 0;
+	let retryTimer = 0;
+	let expiryTimer = 0;
+	let flashTimer = 0;
+	/** What a passed Face ID check should run again. @type {(() => Promise<void>) | null} */
+	let afterCheck = null;
+	/** @type {ReturnType<typeof createTerminalView> | null} */
+	let screen = null;
+
+	/** @template {keyof HTMLElementTagNameMap} K @param {K} tag @param {string} className @param {string} [text] */
+	function h(tag, className, text) {
+		const el = doc.createElement(tag);
+		el.className = className;
+		if (text !== undefined) el.textContent = text;
+		return el;
+	}
+
+	const pill = h("span", "cv-pill");
+	tile.statusEl.append(pill);
+	const screenEl = h("div", "cv-term-screen");
+	const expiry = h("div", "cv-term-expiry");
+	const expiryText = h("span", "cv-term-expiry-text");
+	const keepOpen = h("button", "cv-term-btn", "keep open");
+	keepOpen.type = "button";
+	expiry.append(expiryText, keepOpen);
+	const overlay = h("div", "cv-term-overlay");
+	const overlayText = h("div", "cv-term-overlay-text");
+	const overlayButton = h("button", "cv-term-btn");
+	overlayButton.type = "button";
+	overlay.append(overlayText, overlayButton);
+	const wrap = h("div", "cv-term");
+	wrap.append(screenEl, expiry, overlay);
+	tile.body.replaceChildren(wrap);
+
+	/** @param {TerminalTileState} next @param {string} [text] */
+	function setState(next, text = "") {
+		state = next;
+		note = text;
+		render();
+	}
+
+	function render() {
+		const shown = title || folderName(cwd);
+		tile.titleEl.textContent = shown;
+		tile.titleEl.title = cwd ? `${shown} · ${cwd}` : shown;
+		if (!flashTimer) {
+			const { text, kind } = PILLS[state];
+			pill.textContent = text;
+			pill.className = `cv-pill is-${kind}`;
+		}
+		const action = state === "faceid" ? "try again" : state === "ended" ? "new shell" : state === "failed" ? "retry" : null;
+		overlay.hidden = action === null;
+		overlayText.textContent = state === "faceid" ? "Opening a shell needs a recent Face ID check. Unlock, and it opens." : note;
+		overlayButton.textContent = action ?? "";
+		renderExpiry();
+	}
+
+	/** @param {string} text @param {string} [kind] */
+	function flash(text, kind = "working") {
+		view.clearTimeout(flashTimer);
+		pill.textContent = text;
+		pill.className = `cv-pill is-${kind}`;
+		flashTimer = view.setTimeout(() => {
+			flashTimer = 0;
+			render();
+		}, FLASH_MS);
+	}
+
+	function renderExpiry() {
+		view.clearTimeout(expiryTimer);
+		expiryTimer = 0;
+		const left = expiresAt === null ? Number.POSITIVE_INFINITY : expiresAt - Date.now();
+		const show = state === "live" && left <= EXPIRY_WARNING_MS;
+		expiry.hidden = !show;
+		if (show) {
+			expiryText.textContent = `closes in ${clock(left)}, when its Face ID check runs out`;
+			expiryTimer = view.setTimeout(renderExpiry, 1_000);
+		} else if (Number.isFinite(left) && left > 0) {
+			expiryTimer = view.setTimeout(renderExpiry, Math.min(left - EXPIRY_WARNING_MS + 50, 2 ** 31 - 1));
+		}
+	}
+
+	async function ensureScreen() {
+		if (screen) return screen;
+		await loadTerminalStyles(doc);
+		if (destroyed || screen) return screen;
+		screen = createTerminalView({
+			container: screenEl,
+			socketUrl: (size) => {
+				const query = size ? `?${new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString()}` : "";
+				return api.resolveUrl(`/api/terminals/${encodeURIComponent(id ?? "")}/socket${query}`).replace(/^http/, "ws");
+			},
+			getScale: options.getScale,
+			onTitle: (next) => {
+				title = next.trim().slice(0, 200) || null;
+				render();
+				options.onChange();
+			},
+			onLive: () => {
+				retries = 0;
+				setState("live");
+			},
+			onExpires: (at) => {
+				expiresAt = at;
+				renderExpiry();
+			},
+			onExit: (reason) => onExit(reason),
+			onLost: () => reconnectLater(),
+			onCopied: (text) => flash(`copied ${lineCount(text)}`),
+			onCopyFailed: () => flash("copy failed: click the page, then pbcopy again", "error"),
+		});
+		if (options.isFocused()) screen.focus();
+		return screen;
+	}
+
+	/**
+	 * A refused request: a Face ID check (the page locks and asks; passing it runs `again`), a lost browser session (made
+	 * anew, then `once` runs, when there is one), or a failure.
+	 * @param {unknown} error @param {() => Promise<void>} again @param {(() => Promise<void>) | null} once @param {string} what
+	 */
+	async function onRefused(error, again, once, what) {
+		if (needsFaceId(error)) {
+			afterCheck = again;
+			setState("faceid");
+			return;
+		}
+		if (statusOf(error) === 401 && once) {
+			try {
+				await options.refreshClient();
+			} catch (refreshError) {
+				setState("failed", `${what}: ${messageOf(refreshError)}`);
+				return;
+			}
+			await once();
+			return;
+		}
+		setState("failed", `${what}: ${messageOf(error)}`);
+	}
+
+	/** A new shell in the tile's folder; the tile takes its id. */
+	const openShell = exclusive(() => openShellOnce(false));
+
+	/** @param {boolean} retried */
+	async function openShellOnce(retried) {
+		const current = await ensureScreen();
+		if (!current || destroyed) return;
+		setState("opening");
+		try {
+			const info = await api.postJson("/api/terminals", { cwd, ...(current.size() ?? {}) });
+			if (destroyed) return;
+			id = String(info.id);
+			cwd = typeof info.cwd === "string" ? info.cwd : cwd;
+			title = null;
+			expiresAt = typeof info.expiresAt === "number" ? info.expiresAt : null;
+			options.onIdChange(id);
+			options.onChange();
+			setState("attaching");
+			current.connect();
+		} catch (error) {
+			if (destroyed) return;
+			await onRefused(error, openShell, retried ? null : () => openShellOnce(true), "Couldn't open a shell");
+		}
+	}
+
+	/** Back onto the tile's shell: the host still has it, or it's gone (a restart) and a new one opens in its folder. */
+	const attach = exclusive(() => attachOnce(false));
+
+	/** @param {boolean} retried */
+	async function attachOnce(retried) {
+		if (!id) return openShell();
+		const current = await ensureScreen();
+		if (!current || destroyed) return;
+		if (state !== "reconnecting") setState("attaching");
+		try {
+			const info = await api.getJson(`/api/terminals/${encodeURIComponent(id)}`);
+			if (destroyed) return;
+			expiresAt = typeof info?.expiresAt === "number" ? info.expiresAt : null;
+			if (!title && typeof info?.title === "string") title = info.title;
+			render();
+			current.connect();
+		} catch (error) {
+			if (destroyed) return;
+			const status = statusOf(error);
+			if (status === 404) await openShell();
+			else if (status === 401) await onRefused(error, attach, retried ? null : () => attachOnce(true), "Couldn't attach to the shell");
+			else reconnectLater();
+		}
+	}
+
+	function reconnectLater() {
+		if (destroyed) return;
+		setState("reconnecting");
+		view.clearTimeout(retryTimer);
+		retryTimer = view.setTimeout(
+			() => {
+				retryTimer = 0;
+				void attach();
+			},
+			RETRY_MS[Math.min(retries, RETRY_MS.length - 1)],
+		);
+		retries += 1;
+	}
+
+	/** @param {string} reason */
+	function onExit(reason) {
+		// exit in the shell, or closed from another tab: the tile goes, like a terminal window
+		if (reason === "exited" || reason === "closed") {
+			options.onRemove();
+			return;
+		}
+		// the host is restarting: attach again, which opens a new shell once it's back
+		if (reason === "shutdown") {
+			reconnectLater();
+			return;
+		}
+		expiresAt = null;
+		setState("ended", reason === "expired" ? "Closed when the Face ID check it ran under ran out." : "This shell ended.");
+	}
+
+	function start() {
+		if (destroyed || state !== "waiting" || !visible) return;
+		setState(id ? "attaching" : "opening");
+		void attach();
+	}
+
+	overlayButton.addEventListener("click", () => {
+		if (state === "faceid") {
+			const retry = afterCheck ?? attach;
+			afterCheck = null;
+			void retry();
+		} else if (state === "ended") {
+			void openShell();
+		} else if (state === "failed") {
+			void attach();
+		}
+	});
+	keepOpen.addEventListener("click", () => {
+		view.dispatchEvent(new CustomEvent("pi-web-faceid-required", { detail: { message: "Check again to keep your terminals open." } }));
+	});
+	const onUnlocked = () => {
+		if (state !== "faceid") return;
+		const retry = afterCheck ?? attach;
+		afterCheck = null;
+		void retry();
+	};
+	view.addEventListener("pi-web-faceid-unlocked", onUnlocked);
+
+	render();
+
+	return {
+		getId: () => id,
+		getCwd: () => cwd,
+		getTitle: () => title,
+		focus() {
+			screen?.focus();
+		},
+		/** The view only opens once the tile is on screen (it needs a size to measure); after that it stays. @param {boolean} next */
+		setVisible(next) {
+			visible = next;
+			start();
+		},
+		/** The red dot: closes the shell (asking first when something runs in its foreground), then the tile. */
+		async requestClose() {
+			if (!id || state === "ended" || state === "failed" || state === "faceid") {
+				options.onRemove();
+				return;
+			}
+			const path = `/api/terminals/${encodeURIComponent(id)}/close`;
+			try {
+				await api.postJson(path, {});
+			} catch (error) {
+				const busy = statusOf(error) === 409 ? /** @type {any} */ (error).body?.busy : null;
+				if (typeof busy === "string") {
+					if (!view.confirm(`${busy} is still running in this terminal. Close it anyway?`)) return;
+					try {
+						await api.postJson(path, { force: true });
+					} catch (forced) {
+						if (statusOf(forced) !== 404) {
+							flash(`couldn't close: ${messageOf(forced)}`, "error");
+							return;
+						}
+					}
+				} else if (statusOf(error) !== 404) {
+					flash(`couldn't close: ${messageOf(error)}`, "error");
+					return;
+				}
+			}
+			options.onRemove();
+		},
+		/** Leaves the shell running (another host's canvas took over the page). */
+		destroy() {
+			destroyed = true;
+			view.clearTimeout(retryTimer);
+			view.clearTimeout(expiryTimer);
+			view.clearTimeout(flashTimer);
+			view.removeEventListener("pi-web-faceid-unlocked", onUnlocked);
+			screen?.dispose();
+			screen = null;
+		},
+	};
+}

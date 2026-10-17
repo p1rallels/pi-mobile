@@ -46,7 +46,7 @@ describe("canvas layout store", () => {
 		const second = store.save({ tiles: [{ sessionId: "b", x: 3, y: 4, w: 900, h: 600 }] });
 		await Promise.all([first, second]);
 		const loaded = await store.load();
-		expect(loaded.tiles.map((tile) => tile.sessionId)).toEqual(["b"]);
+		expect(loaded.tiles.map((tile) => ("sessionId" in tile ? tile.sessionId : null))).toEqual(["b"]);
 		expect(loaded.updatedAt).toBe("2026-10-15T03:00:01.000Z");
 		expect(JSON.parse(await readFile(path, "utf8")).version).toBe(1);
 

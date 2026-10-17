@@ -105,6 +105,18 @@ Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intent
 
 Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI. pi-web only notices the CLI mid-turn: a `pi` idle at its prompt can't be told apart from a closed one.
 
+## Terminal tiles
+
+On the canvas, a new tile's session step also offers **+ new terminal**: your login shell on the host serving the page, in that folder, drawn by xterm.js. Move, resize and zoom it like any tile.
+
+- `pbcopy` in a terminal tile copies to your browser's clipboard (OSC 52), so `pbcopy < file` in one tile and **Cmd+V** in another works like it does across terminal windows. Nothing in the shell can read the clipboard back; `pbpaste` says so. (zsh only: other shells keep the host's `pbcopy`.)
+- **Option+drag** selects text over programs that take the mouse, like vim with `mouse=a`.
+- Opening a terminal needs the same recent Face ID check as starting a session. The shell is killed when the Face ID session it was opened under runs out (4 hours, `PI_WEB_FACEID_SESSION_MINUTES`); each new check on the host pushes that back, and the tile counts down its last 10 minutes with a **keep open** button.
+- The red dot closes the shell, asking first when something other than the shell runs in it (vim, ssh). `exit` closes the tile.
+- Shells live only in the server's memory: no output or input is logged or saved, and a restart or deploy ends them. A reloaded page gets each screen back exactly; after a restart a tile opens a new shell in the same folder.
+- In secure mode a terminal never gets the loopback pass other routes have, so processes on the host (an agent's bash, say) can't reach a shell through `127.0.0.1`. The tripwire also treats `~/.pi-web` (cookie key, device registry) as a secret.
+- Turn terminal tiles off with `pi-web config set terminals off` (`PI_WEB_TERMINALS=off`).
+
 ## Security notes
 
 - Secure mode requires pi-web to bind to localhost behind a trusted local mTLS proxy.

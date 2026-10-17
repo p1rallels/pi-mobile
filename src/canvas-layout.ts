@@ -1,4 +1,4 @@
-// The laptop canvas map (which sessions sit where), one per pi-web host so every browser sees the
+// The laptop canvas map (which sessions and terminals sit where), one per pi-web host so every browser sees the
 // same layout. Stored in agentDir/pi-web/canvas.json with atomic writes; last write wins.
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 
@@ -12,15 +12,28 @@ const DEFAULT_W = 800;
 const DEFAULT_H = 500;
 const MAX_COORD = 10_000_000;
 
-export interface CanvasLayoutTile {
-	sessionId: string;
-	path: string | null;
-	title: string | null;
+interface CanvasLayoutRect {
 	x: number;
 	y: number;
 	w: number;
 	h: number;
 }
+
+export interface CanvasLayoutSessionTile extends CanvasLayoutRect {
+	sessionId: string;
+	path: string | null;
+	title: string | null;
+}
+
+/** A terminal tile: its shell (gone after a restart, when the tile opens a new one in `cwd`) and its folder. */
+export interface CanvasLayoutTerminalTile extends CanvasLayoutRect {
+	kind: "terminal";
+	terminalId: string;
+	cwd: string | null;
+	title: string | null;
+}
+
+export type CanvasLayoutTile = CanvasLayoutSessionTile | CanvasLayoutTerminalTile;
 
 export interface CanvasLayout {
 	version: 1;
@@ -32,15 +45,8 @@ const clamp = (value: number, min: number, max: number): number => Math.min(Math
 const finiteOr = (value: unknown, fallback: number): number => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 const boundedString = (value: unknown, max: number): string | null => (typeof value === "string" && value.length > 0 && value.length <= max ? value : null);
 
-function parseTile(raw: unknown): CanvasLayoutTile | null {
-	if (!raw || typeof raw !== "object") return null;
-	const tile = raw as Record<string, unknown>;
-	const sessionId = boundedString(tile.sessionId, 200);
-	if (!sessionId) return null;
+function parseRect(tile: Record<string, unknown>): CanvasLayoutRect {
 	return {
-		sessionId,
-		path: boundedString(tile.path, 4096),
-		title: typeof tile.title === "string" && tile.title ? tile.title.slice(0, 200) : null,
 		x: Math.round(clamp(finiteOr(tile.x, 0), -MAX_COORD, MAX_COORD)),
 		y: Math.round(clamp(finiteOr(tile.y, 0), -MAX_COORD, MAX_COORD)),
 		w: Math.round(clamp(finiteOr(tile.w, DEFAULT_W), MIN_W, MAX_W)),
@@ -48,7 +54,24 @@ function parseTile(raw: unknown): CanvasLayoutTile | null {
 	};
 }
 
-/** Whatever was stored or sent, a layout with at most one tile per session and sane geometry. */
+const parseTitle = (value: unknown): string | null => (typeof value === "string" && value ? value.slice(0, 200) : null);
+
+function parseTile(raw: unknown): CanvasLayoutTile | null {
+	if (!raw || typeof raw !== "object") return null;
+	const tile = raw as Record<string, unknown>;
+	if (tile.kind === "terminal") {
+		const terminalId = boundedString(tile.terminalId, 200);
+		if (!terminalId) return null;
+		return { kind: "terminal", terminalId, cwd: boundedString(tile.cwd, 4096), title: parseTitle(tile.title), ...parseRect(tile) };
+	}
+	const sessionId = boundedString(tile.sessionId, 200);
+	if (!sessionId) return null;
+	return { sessionId, path: boundedString(tile.path, 4096), title: parseTitle(tile.title), ...parseRect(tile) };
+}
+
+const tileKey = (tile: CanvasLayoutTile): string => ("kind" in tile ? `terminal:${tile.terminalId}` : `session:${tile.sessionId}`);
+
+/** Whatever was stored or sent, a layout with at most one tile per session or terminal and sane geometry. */
 export function parseCanvasLayout(raw: unknown): CanvasLayout {
 	const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 	const list = Array.isArray(record.tiles) ? record.tiles : [];
@@ -57,8 +80,8 @@ export function parseCanvasLayout(raw: unknown): CanvasLayout {
 	for (const entry of list) {
 		if (tiles.length >= CANVAS_LAYOUT_MAX_TILES) break;
 		const tile = parseTile(entry);
-		if (!tile || seen.has(tile.sessionId)) continue;
-		seen.add(tile.sessionId);
+		if (!tile || seen.has(tileKey(tile))) continue;
+		seen.add(tileKey(tile));
 		tiles.push(tile);
 	}
 	return { version: 1, tiles, updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : null };

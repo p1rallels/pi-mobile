@@ -1,4 +1,4 @@
-// Where the canvas map lives. The layout (which sessions sit where) belongs to the host: GET/PUT
+// Where the canvas map lives. The layout (which sessions and terminals sit where) belongs to the host: GET/PUT
 // /api/canvas, so every browser sees the same map. Hosts without that endpoint (older pi-web) fall
 // back to this browser's localStorage. The camera is always per device and per host.
 import { sanitizeCamera } from "./camera.js";
@@ -8,8 +8,28 @@ const LAYOUT_KEY = "pi-web.canvas.layout:";
 const CAMERA_KEY = "pi-web.canvas.camera:";
 const MAX_TILES = 500;
 
-/** @typedef {{ sessionId: string, path: string | null, title: string | null, x: number, y: number, w: number, h: number }} LayoutTile */
+/** @typedef {{ sessionId: string, path: string | null, title: string | null, x: number, y: number, w: number, h: number }} SessionLayoutTile */
+/** @typedef {{ kind: "terminal", terminalId: string, cwd: string | null, title: string | null, x: number, y: number, w: number, h: number }} TerminalLayoutTile */
+/** @typedef {SessionLayoutTile | TerminalLayoutTile} LayoutTile */
 /** @typedef {{ tiles: LayoutTile[] }} Layout */
+
+/** @param {unknown} value */
+const text = (value) => (typeof value === "string" && value ? value : null);
+
+/** @param {any} tile @returns {LayoutTile | null} */
+function parseTile(tile) {
+	if (!tile || typeof tile !== "object") return null;
+	const title = text(tile.title)?.slice(0, 200) ?? null;
+	if (tile.kind === "terminal") {
+		const terminalId = text(tile.terminalId);
+		return terminalId ? { kind: "terminal", terminalId, cwd: text(tile.cwd), title, ...sanitizeRect(tile) } : null;
+	}
+	const sessionId = text(tile.sessionId);
+	return sessionId ? { sessionId, path: text(tile.path), title, ...sanitizeRect(tile) } : null;
+}
+
+/** @param {LayoutTile} tile */
+const tileKey = (tile) => ("kind" in tile ? `terminal:${tile.terminalId}` : `session:${tile.sessionId}`);
 
 /** @param {unknown} raw @returns {Layout} */
 export function parseLayout(raw) {
@@ -17,15 +37,11 @@ export function parseLayout(raw) {
 	const seen = new Set();
 	/** @type {LayoutTile[]} */
 	const tiles = [];
-	for (const tile of list.slice(0, MAX_TILES)) {
-		if (!tile || typeof tile !== "object" || typeof tile.sessionId !== "string" || !tile.sessionId || seen.has(tile.sessionId)) continue;
-		seen.add(tile.sessionId);
-		tiles.push({
-			sessionId: tile.sessionId,
-			path: typeof tile.path === "string" && tile.path ? tile.path : null,
-			title: typeof tile.title === "string" && tile.title ? tile.title.slice(0, 200) : null,
-			...sanitizeRect(tile),
-		});
+	for (const entry of list.slice(0, MAX_TILES)) {
+		const tile = parseTile(entry);
+		if (!tile || seen.has(tileKey(tile))) continue;
+		seen.add(tileKey(tile));
+		tiles.push(tile);
 	}
 	return { tiles };
 }

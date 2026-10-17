@@ -81,6 +81,7 @@ On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records e
 |---|---|---|
 | `tripwire` | `on` (default) blocks critical tool calls and logs the rest, `off` inspects nothing | `PI_WEB_TRIPWIRE` |
 | `project-trust` | `always` (default), `ask`, `never` for folders without a `trust.json` decision | `PI_WEB_PROJECT_TRUST` |
+| `terminals` | `on` (default) offers terminal tiles on the canvas, `off` turns them off | `PI_WEB_TERMINALS` |
 
 ---
 
@@ -289,6 +290,7 @@ Run `scripts/deploy-live [commit]` from the main checkout. The commit defaults t
 - Deploying the commit that is already live just restarts it, so this is also the safe way to restart.
 - What's live: `git -C ../pi-web-live log -1 --oneline` and `curl -s 127.0.0.1:4317/health`.
 - After a restart, the sessions that were running come back on their own. A session nobody ever sent a message to is gone, and its tile or page starts fresh in the same folder.
+- A restart ends every terminal tile's shell (and whatever runs in it, ssh included); `terminals` in `/health` counts them. Their tiles open new shells in the same folders.
 - Open pages keep the old frontend until you reload them. A reload doesn't touch running sessions, which run on the host, but it drops unsent composer text.
 - Without launchd, check the commit out in the worktree yourself, or give the script a restart command in `PI_WEB_DEPLOY_RESTART`.
 
