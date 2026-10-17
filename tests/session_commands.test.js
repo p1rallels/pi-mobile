@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseCompactCommand, parseQueueCommand } from "../public/app/session/commands.js";
+import { isQuitCommand, parseCompactCommand, parseQueueCommand } from "../public/app/session/commands.js";
 
 describe("session commands", () => {
 	test("parses compact commands like pi", () => {
@@ -26,5 +26,22 @@ describe("session commands", () => {
 		expect(parseQueueCommand("/queueing later")).toBeNull();
 		expect(parseQueueCommand("/QUEUE later")).toBeNull();
 		expect(parseQueueCommand("/queue\nlater")).toBeNull();
+	});
+
+	test("quits when /quit is the first word of the message", () => {
+		expect(isQuitCommand("/quit")).toBe(true);
+		expect(isQuitCommand("  /quit  ")).toBe(true);
+		expect(isQuitCommand("/quit now")).toBe(true);
+		expect(isQuitCommand("/quit\nthanks")).toBe(true);
+	});
+
+	test("ignores /quit anywhere but the start, and longer words", () => {
+		expect(isQuitCommand("please /quit")).toBe(false);
+		expect(isQuitCommand("quit")).toBe(false);
+		expect(isQuitCommand("/quitting time")).toBe(false);
+		expect(isQuitCommand("/QUIT")).toBe(false);
+		expect(isQuitCommand("/ quit")).toBe(false);
+		expect(isQuitCommand("")).toBe(false);
+		expect(isQuitCommand(undefined)).toBe(false);
 	});
 });

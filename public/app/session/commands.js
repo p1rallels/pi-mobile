@@ -11,3 +11,8 @@ export function parseQueueCommand(text) {
 	if (trimmed.startsWith("/queue ")) return trimmed.slice(7).trim();
 	return null;
 }
+
+/** A message whose first word is /quit (whatever follows it goes nowhere): the canvas stops the session and takes the tile back. */
+export function isQuitCommand(text) {
+	return /^\/quit(?:\s|$)/.test(String(text || "").trim());
+}
