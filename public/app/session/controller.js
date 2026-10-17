@@ -86,6 +86,8 @@ export function createSessionController({
 	/** No session behind the pane: the one it had was never saved (see fresh.js). Sending starts one in `fresh.cwd`. */
 	let fresh = null;
 	let freshStart = null;
+	/** /quit stopped (or is stopping) this pane's session and the shell takes the pane away: the release isn't shown. */
+	let leaving = false;
 
 	const chatView = createChatView({
 		msgsEl,
@@ -567,7 +569,7 @@ export function createSessionController({
 			extensionUi.reset();
 			chatView.renderQueuedMessages({ steering: [], followUp: [] });
 
-			chatView.renderReleased({ cliCommand: cmd });
+			if (!leaving) chatView.renderReleased({ cliCommand: cmd });
 			onStateChange();
 			onSidebarRefresh();
 			return;
@@ -1098,6 +1100,26 @@ export function createSessionController({
 	}
 
 	/**
+	 * /quit (a canvas tile): stops the session this pane runs here, the way quitting pi does; its file stays, so it can
+	 * be resumed later. A pane with nothing running here has nothing to stop (no session yet, or one another pi writes),
+	 * and a session that already stopped counts as quit. A fresh pane whose first send is still starting its session
+	 * waits for it and stops that one. The shell takes the pane away once this resolves.
+	 */
+	async function quit() {
+		if (freshStart) await freshStart.catch(() => {});
+		const sessionId = activeSessionId;
+		if (!sessionId || mode !== "hosted") return;
+		leaving = true;
+		try {
+			await api.postJson(`/api/sessions/${encodeURIComponent(sessionId)}/release`, { clientId: getClientId() });
+		} catch (error) {
+			if (error?.status === 404) return;
+			leaving = false;
+			throw error;
+		}
+	}
+
+	/**
 	 * Offscreen canvas tiles drop their stream so the server can evict idle sessions; resume() picks up
 	 * from the cursor, so only what was missed comes back.
 	 */
@@ -1190,6 +1212,7 @@ export function createSessionController({
 		abortRun,
 		takeOver,
 		release,
+		quit,
 		openSessionId,
 		suspend,
 		resume,

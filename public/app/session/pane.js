@@ -5,6 +5,7 @@
 import { isPhoneLike } from "../core/device.js";
 import { createExtensionUi } from "../ui/extension_ui.js";
 import { createMenu } from "../ui/menu.js";
+import { isQuitCommand } from "./commands.js";
 import { createSessionController } from "./controller.js";
 import { composerPlaceholder, elsewherePlaceholder, footerLines, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
 import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./project_trust.js";
@@ -64,11 +65,14 @@ export function autoResize(el) {
  *   tileUi?: { dialogHost: HTMLElement, hasKeyboard: () => boolean, onTitle: (title: string | null) => void } | null,
  *   onFreshStarted?: (sessionId: string) => void,
  *   goneNotice?: string | null,
+ *   onQuit?: (() => void) | null,
  * }} options
  * `transcriptWindow` keeps only the newest entries of the transcript (canvas tiles); the phone keeps them all.
  * `tileUi` keeps extension dialogs and the extension title inside a canvas tile instead of on the page.
  * `onFreshStarted` hears the session a fresh pane's first send started (see fresh.js); `goneNotice` replaces
  * what the pane says when its session ended for good (null: nothing, the shell says it).
+ * `onQuit` makes a message starting with /quit stop the session instead of going to pi, and then hears that the
+ * pane is done (a canvas tile goes back to its launcher); without it /quit is sent like any prompt.
  */
 export function createSessionPane({
 	refs,
@@ -84,6 +88,7 @@ export function createSessionPane({
 	tileUi = null,
 	onFreshStarted,
 	goneNotice,
+	onQuit = null,
 }) {
 	const { input } = refs;
 	const abortTitle = refs.btnAbort?.title ?? "";
@@ -91,6 +96,7 @@ export function createSessionPane({
 	let workingIntervalId = null;
 	let workingFrame = 0;
 	let destroyed = false;
+	let quitting = false;
 
 	const extensionUi = createExtensionUi({
 		api,
@@ -306,18 +312,40 @@ export function createSessionPane({
 	}
 
 	async function sendPromptFromInput() {
-		if (input.disabled) return;
+		if (input.disabled || quitting) return;
 		const text = input.value;
 		if (!text.trim()) return;
 		input.value = "";
 		autoResize(input);
 		input.focus();
+		if (onQuit && isQuitCommand(text)) {
+			await quitFromInput(onQuit, text);
+			return;
+		}
 		try {
 			await sessionCtrl.sendPrompt(text);
 		} catch (error) {
 			restoreComposerText(text);
 			sessionCtrl.appendNotice(`Not sent: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
+	}
+
+	/**
+	 * /quit: stops the session, then hands the pane back to the shell; if it couldn't stop it, /quit goes back in the composer.
+	 * @param {() => void} done @param {string} text
+	 */
+	async function quitFromInput(done, text) {
+		quitting = true;
+		try {
+			await sessionCtrl.quit();
+		} catch (error) {
+			quitting = false;
+			if (destroyed) return;
+			restoreComposerText(text);
+			sessionCtrl.appendNotice(`Not quit: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return;
+		}
+		if (!destroyed) done();
 	}
 
 	/** @param {() => Promise<unknown>} action */
