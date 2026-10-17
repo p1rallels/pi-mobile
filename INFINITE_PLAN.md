@@ -13,6 +13,7 @@ reddot ran agent sessions in Infinite (the native macOS canvas of Ghostty termin
   - Composer.
   - One footer line.
   - The red dot removes the tile from the canvas only. The session lives on, and release stays explicit.
+  - `/quit` as the first word of a message stops the session (like quitting pi; its file stays) and the tile goes back to the launcher's directory step in place, like an Infinite terminal back at the shell once pi exits. A dormant tile resumes first (click), then `/quit`; there is no ⋯ quit item.
 - **Focus.** Click a tile to type into it. The tile keeps the keyboard while you pan. Clicking empty canvas must not blur its composer. Esc aborts the focused tile's run, as it does today.
 - **New tile.** It opens as a launcher panel: pick a directory (saved repos + cwd), then a session from that repo (newest first) or "new session". The panel becomes the session tile in place. Picking a session that's already on the canvas flies the camera to that tile instead of duplicating it. One tile per session.
 - **Motion.**
