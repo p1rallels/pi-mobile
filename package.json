@@ -17,7 +17,11 @@
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "1.2.0",
 		"@simplewebauthn/browser": "13.2.2",
-		"@simplewebauthn/server": "13.2.3"
+		"@simplewebauthn/server": "13.2.3",
+		"@xterm/addon-fit": "0.11.0",
+		"@xterm/addon-serialize": "0.14.0",
+		"@xterm/headless": "6.0.0",
+		"@xterm/xterm": "6.0.0"
 	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "1.2.0",

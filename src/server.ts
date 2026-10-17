@@ -14,6 +14,7 @@ import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
 import { AmbiguousWritersError, NeverSavedError, PiWebRuntime, RunningElsewhereError, type FollowClient, type SessionClient } from "./session-runtime.ts";
 import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PING_INTERVAL_MS } from "./sse.ts";
+import { createTerminalManager, parseTerminalsMode } from "./terminals.ts";
 import type {
 	ApiActiveSessionsResponse,
 	ApiAddRepoRequest,
@@ -69,6 +70,13 @@ interface CookieOptions {
 
 interface RateLimitResult {
 	retryAfterSeconds: number;
+}
+
+/** What a terminal tile's websocket carries from its upgrade request. */
+interface TerminalSocketData {
+	terminalId: string;
+	cols: string | null;
+	rows: string | null;
 }
 
 const CLIENT_COOKIE = "pi_web_client";
@@ -303,6 +311,7 @@ Env:
   PI_WEB_IDLE_SESSION_MINUTES (dispose unwatched idle sessions after this long, default 15)
   PI_WEB_TRIPWIRE=on|off (block critical tool calls, default on)
   PI_WEB_PROJECT_TRUST=always|ask|never (projects without a trust.json decision, default always)
+  PI_WEB_TERMINALS=on|off (terminal tiles on the canvas, default on)
   PI_WEB_CLIENT_SESSIONS_PER_MINUTE (browser session handshakes per client IP, default 20)
   PI_WEB_FACEID_SESSION_MINUTES (Face ID session length, default 240)
   PI_WEB_FACEID_COMMAND_MINUTES (Face ID age allowed for prompts and take over, default 60)
@@ -575,8 +584,22 @@ function parseSessionRoute(pathname: string): { sessionId: string; action: strin
 	return { sessionId: parts[2], action: parts[3] };
 }
 
+/** /api/terminals (list, open) and /api/terminals/<id>[/<action>]. */
+function parseTerminalRoute(pathname: string): { id: string | null; action: string | null } | null {
+	const parts = pathname.split("/").filter((p) => p.length > 0);
+	if (parts[0] !== "api" || parts[1] !== "terminals" || parts.length > 4) return null;
+	return { id: parts[2] ?? null, action: parts[3] ?? null };
+}
+
 /** How recent the Face ID check must be for a route, or null when any live Face ID session will do. */
 function faceIdFreshnessFor(method: string, pathname: string): number | null {
+	const terminalRoute = parseTerminalRoute(pathname);
+	if (terminalRoute) {
+		// opening a shell is like starting a session, attaching to one (its socket) like typing a prompt
+		if (method === "POST" && !terminalRoute.id) return FACEID_FRESH_TTL_MS;
+		if (method === "GET" && terminalRoute.id) return FACEID_COMMAND_TTL_MS;
+		return null;
+	}
 	if (method !== "POST") return null;
 	if (pathname === "/api/repos" || pathname === "/api/sessions") return FACEID_FRESH_TTL_MS;
 	const sessionRoute = parseSessionRoute(pathname);
@@ -683,7 +706,8 @@ function resolveBrowserFaceIdCheck(req: Request, url: URL, client: { clientId: s
 function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 	if (!isApiPath(url.pathname)) return null;
 	if (isFaceIdExemptPath(url.pathname)) return null;
-	if (isLoopbackHost(url.hostname)) return null;
+	// in secure mode browsers come through the proxy, so a loopback request is a process on this host: it gets no shell
+	if (isLoopbackHost(url.hostname) && !(secureMode && parseTerminalRoute(url.pathname))) return null;
 
 	const client = resolveClientCookie(req);
 	if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
@@ -772,7 +796,7 @@ function forwardedClientIp(req: Request): string | null {
 	return forwardedFor || null;
 }
 
-function resolveRequesterId(req: Request, server: Bun.Server<undefined>): string {
+function resolveRequesterId(req: Request, server: Bun.Server<TerminalSocketData>): string {
 	if (trustProxy) {
 		const forwarded = forwardedClientIp(req);
 		if (forwarded) return forwarded;
@@ -813,9 +837,12 @@ const sessionCreateLimiter = createRateLimiter(60_000, 12);
 const commandLimiter = createRateLimiter(60_000, 90);
 const faceIdChallengeLimiter = createRateLimiter(60_000, 12);
 const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
+const terminalCreateLimiter = createRateLimiter(60_000, 12);
 
 const projectTrustMode = parseProjectTrustMode(process.env.PI_WEB_PROJECT_TRUST);
 const tripwireMode = parseTripwireMode(process.env.PI_WEB_TRIPWIRE);
+const terminalsMode = parseTerminalsMode(process.env.PI_WEB_TERMINALS);
+const terminals = terminalsMode === "on" ? createTerminalManager() : null;
 const runtime = new PiWebRuntime({
 	maxRunningSessions,
 	maxClientsPerSession,
@@ -834,6 +861,13 @@ const publicRoot = resolve(publicDir) + sep;
 const simpleWebAuthnBrowserDir = join(import.meta.dir, "..", "node_modules", "@simplewebauthn", "browser", "esm");
 const simpleWebAuthnBrowserRoot = resolve(simpleWebAuthnBrowserDir) + sep;
 const simpleWebAuthnBrowserUrlPrefix = "/vendor/simplewebauthn/browser/esm/";
+/** The terminal tiles' browser files, served straight from node_modules (no build step). */
+const xtermDir = join(import.meta.dir, "..", "node_modules", "@xterm");
+const xtermBrowserFiles = new Map([
+	["/vendor/xterm/xterm.mjs", join(xtermDir, "xterm", "lib", "xterm.mjs")],
+	["/vendor/xterm/xterm.css", join(xtermDir, "xterm", "css", "xterm.css")],
+	["/vendor/xterm/addon-fit.mjs", join(xtermDir, "addon-fit", "lib", "addon-fit.mjs")],
+]);
 
 function appendVary(headers: Headers, value: string): void {
 	const existing = headers.get("vary");
@@ -880,7 +914,68 @@ function corsPreflightResponse(req: Request): Response | null {
 	return new Response(null, { status: 204, headers });
 }
 
-async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise<Response> {
+/** Terminal tiles: list and open (/api/terminals), then per terminal its info, its websocket and close. */
+async function handleTerminalRoute(
+	req: Request,
+	url: URL,
+	route: { id: string | null; action: string | null },
+	server: Bun.Server<TerminalSocketData>,
+	requesterId: string,
+): Promise<Response | undefined> {
+	if (!terminals) return errorResponse("Terminals are off on this host (PI_WEB_TERMINALS).", 404);
+	const { id, action } = route;
+	if (!id) {
+		if (req.method === "GET") return json({ terminals: terminals.list() }, 200);
+		if (req.method !== "POST") return plainText("Not found", 404);
+		const limited = terminalCreateLimiter.check(`terminals:${requesterId}`);
+		if (limited) return rateLimitResponse(limited);
+		const client = resolveClientCookie(req);
+		if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
+		// the shell ends when the Face ID check it opens under runs out; hosts that don't check (loopback dev) never end it
+		const check = resolveBrowserFaceIdCheck(req, url, client);
+		const device = requestDevices.get(req);
+		try {
+			const raw = await requireJsonBody(req, COMMAND_JSON_BODY_LIMIT);
+			const info = terminals.create({
+				cwd: raw.cwd,
+				cols: raw.cols,
+				rows: raw.rows,
+				expiresAt: check ? check.verifiedAt + FACEID_TTL_MS : null,
+				openedBy: device ? `device ${device.slice(0, 16)}` : `client ${client.clientId.slice(0, 8)}`,
+			});
+			return json(info, 200);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (message === "too_many_terminals") return errorResponse("Too many terminals open on this host.", 429);
+			return errorResponse(message, 400);
+		}
+	}
+	if (req.method === "GET" && action === null) {
+		const info = terminals.get(id);
+		return info ? json(info, 200) : errorResponse("Terminal not running", 404);
+	}
+	if (req.method === "GET" && action === "socket") {
+		if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return errorResponse("Expected a websocket upgrade", 426);
+		if (!terminals.get(id)) return errorResponse("Terminal not running", 404);
+		const data: TerminalSocketData = { terminalId: id, cols: url.searchParams.get("cols"), rows: url.searchParams.get("rows") };
+		return server.upgrade(req, { data }) ? undefined : errorResponse("Websocket upgrade failed", 400);
+	}
+	if (req.method === "POST" && action === "close") {
+		const limited = commandLimiter.check(`command:${requesterId}`);
+		if (limited) return rateLimitResponse(limited);
+		if (!resolveClientCookie(req)) return errorResponse("Missing browser session. Reload the page.", 401);
+		const raw: Record<string, unknown> = await requireJsonBody(req, COMMAND_JSON_BODY_LIMIT).catch(() => ({}));
+		// a shell running vim or ssh asks first; one waiting at its prompt just closes
+		if (raw.force !== true) {
+			const busy = await terminals.foreground(id);
+			if (busy) return json({ error: `${busy} is running in this terminal`, busy }, 409);
+		}
+		return terminals.close(id, "closed") ? ok() : errorResponse("Terminal not running", 404);
+	}
+	return plainText("Not found", 404);
+}
+
+async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>): Promise<Response | undefined> {
 		const url = new URL(req.url);
 		const secure = isSecureRequest(req, url, trustProxy);
 		const requestProtocol = secure ? "https:" : url.protocol;
@@ -900,6 +995,7 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 					rssMb: Math.round(memory.rss / 1_048_576),
 					heapUsedMb: Math.round(memory.heapUsed / 1_048_576),
 					...runtime.getHealth(),
+					terminals: terminals?.count() ?? 0,
 				},
 				200,
 			);
@@ -933,6 +1029,9 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 			if (filePath) return serveStatic(filePath);
 			return plainText("Not found", 404);
 		}
+
+		const xtermFile = req.method === "GET" ? xtermBrowserFiles.get(url.pathname) : undefined;
+		if (xtermFile) return serveStatic(xtermFile);
 
 		if (req.method === "GET" && !isApiPath(url.pathname)) {
 			const filePath = resolvePublicFile(url);
@@ -1140,6 +1239,8 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				if (result.kind !== "authenticate") {
 					return json(result, 200);
 				}
+				// a check on this host keeps its terminals open for another Face ID session
+				terminals?.extend(Date.now() + FACEID_TTL_MS);
 				return createCookieResponse(result, 200, issueFaceIdCookie(req, client.clientId, url.hostname, secure));
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -1178,6 +1279,9 @@ async function handleFetch(req: Request, server: Bun.Server<undefined>): Promise
 				return errorResponse(message, 400);
 			}
 		}
+
+		const terminalRoute = parseTerminalRoute(url.pathname);
+		if (terminalRoute) return handleTerminalRoute(req, url, terminalRoute, server, requesterId);
 
 		const sessionRoute = parseSessionRoute(url.pathname);
 		if (!sessionRoute) {
@@ -1396,10 +1500,28 @@ const server = Bun.serve({
 	hostname: host,
 	port,
 	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
-	async fetch(req, server): Promise<Response> {
+	async fetch(req, server): Promise<Response | undefined> {
 		const response = await handleFetch(req, server);
+		// undefined: the request became a terminal's websocket
+		if (!response) return undefined;
 		applyCorsHeaders(req, response.headers);
 		return response;
+	},
+	websocket: {
+		data: {} as TerminalSocketData,
+		open(ws) {
+			const size = { cols: ws.data.cols ?? undefined, rows: ws.data.rows ?? undefined };
+			if (!terminals?.attach(ws.data.terminalId, ws, size)) ws.close(4404, "terminal not running");
+		},
+		message(ws, message) {
+			if (typeof message === "string") terminals?.handleMessage(ws.data.terminalId, message);
+		},
+		drain(ws) {
+			terminals?.drain(ws.data.terminalId, ws);
+		},
+		close(ws) {
+			terminals?.detach(ws.data.terminalId, ws);
+		},
 	},
 });
 
@@ -1426,6 +1548,7 @@ if (secureMode) {
 }
 console.log(`SDK extension auto-loading is enabled. Projects without a trust.json decision: ${projectTrustMode} (PI_WEB_PROJECT_TRUST).`);
 console.log(`Tripwire: ${tripwireMode === "on" ? "on, critical tool calls are blocked" : "off"} (PI_WEB_TRIPWIRE).`);
+console.log(`Terminal tiles: ${terminalsMode} (PI_WEB_TERMINALS).`);
 if (restoredSessions > 0) console.log(`${String(restoredSessions)} session(s) from before the restart can re-attach.`);
 
 let shuttingDown = false;
@@ -1433,6 +1556,7 @@ async function shutdown(signal: string): Promise<void> {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	console.log(`[pi-web] ${signal}: stopping runs and saving sessions for re-attach`);
+	terminals?.shutdown();
 	void server.stop();
 	try {
 		await runtime.shutdown();

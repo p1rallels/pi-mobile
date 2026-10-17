@@ -41,6 +41,8 @@ export interface PiWebConfig {
 	tripwire: "on" | "off";
 	/** Exported to the server as PI_WEB_PROJECT_TRUST unless that env var is set. */
 	projectTrust: "always" | "ask" | "never";
+	/** Exported to the server as PI_WEB_TERMINALS unless that env var is set. */
+	terminals: "on" | "off";
 }
 
 export function resolvePiWebHome(raw = process.env.PI_WEB_HOME): string {
@@ -120,6 +122,7 @@ export function defaultPiWebConfig(paths: PiWebPaths, input: Partial<PiWebConfig
 		},
 		tripwire: input.tripwire ?? "on",
 		projectTrust: input.projectTrust ?? "always",
+		terminals: input.terminals ?? "on",
 	};
 }
 
@@ -174,6 +177,7 @@ export function parsePiWebConfig(raw: unknown, paths: PiWebPaths): PiWebConfig {
 		},
 		tripwire: readChoice(input.tripwire, ["on", "off"] as const, base.tripwire),
 		projectTrust: readChoice(input.projectTrust, ["always", "ask", "never"] as const, base.projectTrust),
+		terminals: readChoice(input.terminals, ["on", "off"] as const, base.terminals),
 	});
 }
 

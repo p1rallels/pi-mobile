@@ -32,7 +32,7 @@ function usage(): string {
 
 Usage:
   pi-web start
-  pi-web config [set tripwire on|off | set project-trust always|ask|never]
+  pi-web config [set tripwire on|off | set project-trust always|ask|never | set terminals on|off]
   pi-web service install [--no-caddy] [--force] | restart | uninstall | status | print [--no-caddy]
   pi-web doctor
   pi-web update --models [--timeout <seconds>]
@@ -329,6 +329,7 @@ function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<
 	}
 	env.PI_WEB_TRIPWIRE = env.PI_WEB_TRIPWIRE?.trim() || config.tripwire;
 	env.PI_WEB_PROJECT_TRUST = env.PI_WEB_PROJECT_TRUST?.trim() || config.projectTrust;
+	env.PI_WEB_TERMINALS = env.PI_WEB_TERMINALS?.trim() || config.terminals;
 	delete env.PI_WEB_TOKEN;
 	return env;
 }
@@ -336,6 +337,7 @@ function envForServer(config: PiWebConfig, paths = resolvePiWebPaths()): Record<
 const CONFIG_SETTINGS = {
 	tripwire: { key: "tripwire", values: ["on", "off"] },
 	"project-trust": { key: "projectTrust", values: ["always", "ask", "never"] },
+	terminals: { key: "terminals", values: ["on", "off"] },
 } as const;
 
 async function commandConfig(args: ParsedArgs): Promise<void> {
@@ -343,12 +345,12 @@ async function commandConfig(args: ParsedArgs): Promise<void> {
 	const config = (await loadPiWebConfig(paths)) ?? defaultPiWebConfig(paths);
 	const [, action, name, value] = args.positionals;
 	if (action === undefined) {
-		console.log(`tripwire: ${config.tripwire}\nproject-trust: ${config.projectTrust}\nconfig: ${paths.configPath}`);
+		console.log(`tripwire: ${config.tripwire}\nproject-trust: ${config.projectTrust}\nterminals: ${config.terminals}\nconfig: ${paths.configPath}`);
 		return;
 	}
 	const setting = name && name in CONFIG_SETTINGS ? CONFIG_SETTINGS[name as keyof typeof CONFIG_SETTINGS] : null;
 	if (action !== "set" || !setting || !setting.values.some((allowed) => allowed === value)) {
-		throw new Error("Usage: pi-web config [set tripwire on|off | set project-trust always|ask|never]");
+		throw new Error("Usage: pi-web config [set tripwire on|off | set project-trust always|ask|never | set terminals on|off]");
 	}
 	await savePiWebConfig(paths, { ...config, [setting.key]: value });
 	console.log(`${name}: ${String(value)} (restart pi-web to apply)`);

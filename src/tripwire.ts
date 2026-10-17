@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
+import { resolvePiWebHome } from "./security-config.ts";
 import type { ApiTripwireAlert, ApiTripwireAlertsResponse, ApiTripwireCategory, ApiTripwireResponse, ApiTripwireSeverity } from "./types.ts";
 
 /** PI_WEB_TRIPWIRE: `on` blocks critical tool calls and logs the rest, `off` inspects nothing. */
@@ -137,6 +138,8 @@ export class TripwireService {
 		this.appStateRoot = resolve(homedir(), ".pi", "agent");
 
 		this.secretRoots = [
+			// the cookie key and the device registry: enough to pass as a browser, and to reach a terminal tile's shell
+			resolvePiWebHome(),
 			join(homedir(), ".ssh"),
 			join(homedir(), ".aws"),
 			join(homedir(), ".gnupg"),
