@@ -59,6 +59,54 @@ function prefersTouch() {
 }
 
 const UNLOCK_TEXT = "Unlock to continue.";
+/** A dialog of ours (closing a shell that runs vim) takes focus from the page; its blur can land just after it closes. */
+const HOLD_TAIL_MS = 500;
+/** A prompt waits this long at most for the host to have the lock it was sent, so the check lands after it. */
+const LOCK_WAIT_MS = 2_000;
+
+/** @param {number} ms */
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Tells the host serving the page that this browser's terminals are locked; keepalive, since the page may be on its way out. */
+function postTerminalLock() {
+	return fetch(new URL("/api/terminals/lock", window.location.origin), { method: "POST", credentials: "include", keepalive: true }).then(
+		() => undefined,
+		() => undefined,
+	);
+}
+
+/**
+ * Terminals lock apart from the page, since a shell (ssh to prod in it, say) wants more than the page's window.
+ * - They lock whenever the page goes away: out of sight (another tab, the app switcher, a locked screen) or out of
+ *   focus (another app or window). Neither our own prompt, which takes focus while it's up, nor a dialog run through
+ *   `holdFocus` counts. Locked, a terminal drops its screen and its socket, and the host refuses this browser its
+ *   shells until the next check.
+ * - Only a check passed in this page since unlocks them: one asked for with `unlock` (a click on a locked terminal,
+ *   opening one), or the page's own when it asks. A check another tab passed doesn't count.
+ * - Phones ask by themselves on the way back when a locked terminal is on screen (`wantsUnlock`); laptops wait for a
+ *   click, since the passkey sheet blocks every Chrome tab. After a prompt that didn't go through, phones wait too.
+ * @typedef {{ onLock: () => void, onUnlock: () => void, wantsUnlock: () => boolean }} TerminalLockWatcher
+ * @typedef {{
+ *   name: string,
+ *   isLocked: () => boolean,
+ *   watch: (watcher: TerminalLockWatcher) => () => void,
+ *   unlock: () => Promise<string | null>,
+ *   lock: () => void,
+ *   refused: () => void,
+ *   holdFocus: <T>(run: () => T) => T,
+ * }} TerminalLock
+ */
+
+/** Terminals on a host that asks for no check (loopback) never lock. @type {TerminalLock} */
+export const noTerminalLock = Object.freeze({
+	name: "Face ID",
+	isLocked: () => false,
+	watch: () => () => {},
+	unlock: async () => null,
+	lock: () => {},
+	refused: () => {},
+	holdFocus: (run) => run(),
+});
 
 /**
  * Locks the page behind a Face ID / Touch ID check.
@@ -70,6 +118,8 @@ const UNLOCK_TEXT = "Unlock to continue.";
  * - A locked page swallows keys, so nothing underneath (esc aborts a run) acts while it's locked.
  * - After a failed or cancelled prompt it waits for "Try again" instead of prompting on every return.
  * - Touch devices cover the page while they're away, so the app switcher shows the card, not the session.
+ * - Terminals have a lock of their own (`terminals`, see TerminalLock). The page and its terminals share one prompt,
+ *   and one check is good for both.
  */
 export function installFaceIdGuard({
 	api,
@@ -79,6 +129,7 @@ export function installFaceIdGuard({
 	touch = prefersTouch(),
 	coverWhenAway = touch,
 	autoPrompt = touch,
+	sendTerminalLock = postTerminalLock,
 }) {
 	const ui = createOverlay();
 	let locked = false;
@@ -91,6 +142,17 @@ export function installFaceIdGuard({
 	let freshMs = 0;
 	let initialUnlockResolve = null;
 	let focusBeforeLock = null;
+	/** The one Face ID / Touch ID prompt up at a time; the page and its terminals both join it. @type {Promise<void> | null} */
+	let prompting = null;
+	let terminalsLocked = true;
+	/** A terminal prompt that didn't go through: phones stop asking on their own until one does. */
+	let terminalPromptFailed = false;
+	/** @type {Set<TerminalLockWatcher>} */
+	const terminalWatchers = new Set();
+	/** The last lock sent to the host. @type {Promise<void>} */
+	let terminalLockSent = Promise.resolve();
+	let holding = 0;
+	let heldUntil = 0;
 
 	function resolveInitialUnlock() {
 		const resolve = initialUnlockResolve;
@@ -132,8 +194,6 @@ export function installFaceIdGuard({
 		setLocked(false);
 		if (wasLocked) restoreFocus();
 		resolveInitialUnlock();
-		// what waited on a check (a terminal tile opening its shell) tries again
-		if (wasLocked) window.dispatchEvent(new Event("pi-web-faceid-unlocked"));
 	}
 
 	function checkIsFresh() {
@@ -169,6 +229,54 @@ export function installFaceIdGuard({
 		await verifyChallenge(challenge.challengeId, assertion);
 	}
 
+	function assertWebAuthnUsable() {
+		if (!window.isSecureContext) {
+			throw new Error("Face ID requires a secure origin (HTTPS or localhost).");
+		}
+		if (!window.PublicKeyCredential || !navigator.credentials) {
+			throw new Error("WebAuthn is not supported in this browser.");
+		}
+	}
+
+	/** Asks for Face ID / Touch ID (enrolling this browser the first time). Asking while a prompt is up joins that one. */
+	function prompt(knownStatus = null) {
+		prompting ??= runPrompt(knownStatus).finally(() => {
+			prompting = null;
+		});
+		return prompting;
+	}
+
+	async function runPrompt(knownStatus) {
+		assertWebAuthnUsable();
+		await Promise.race([terminalLockSent, delay(LOCK_WAIT_MS)]);
+		const status = knownStatus ?? (await readStatus());
+		if (!status.enrolled) {
+			if (!status.canRegister) {
+				throw new Error(
+					"First-time remote Face ID enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.",
+				);
+			}
+			setStatus("First-time setup: approve Face ID to enroll this browser.");
+			await runRegistration();
+		}
+		setStatus("Confirm with Face ID to unlock.");
+		await runAuthentication();
+		passed();
+	}
+
+	/** A check went through: it's good for the page's window, and for the terminals unless the page went away meanwhile. */
+	function passed() {
+		verifiedAt = now();
+		hostDemandsCheck = false;
+		lockMessage = UNLOCK_TEXT;
+		failed = false;
+		if (locked) unlock();
+		if (document.visibilityState === "hidden") return;
+		terminalPromptFailed = false;
+		terminalsLocked = false;
+		for (const watcher of [...terminalWatchers]) watcher.onUnlock();
+	}
+
 	/**
 	 * Unlocks when the host has a check on file that's still good (another tab may have passed one), otherwise
 	 * prompts: on a gesture, or by itself where that's allowed; else it offers Unlock and waits.
@@ -178,12 +286,7 @@ export function installFaceIdGuard({
 		inFlight = true;
 		failed = false;
 		try {
-			if (!window.isSecureContext) {
-				throw new Error("Face ID requires a secure origin (HTTPS or localhost).");
-			}
-			if (!window.PublicKeyCredential || !navigator.credentials) {
-				throw new Error("WebAuthn is not supported in this browser.");
-			}
+			assertWebAuthnUsable();
 			const status = await readStatus();
 			if (!hostDemandsCheck && status.enrolled && checkIsFresh()) {
 				unlock();
@@ -194,20 +297,7 @@ export function installFaceIdGuard({
 				return;
 			}
 			setStatus("Prompting Face ID…");
-			if (!status.enrolled) {
-				if (!status.canRegister) {
-					throw new Error(
-						"First-time remote Face ID enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.",
-					);
-				}
-				setStatus("First-time setup: approve Face ID to enroll this browser.");
-				await runRegistration();
-			}
-			setStatus("Confirm with Face ID to unlock.");
-			await runAuthentication();
-			verifiedAt = now();
-			hostDemandsCheck = false;
-			lockMessage = UNLOCK_TEXT;
+			await prompt(status);
 			unlock();
 		} catch (error) {
 			failed = true;
@@ -229,19 +319,81 @@ export function installFaceIdGuard({
 		void runCheck({ gesture: false });
 	}
 
+	function lockTerminals() {
+		if (terminalsLocked) return;
+		terminalsLocked = true;
+		terminalLockSent = sendTerminalLock();
+		for (const watcher of [...terminalWatchers]) watcher.onLock();
+	}
+
+	/** @param {"blur" | "hidden"} how */
+	function terminalsAway(how) {
+		if (prompting) return;
+		if (how === "blur" && (holding > 0 || performance.now() < heldUntil)) return;
+		lockTerminals();
+	}
+
+	/** @returns {Promise<string | null>} null once the terminals are unlocked, else why they aren't */
+	async function unlockTerminals() {
+		try {
+			await prompt();
+		} catch (error) {
+			terminalPromptFailed = true;
+			return normalizeErrorMessage(error);
+		}
+		return terminalsLocked ? "The page went away before the check finished. Unlock again." : null;
+	}
+
+	function askForTerminals() {
+		if (!terminalsLocked || !autoPrompt || terminalPromptFailed || prompting || !hasFocus()) return;
+		if ([...terminalWatchers].some((watcher) => watcher.wantsUnlock())) void unlockTerminals();
+	}
+
+	/** @template T @param {() => T} run */
+	function holdFocus(run) {
+		holding += 1;
+		try {
+			return run();
+		} finally {
+			holding -= 1;
+			heldUntil = performance.now() + HOLD_TAIL_MS;
+		}
+	}
+
+	/** @type {TerminalLock} */
+	const terminals = {
+		name: touch ? "Face ID" : "Touch ID",
+		isLocked: () => terminalsLocked,
+		watch(watcher) {
+			terminalWatchers.add(watcher);
+			return () => {
+				terminalWatchers.delete(watcher);
+			};
+		},
+		unlock: unlockTerminals,
+		lock: lockTerminals,
+		/** The host refused a terminal (another tab locked them, or the check got too old): a phone asks right away. */
+		refused() {
+			if (autoPrompt && !terminalPromptFailed && !prompting && hasFocus()) void unlockTerminals();
+		},
+		holdFocus,
+	};
+
 	function onAway() {
-		if (!watching || inFlight || locked || !coverWhenAway) return;
+		if (!watching || inFlight || prompting || locked || !coverWhenAway) return;
 		setLocked(true);
 		setStatus("Session hidden.");
 	}
 
 	function onReturn() {
-		if (!watching || inFlight || failed) return;
+		if (!watching || inFlight || prompting || failed) return;
 		if (hostDemandsCheck || !checkIsFresh()) {
+			// the check it asks for unlocks the terminals too
 			requireCheck(hostDemandsCheck ? lockMessage : UNLOCK_TEXT);
 			return;
 		}
 		if (locked) unlock();
+		askForTerminals();
 	}
 
 	function swallowKeysWhileLocked(event) {
@@ -254,12 +406,20 @@ export function installFaceIdGuard({
 	function bindVisibilityHooks() {
 		window.addEventListener("keydown", swallowKeysWhileLocked, true);
 		window.addEventListener("keyup", swallowKeysWhileLocked, true);
-		window.addEventListener("blur", onAway);
+		window.addEventListener("blur", () => {
+			terminalsAway("blur");
+			onAway();
+		});
 		window.addEventListener("focus", onReturn);
 		window.addEventListener("pageshow", onReturn);
+		window.addEventListener("pagehide", () => terminalsAway("hidden"));
 		document.addEventListener("visibilitychange", () => {
-			if (document.visibilityState === "hidden") onAway();
-			else onReturn();
+			if (document.visibilityState === "hidden") {
+				terminalsAway("hidden");
+				onAway();
+			} else {
+				onReturn();
+			}
 		});
 
 		window.addEventListener("pi-web-faceid-required", (event) => {
@@ -284,6 +444,8 @@ export function installFaceIdGuard({
 	return {
 		async start() {
 			bindVisibilityHooks();
+			// a page that just loaded starts with its terminals locked, on the host too
+			terminalLockSent = sendTerminalLock();
 			const unlocked = new Promise((resolve) => {
 				initialUnlockResolve = resolve;
 			});
@@ -300,5 +462,6 @@ export function installFaceIdGuard({
 			requireCheck(UNLOCK_TEXT);
 			await unlocked;
 		},
+		terminals,
 	};
 }

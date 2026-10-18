@@ -91,6 +91,14 @@ export interface ApiNeverSaved {
 /** 404 for a session that isn't running (attach, resume, file reads); one that was never saved says so. */
 export type ApiSessionMissingResponse = ApiErrorResponse & Partial<ApiNeverSaved>;
 
+/**
+ * 401 from opening a terminal or attaching to one: no Face ID check since this browser last locked its terminals (or
+ * none recent enough). The page unlocks its terminals with a check instead of locking itself.
+ */
+export interface ApiTerminalLockedResponse extends ApiErrorResponse {
+	terminalLocked: true;
+}
+
 export interface ApiSessionSummary {
 	id: string;
 	path: string | null;

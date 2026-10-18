@@ -2,8 +2,10 @@ async function handleJsonResponse(res) {
 	const body = await res.json().catch(() => ({}));
 	if (res.ok) return body;
 	const message = body.error || `${res.status} ${res.statusText}`;
+	// locked terminals unlock with a check of their own; the page stays as it is
 	if (
 		res.status === 401 &&
+		body.terminalLocked !== true &&
 		typeof message === "string" &&
 		message.toLowerCase().includes("face id")
 	) {

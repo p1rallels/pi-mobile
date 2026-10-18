@@ -200,6 +200,12 @@ The page locks when it loads, and again when you come back to it (tab, window or
 
 If a control action says fresh Face ID / Touch ID is required, the browser prompts again, and a prompt that was refused goes back into the composer.
 
+Terminal tiles have a lock of their own on top of those windows:
+
+- Opening a terminal asks for a check right then.
+- The terminals lock whenever the page goes away (another tab, app or window, a locked screen, a reload, closing the phone's terminal). The page tells the host (`POST /api/terminals/lock`), which closes that browser's terminal connections and refuses to open or attach to a shell until the browser passes a newer check. Listing and closing shells don't need one.
+- One check unlocks every terminal on the page, and the page too. Laptops wait for a click on a locked tile; phones ask by themselves when they come back to an open terminal.
+
 Browser and Face ID sessions are HMAC-signed cookies keyed by `~/.pi-web/cookie-key`, so restarting pi-web keeps devices signed in. In secure mode each cookie only works with the device certificate it was issued to. Delete the key and restart to sign every device out.
 
 First remote WebAuthn enrollment requires either:

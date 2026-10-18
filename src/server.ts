@@ -39,6 +39,7 @@ import type {
 	ApiStopElsewhereRequest,
 	ApiStopElsewhereResponse,
 	ApiTakeoverRequest,
+	ApiTerminalLockedResponse,
 	ApiTranscriptPageResponse,
 	ApiTripwireAlertsResponse,
 	FollowSseEvent,
@@ -75,12 +76,18 @@ interface RateLimitResult {
 /** What a terminal tile's websocket carries from its upgrade request. */
 interface TerminalSocketData {
 	terminalId: string;
+	/** The browser it was opened from: locking that browser's terminals closes it. */
+	clientId: string;
+	/** When the Face ID check it was let in on passed, or null on hosts that don't check. */
+	checkedAt: number | null;
 	cols: string | null;
 	rows: string | null;
 }
 
 const CLIENT_COOKIE = "pi_web_client";
 const FACEID_COOKIE = "pi_web_faceid";
+/** A page going away locks its browser's terminals here (POST, no body). */
+const TERMINAL_LOCK_PATH = "/api/terminals/lock";
 
 const CLIENT_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const FACEID_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_SESSION_MINUTES, 240, "PI_WEB_FACEID_SESSION_MINUTES");
@@ -573,7 +580,9 @@ function isFaceIdExemptPath(pathname: string): boolean {
 		pathname === "/api/faceid/status" ||
 		pathname === "/api/faceid/challenge" ||
 		pathname === "/api/faceid/verify" ||
-		pathname === "/api/faceid/logout"
+		pathname === "/api/faceid/logout" ||
+		// locking only ever takes access away, so a page whose check ran out can still lock
+		pathname === TERMINAL_LOCK_PATH
 	);
 }
 
@@ -593,13 +602,6 @@ function parseTerminalRoute(pathname: string): { id: string | null; action: stri
 
 /** How recent the Face ID check must be for a route, or null when any live Face ID session will do. */
 function faceIdFreshnessFor(method: string, pathname: string): number | null {
-	const terminalRoute = parseTerminalRoute(pathname);
-	if (terminalRoute) {
-		// opening a shell is like starting a session, attaching to one (its socket) like typing a prompt
-		if (method === "POST" && !terminalRoute.id) return FACEID_FRESH_TTL_MS;
-		if (method === "GET" && terminalRoute.id) return FACEID_COMMAND_TTL_MS;
-		return null;
-	}
 	if (method !== "POST") return null;
 	if (pathname === "/api/repos" || pathname === "/api/sessions") return FACEID_FRESH_TTL_MS;
 	const sessionRoute = parseSessionRoute(pathname);
@@ -703,16 +705,45 @@ function resolveBrowserFaceIdCheck(req: Request, url: URL, client: { clientId: s
 	return session;
 }
 
+/**
+ * Shells lock apart from the rest of the page. Opening one needs a check from the fresh window and attaching to one (its
+ * info, then its socket) a check from the command window, like starting a session and typing a prompt; both also need
+ * the check to be newer than the last time this browser locked its terminals, which its pages do whenever they go away.
+ * Listing and closing shells need neither. The refusal says terminalLocked so the page locks its terminals, not itself.
+ */
+function terminalLockError(method: string, route: { id: string | null }, clientId: string, verifiedAt: number): Response | null {
+	const maxAge = method === "POST" && !route.id ? FACEID_FRESH_TTL_MS : method === "GET" && route.id ? FACEID_COMMAND_TTL_MS : null;
+	if (maxAge === null) return null;
+	if (verifiedAt > (terminalLocks.get(clientId) ?? 0) && Date.now() - verifiedAt <= maxAge) return null;
+	const body: ApiTerminalLockedResponse = { error: "Terminals are locked: unlock them with Face ID.", terminalLocked: true };
+	return json(body, 401);
+}
+
+/** A page went away (another tab or app, a locked screen, the phone's terminal closing): its browser's shells lock. */
+function lockTerminals(clientId: string): void {
+	const now = Date.now();
+	// a check older than a lock this old ran out with its Face ID session, so forgetting the lock lets nothing through
+	for (const [id, at] of terminalLocks) {
+		if (now - at > FACEID_TTL_MS) terminalLocks.delete(id);
+	}
+	terminalLocks.set(clientId, now);
+	for (const socket of [...terminalSockets]) {
+		if (socket.data.clientId === clientId) socket.close(4401, "locked");
+	}
+}
+
 function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 	if (!isApiPath(url.pathname)) return null;
 	if (isFaceIdExemptPath(url.pathname)) return null;
+	const terminalRoute = parseTerminalRoute(url.pathname);
 	// in secure mode browsers come through the proxy, so a loopback request is a process on this host: it gets no shell
-	if (isLoopbackHost(url.hostname) && !(secureMode && parseTerminalRoute(url.pathname))) return null;
+	if (isLoopbackHost(url.hostname) && !(secureMode && terminalRoute)) return null;
 
 	const client = resolveClientCookie(req);
 	if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
 	const session = resolveBrowserFaceIdCheck(req, url, client);
 	if (!session) return errorResponse("Face ID verification required.", 401);
+	if (terminalRoute) return terminalLockError(req.method, terminalRoute, client.clientId, session.verifiedAt);
 	const freshness = faceIdFreshnessFor(req.method, url.pathname);
 	if (freshness !== null && Date.now() - session.verifiedAt > freshness) {
 		return errorResponse("Fresh Face ID verification required.", 401);
@@ -855,6 +886,9 @@ const restoredSessions = await runtime.loadDetachedSessions();
 const faceId = new FaceIdService(join(getAgentDir(), "pi-web", "faceid-credentials.json"));
 const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));
 const revokedFaceIdTokens = new Map<string, number>();
+/** When each browser (client id) last locked its terminals; a shell needs a Face ID check made after that. */
+const terminalLocks = new Map<string, number>();
+const terminalSockets = new Set<Bun.ServerWebSocket<TerminalSocketData>>();
 
 const publicDir = join(import.meta.dir, "..", "public");
 const publicRoot = resolve(publicDir) + sep;
@@ -957,7 +991,14 @@ async function handleTerminalRoute(
 	if (req.method === "GET" && action === "socket") {
 		if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return errorResponse("Expected a websocket upgrade", 426);
 		if (!terminals.get(id)) return errorResponse("Terminal not running", 404);
-		const data: TerminalSocketData = { terminalId: id, cols: url.searchParams.get("cols"), rows: url.searchParams.get("rows") };
+		const client = resolveClientCookie(req);
+		const data: TerminalSocketData = {
+			terminalId: id,
+			clientId: client?.clientId ?? "",
+			checkedAt: resolveBrowserFaceIdCheck(req, url, client)?.verifiedAt ?? null,
+			cols: url.searchParams.get("cols"),
+			rows: url.searchParams.get("rows"),
+		};
 		return server.upgrade(req, { data }) ? undefined : errorResponse("Websocket upgrade failed", 400);
 	}
 	if (req.method === "POST" && action === "close") {
@@ -1280,6 +1321,14 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 			}
 		}
 
+		if (url.pathname === TERMINAL_LOCK_PATH) {
+			if (req.method !== "POST") return plainText("Not found", 404);
+			const client = resolveClientCookie(req);
+			if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
+			lockTerminals(client.clientId);
+			return ok();
+		}
+
 		const terminalRoute = parseTerminalRoute(url.pathname);
 		if (terminalRoute) return handleTerminalRoute(req, url, terminalRoute, server, requesterId);
 
@@ -1510,8 +1559,18 @@ const server = Bun.serve({
 	websocket: {
 		data: {} as TerminalSocketData,
 		open(ws) {
+			// the browser locked its terminals between the upgrade and now
+			const lockedAt = terminalLocks.get(ws.data.clientId);
+			if (ws.data.checkedAt !== null && lockedAt !== undefined && lockedAt >= ws.data.checkedAt) {
+				ws.close(4401, "locked");
+				return;
+			}
 			const size = { cols: ws.data.cols ?? undefined, rows: ws.data.rows ?? undefined };
-			if (!terminals?.attach(ws.data.terminalId, ws, size)) ws.close(4404, "terminal not running");
+			if (!terminals?.attach(ws.data.terminalId, ws, size)) {
+				ws.close(4404, "terminal not running");
+				return;
+			}
+			terminalSockets.add(ws);
 		},
 		message(ws, message) {
 			if (typeof message === "string") terminals?.handleMessage(ws.data.terminalId, message);
@@ -1520,6 +1579,7 @@ const server = Bun.serve({
 			terminals?.drain(ws.data.terminalId, ws);
 		},
 		close(ws) {
+			terminalSockets.delete(ws);
 			terminals?.detach(ws.data.terminalId, ws);
 		},
 	},

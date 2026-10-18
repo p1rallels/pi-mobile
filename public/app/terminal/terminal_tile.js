@@ -3,6 +3,10 @@
 // new one in the same folder, never re-running what the old one ran. The red dot asks first when vim, ssh or anything
 // else runs in the foreground; exit in the shell closes the tile. Shells end when the Face ID check they run under
 // runs out, so the tile counts down the last minutes and offers a check that keeps them open.
+//
+// Terminals lock whenever the page goes away (see TerminalLock in core/faceid.js). Locked, a tile lets go of its shell
+// and forgets its screen until a check passes; clicking it asks for one. Opening a shell asks first, wherever the lock is.
+import { noTerminalLock } from "../core/faceid.js";
 import { createTerminalView, loadTerminalStyles } from "./terminal_view.js";
 
 const EXPIRY_WARNING_MS = 10 * 60_000;
@@ -31,7 +35,7 @@ const statusOf = (error) => /** @type {any} */ (error)?.status;
 /** The host wants a (fresher) Face ID check; other 401s mean the browser session cookie is gone. @param {unknown} error */
 const needsFaceId = (error) => statusOf(error) === 401 && /face id/i.test(messageOf(error));
 
-/** @typedef {"waiting" | "opening" | "attaching" | "live" | "reconnecting" | "faceid" | "ended" | "failed"} TerminalTileState */
+/** @typedef {"waiting" | "locked" | "opening" | "attaching" | "live" | "reconnecting" | "ended" | "failed"} TerminalTileState */
 
 /**
  * One run at a time: a call while one is in flight gets that one (a retry timer, a passed Face ID check and a click
@@ -52,11 +56,11 @@ function exclusive(run) {
 /** @type {Record<TerminalTileState, { text: string, kind: string }>} */
 const PILLS = {
 	waiting: { text: "terminal", kind: "idle" },
+	locked: { text: "locked", kind: "waiting" },
 	opening: { text: "opening…", kind: "idle" },
 	attaching: { text: "connecting…", kind: "idle" },
 	live: { text: "terminal", kind: "idle" },
 	reconnecting: { text: "reconnecting…", kind: "offline" },
-	faceid: { text: "face id", kind: "waiting" },
 	ended: { text: "closed", kind: "offline" },
 	failed: { text: "error", kind: "error" },
 };
@@ -76,11 +80,15 @@ const PILLS = {
  *   onChange: () => void,
  *   onRemove: () => void,
  *   view?: import("./terminal_view.js").TerminalViewExtras,
- * }} options
+ *   lock?: import("../core/faceid.js").TerminalLock,
+ *   askFirst?: boolean,
+ * }} options `askFirst`: ask for a check before the first open or attach, even when the terminals are unlocked
  */
 export function createTerminalTile(options) {
 	const { doc, api, tile } = options;
 	const view = /** @type {Window} */ (doc.defaultView);
+	const lock = options.lock ?? noTerminalLock;
+	let askFirst = options.askFirst === true;
 	let id = options.terminalId;
 	let cwd = options.cwd;
 	let title = options.title;
@@ -141,9 +149,11 @@ export function createTerminalTile(options) {
 			pill.textContent = text;
 			pill.className = `cv-pill is-${kind}`;
 		}
-		const action = state === "faceid" ? "try again" : state === "ended" ? "new shell" : state === "failed" ? "retry" : null;
+		const locked = state === "locked";
+		const action = locked ? (note ? "try again" : "unlock") : state === "ended" ? "new shell" : state === "failed" ? "retry" : null;
 		overlay.hidden = action === null;
-		overlayText.textContent = state === "faceid" ? "Opening a shell needs a recent Face ID check. Unlock, and it opens." : note;
+		overlay.classList.toggle("is-locked", locked);
+		overlayText.textContent = locked && !note ? `${lock.name} to unlock this terminal.` : note;
 		overlayButton.textContent = action ?? "";
 		renderExpiry();
 	}
@@ -173,6 +183,9 @@ export function createTerminalTile(options) {
 		}
 	}
 
+	/** Locked (the page went away) or gone: an open or attach under way stops where it is. */
+	const halted = () => destroyed || lock.isLocked();
+
 	async function ensureScreen() {
 		if (screen) return screen;
 		await loadTerminalStyles(doc);
@@ -193,29 +206,35 @@ export function createTerminalTile(options) {
 			onLive: () => {
 				retries = 0;
 				setState("live");
+				// unlocked with nothing else holding the keyboard: typing goes straight to the shell
+				const active = doc.activeElement;
+				if (options.isFocused() && (!active || active === doc.body || active === overlayButton)) screen?.focus();
 			},
 			onExpires: (at) => {
 				expiresAt = at;
 				renderExpiry();
 			},
 			onExit: (reason) => onExit(reason),
-			onLost: () => reconnectLater(),
+			onLost: () => {
+				if (!halted()) reconnectLater();
+			},
 			onCopied: (text) => flash(`copied ${lineCount(text)}`),
 			onCopyFailed: () => flash("copy failed: click the page, then pbcopy again", "error"),
 		});
-		if (options.isFocused()) screen.focus();
+		if (options.isFocused() && !halted()) screen.focus();
 		return screen;
 	}
 
 	/**
-	 * A refused request: a Face ID check (the page locks and asks; passing it runs `again`), a lost browser session (made
-	 * anew, then `once` runs, when there is one), or a failure.
+	 * A refused request: a Face ID check (the tile locks until one passes, then runs `again`), a lost browser session
+	 * (made anew, then `once` runs, when there is one), or a failure.
 	 * @param {unknown} error @param {() => Promise<void>} again @param {(() => Promise<void>) | null} once @param {string} what
 	 */
 	async function onRefused(error, again, once, what) {
 		if (needsFaceId(error)) {
 			afterCheck = again;
-			setState("faceid");
+			setState("locked");
+			lock.refused();
 			return;
 		}
 		if (statusOf(error) === 401 && once) {
@@ -237,21 +256,23 @@ export function createTerminalTile(options) {
 	/** @param {boolean} retried */
 	async function openShellOnce(retried) {
 		const current = await ensureScreen();
-		if (!current || destroyed) return;
+		if (!current || halted()) return;
 		setState("opening");
 		try {
 			const info = await api.postJson("/api/terminals", { cwd, ...(current.size() ?? {}) });
 			if (destroyed) return;
+			// the shell is open on the host: the tile keeps it even if the page locked meanwhile
 			id = String(info.id);
 			cwd = typeof info.cwd === "string" ? info.cwd : cwd;
 			title = null;
 			expiresAt = typeof info.expiresAt === "number" ? info.expiresAt : null;
 			options.onIdChange(id);
 			options.onChange();
+			if (halted()) return;
 			setState("attaching");
 			current.connect();
 		} catch (error) {
-			if (destroyed) return;
+			if (halted()) return;
 			await onRefused(error, openShell, retried ? null : () => openShellOnce(true), "Couldn't open a shell");
 		}
 	}
@@ -263,17 +284,17 @@ export function createTerminalTile(options) {
 	async function attachOnce(retried) {
 		if (!id) return openShell();
 		const current = await ensureScreen();
-		if (!current || destroyed) return;
+		if (!current || halted()) return;
 		if (state !== "reconnecting") setState("attaching");
 		try {
 			const info = await api.getJson(`/api/terminals/${encodeURIComponent(id)}`);
-			if (destroyed) return;
+			if (halted()) return;
 			expiresAt = typeof info?.expiresAt === "number" ? info.expiresAt : null;
 			if (!title && typeof info?.title === "string") title = info.title;
 			render();
 			current.connect();
 		} catch (error) {
-			if (destroyed) return;
+			if (halted()) return;
 			const status = statusOf(error);
 			if (status === 404) await openShell();
 			else if (status === 401) await onRefused(error, attach, retried ? null : () => attachOnce(true), "Couldn't attach to the shell");
@@ -313,31 +334,81 @@ export function createTerminalTile(options) {
 
 	function start() {
 		if (destroyed || state !== "waiting" || !visible) return;
-		setState(id ? "attaching" : "opening");
-		void attach();
+		if (askFirst) {
+			askFirst = false;
+			void unlockHere();
+		} else if (lock.isLocked()) {
+			setState("locked");
+		} else {
+			setState(id ? "attaching" : "opening");
+			void attach();
+		}
 	}
 
+	/** Asks for a check; once it passes, the tile picks up where it was. A check that doesn't go through says why. */
+	async function unlockHere() {
+		setState("locked");
+		const error = await lock.unlock();
+		if (destroyed || state !== "locked") return;
+		// a lock with no checks to pass (loopback) has nobody to tell the tile
+		if (error === null) resume();
+		else setState("locked", error);
+	}
+
+	/** A check passed: back onto the shell, or what was waiting on the check. A tile that never showed waits to be on screen. */
+	function resume() {
+		if (destroyed || state !== "locked") return;
+		if (!screen && !visible) {
+			setState("waiting");
+			return;
+		}
+		const run = afterCheck ?? attach;
+		afterCheck = null;
+		setState(id ? "attaching" : "opening");
+		void run();
+	}
+
+	/** The page went away: the shell keeps running on the host, the tile lets go of it and forgets its screen. */
+	function lockScreen() {
+		if (destroyed) return;
+		view.clearTimeout(retryTimer);
+		retryTimer = 0;
+		const hadKeyboard = screenEl.contains(doc.activeElement);
+		screen?.disconnect();
+		if (state === "waiting" || state === "ended") return;
+		setState("locked");
+		if (hadKeyboard) overlayButton.focus({ preventScroll: true });
+	}
+
+	const unwatch = lock.watch({
+		onLock: lockScreen,
+		onUnlock: resume,
+		wantsUnlock: () => visible && !destroyed && state === "locked",
+	});
+
 	overlayButton.addEventListener("click", () => {
-		if (state === "faceid") {
-			const retry = afterCheck ?? attach;
-			afterCheck = null;
-			void retry();
+		if (state === "locked") {
+			void unlockHere();
 		} else if (state === "ended") {
-			void openShell();
+			// a new shell is a new terminal: it asks first
+			afterCheck = openShell;
+			void unlockHere();
 		} else if (state === "failed") {
 			void attach();
 		}
 	});
-	keepOpen.addEventListener("click", () => {
-		view.dispatchEvent(new CustomEvent("pi-web-faceid-required", { detail: { message: "Check again to keep your terminals open." } }));
+	// a click anywhere on a locked tile asks, not just on its button
+	overlay.addEventListener("click", (event) => {
+		if (state !== "locked" || overlayButton.contains(/** @type {Node | null} */ (event.target))) return;
+		if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+		void unlockHere();
 	});
-	const onUnlocked = () => {
-		if (state !== "faceid") return;
-		const retry = afterCheck ?? attach;
-		afterCheck = null;
-		void retry();
-	};
-	view.addEventListener("pi-web-faceid-unlocked", onUnlocked);
+	keepOpen.addEventListener("click", () => {
+		// any check on the host keeps its shells open for another Face ID session
+		void lock.unlock().then((error) => {
+			if (error !== null) flash(`not kept open: ${error}`, "error");
+		});
+	});
 
 	render();
 
@@ -349,7 +420,8 @@ export function createTerminalTile(options) {
 		getView: () => screen,
 		flash,
 		focus() {
-			screen?.focus();
+			if (state === "locked") overlayButton.focus({ preventScroll: true });
+			else screen?.focus();
 		},
 		/** The view only opens once the tile is on screen (it needs a size to measure); after that it stays. @param {boolean} next */
 		setVisible(next) {
@@ -358,7 +430,7 @@ export function createTerminalTile(options) {
 		},
 		/** The red dot: closes the shell (asking first when something runs in its foreground), then the tile. */
 		async requestClose() {
-			if (!id || state === "ended" || state === "failed" || state === "faceid") {
+			if (!id || state === "ended" || state === "failed") {
 				options.onRemove();
 				return;
 			}
@@ -368,7 +440,8 @@ export function createTerminalTile(options) {
 			} catch (error) {
 				const busy = statusOf(error) === 409 ? /** @type {any} */ (error).body?.busy : null;
 				if (typeof busy === "string") {
-					if (!view.confirm(`${busy} is still running in this terminal. Close it anyway?`)) return;
+					// the dialog takes focus from the page, which isn't leaving it
+					if (!lock.holdFocus(() => view.confirm(`${busy} is still running in this terminal. Close it anyway?`))) return;
 					try {
 						await api.postJson(path, { force: true });
 					} catch (forced) {
@@ -390,7 +463,7 @@ export function createTerminalTile(options) {
 			view.clearTimeout(retryTimer);
 			view.clearTimeout(expiryTimer);
 			view.clearTimeout(flashTimer);
-			view.removeEventListener("pi-web-faceid-unlocked", onUnlocked);
+			unwatch();
 			screen?.dispose();
 			screen = null;
 		},

@@ -267,6 +267,8 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
   text-align: center;
 }
 .cv-term-expiry[hidden], .cv-term-overlay[hidden] { display: none; }
+/* locked: the whole tile asks for the check, and nothing of the screen shows through */
+.cv-term-overlay.is-locked { background: #18181e; cursor: pointer; }
 .cv-term-btn {
   flex: none;
   padding: 2px 9px;

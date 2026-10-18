@@ -279,6 +279,16 @@ export function createTerminalView(options) {
 
 	return {
 		connect,
+		/** Lets go of the shell and forgets its screen and scrollback; the host sends them again on the next connect. */
+		disconnect() {
+			closeSocket();
+			term.blur();
+			term.reset();
+			// output that arrived before the socket closed may still be on its way through the parser
+			term.write("", () => {
+				if (!disposed) term.reset();
+			});
+		},
 		size: proposedSize,
 		focus: () => term.focus(),
 		isConnected: () => socket?.readyState === WebSocket.OPEN,

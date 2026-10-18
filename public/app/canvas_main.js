@@ -9,7 +9,7 @@
 // A tile whose session never got a message (so pi never wrote it) and stopped running goes fresh instead:
 // same place and composer, and the first send starts a new session in the same folder (session/fresh.js).
 import { createApi } from "./core/api.js";
-import { installFaceIdGuard } from "./core/faceid.js";
+import { installFaceIdGuard, noTerminalLock } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
 import { createCanvas } from "./canvas/canvas.js";
 import { createFpsMeter } from "./canvas/fps_meter.js";
@@ -144,6 +144,8 @@ export async function bootCanvas() {
 	/** Terminal tiles of another host's map, kept as they are: shells only open on the host serving this page. @type {any[]} */
 	let keptTerminalTiles = [];
 	const terminalsHere = () => api.getBaseUrl() === window.location.origin;
+	/** The Face ID guard's lock on the terminals, once it's installed (none on loopback). */
+	let terminalLock = noTerminalLock;
 	let saveTimer = 0;
 	let layoutLoaded = false;
 
@@ -903,6 +905,9 @@ export async function bootCanvas() {
 					onIdChange: (next) => renameTerminal(entry, next),
 					onChange: () => scheduleSave(),
 					onRemove: () => removeTerminalTile(entry.id),
+					lock: terminalLock,
+					// + new terminal: opening one asks first
+					askFirst: terminalId === null,
 				});
 				entry.tile.setVisible(tile.visible);
 			},
@@ -1126,6 +1131,7 @@ export async function bootCanvas() {
 		throw error;
 	}
 	const faceIdGuard = isLoopbackBrowserHost(window.location.hostname) ? null : installFaceIdGuard({ api });
+	if (faceIdGuard) terminalLock = faceIdGuard.terminals;
 	if (faceIdGuard) await faceIdGuard.start();
 	hosts = await loadHostList(api, activeHost);
 	renderHostButton();

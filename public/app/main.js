@@ -133,6 +133,7 @@ export async function bootPhone() {
 				api,
 				refreshClient: refreshClientSession,
 				onClosed: () => void sidebarCtrl?.refresh(),
+				lock: faceIdGuard?.terminals,
 			});
 			phoneTerminal.open(spec);
 		} catch (error) {

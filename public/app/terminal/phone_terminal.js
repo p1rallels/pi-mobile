@@ -6,6 +6,10 @@
 // the host after the return that ran it. So a return on a line that runs pbcopy starts a clipboard write right then
 // and hands it the text once it arrives (WebKit takes a promise for the data). Text that comes any other way (pbcopy
 // inside a script, a write iOS refused) waits in a "tap to copy" bar instead.
+//
+// Opening the screen asks for Face ID every time, and closing it locks the terminals again (see TerminalLock in
+// core/faceid.js). Locked while open (the app went away), it drops the screen, the select sheet and any copy waiting.
+import { noTerminalLock } from "../core/faceid.js";
 import { createTerminalTile } from "./terminal_tile.js";
 
 const FONT_SIZE = 12;
@@ -42,9 +46,10 @@ function controlCode(key) {
  *   api: { getJson: (path: string) => Promise<any>, postJson: (path: string, body: unknown) => Promise<any>, resolveUrl: (path: string) => string },
  *   refreshClient: () => Promise<unknown>,
  *   onClosed: () => void,
+ *   lock?: import("../core/faceid.js").TerminalLock,
  * }} options
  */
-export function createPhoneTerminal({ doc, api, refreshClient, onClosed }) {
+export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = noTerminalLock }) {
 	const view = /** @type {Window} */ (doc.defaultView);
 
 	/** @template {keyof HTMLElementTagNameMap} K @param {K} tag @param {string} className @param {string} [text] */
@@ -357,6 +362,8 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed }) {
 		root.style.height = "";
 		doc.body.classList.remove("ph-term-open");
 		statusEl.replaceChildren();
+		// out of use: the next open asks again, and the host turns away this browser until then
+		lock.lock();
 		onClosed();
 	}
 
@@ -385,6 +392,8 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed }) {
 			onChange: () => {},
 			onRemove: () => close(),
 			view: { fontSize: FONT_SIZE, onKey, mapInput, onClipboard },
+			lock,
+			askFirst: true,
 		});
 		controller.setVisible(true);
 	}
@@ -430,6 +439,13 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed }) {
 	});
 	view.visualViewport?.addEventListener("resize", fitViewport);
 	view.visualViewport?.addEventListener("scroll", fitViewport);
+	lock.watch({
+		onLock: () => {
+			if (controller) reset();
+		},
+		onUnlock: () => {},
+		wantsUnlock: () => false,
+	});
 
 	return {
 		open,
