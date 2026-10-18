@@ -205,6 +205,7 @@ Terminal tiles have a lock of their own on top of those windows:
 - Opening a terminal asks for a check right then.
 - The terminals lock whenever the page goes away (another tab, app or window, a locked screen, a reload, closing the phone's terminal). The page tells the host (`POST /api/terminals/lock`), which closes that browser's terminal connections and refuses to open or attach to a shell until the browser passes a newer check. Listing and closing shells don't need one.
 - One check unlocks every terminal on the page, and the page too. Laptops wait for a click on a locked tile; phones ask by themselves when they come back to an open terminal.
+- A shell ends 15 minutes after the last check on the host (`PI_WEB_FACEID_FRESH_MINUTES`), whatever runs in it; any check, unlocking included, pushes that back. The tile's **keep open** button in the last 5 minutes is one more check.
 
 Browser and Face ID sessions are HMAC-signed cookies keyed by `~/.pi-web/cookie-key`, so restarting pi-web keeps devices signed in. In secure mode each cookie only works with the device certificate it was issued to. Delete the key and restart to sign every device out.
 

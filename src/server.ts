@@ -40,6 +40,7 @@ import type {
 	ApiStopElsewhereResponse,
 	ApiTakeoverRequest,
 	ApiTerminalLockedResponse,
+	ApiTerminalMissingResponse,
 	ApiTranscriptPageResponse,
 	ApiTripwireAlertsResponse,
 	FollowSseEvent,
@@ -95,6 +96,8 @@ const FACEID_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_SESSIO
 const FACEID_FRESH_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_FRESH_MINUTES, 15, "PI_WEB_FACEID_FRESH_MINUTES");
 /** Prompts, aborts, settings and take over need a check within this window. */
 const FACEID_COMMAND_TTL_MS = 60_000 * parsePositiveInt(process.env.PI_WEB_FACEID_COMMAND_MINUTES, 60, "PI_WEB_FACEID_COMMAND_MINUTES");
+/** A terminal's shell ends this long after the last Face ID check on the host (every check pushes it back): the fresh window. */
+const TERMINAL_TTL_MS = FACEID_FRESH_TTL_MS;
 
 const DEFAULT_JSON_BODY_LIMIT = 256 * 1024;
 const CANVAS_STATUS_THROTTLE_MS = 250;
@@ -322,7 +325,7 @@ Env:
   PI_WEB_CLIENT_SESSIONS_PER_MINUTE (browser session handshakes per client IP, default 20)
   PI_WEB_FACEID_SESSION_MINUTES (Face ID session length, default 240)
   PI_WEB_FACEID_COMMAND_MINUTES (Face ID age allowed for prompts and take over, default 60)
-  PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, and before the page asks again, default 15)
+  PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, and before the page asks again; terminals close this long after the last check; default 15)
   PI_WEB_SECURE_MODE=1
   PI_WEB_DEVICE_REGISTRY
   PI_WEB_HOST_REGISTRY
@@ -965,7 +968,8 @@ async function handleTerminalRoute(
 		if (limited) return rateLimitResponse(limited);
 		const client = resolveClientCookie(req);
 		if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
-		// the shell ends when the Face ID check it opens under runs out; hosts that don't check (loopback dev) never end it
+		// the shell ends the fresh window after the check it opens under, unless a newer check pushes that back; hosts that
+		// don't check (loopback dev) never end it
 		const check = resolveBrowserFaceIdCheck(req, url, client);
 		const device = requestDevices.get(req);
 		try {
@@ -974,7 +978,7 @@ async function handleTerminalRoute(
 				cwd: raw.cwd,
 				cols: raw.cols,
 				rows: raw.rows,
-				expiresAt: check ? check.verifiedAt + FACEID_TTL_MS : null,
+				expiresAt: check ? check.verifiedAt + TERMINAL_TTL_MS : null,
 				openedBy: device ? `device ${device.slice(0, 16)}` : `client ${client.clientId.slice(0, 8)}`,
 			});
 			return json(info, 200);
@@ -986,7 +990,10 @@ async function handleTerminalRoute(
 	}
 	if (req.method === "GET" && action === null) {
 		const info = terminals.get(id);
-		return info ? json(info, 200) : errorResponse("Terminal not running", 404);
+		if (info) return json(info, 200);
+		// a tile that wasn't watching (locked, reloaded) learns why, rather than opening a new shell in its place
+		const body: ApiTerminalMissingResponse = { error: "Terminal not running", ended: terminals.endedReason(id) };
+		return json(body, 404);
 	}
 	if (req.method === "GET" && action === "socket") {
 		if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return errorResponse("Expected a websocket upgrade", 426);
@@ -1280,8 +1287,8 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				if (result.kind !== "authenticate") {
 					return json(result, 200);
 				}
-				// a check on this host keeps its terminals open for another Face ID session
-				terminals?.extend(Date.now() + FACEID_TTL_MS);
+				// a check on this host keeps its terminals open for another fresh window
+				terminals?.extend(Date.now() + TERMINAL_TTL_MS);
 				return createCookieResponse(result, 200, issueFaceIdCookie(req, client.clientId, url.hostname, secure));
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -1597,7 +1604,7 @@ if (trustProxy) {
 }
 console.log(`Response security headers enabled${enableHsts ? " (including HSTS)." : "."}`);
 console.log(
-	`Face ID remote session window: ${String(FACEID_TTL_MS / 60_000)}m total, ${String(FACEID_COMMAND_TTL_MS / 60_000)}m for prompts and take over, ${String(FACEID_FRESH_TTL_MS / 60_000)}m for new sessions, repos and release.`,
+	`Face ID remote session window: ${String(FACEID_TTL_MS / 60_000)}m total, ${String(FACEID_COMMAND_TTL_MS / 60_000)}m for prompts and take over, ${String(FACEID_FRESH_TTL_MS / 60_000)}m for new sessions, repos and release; terminals close ${String(TERMINAL_TTL_MS / 60_000)}m after the last check.`,
 );
 console.log(
 	`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session, idle sessions disposed after ${String(idleSessionMinutes)}m.`,

@@ -5,6 +5,7 @@ import type { LiveSnapshot } from "./live-snapshot.ts";
 import type { ElsewhereState } from "./outside-writers.ts";
 import type { ApiProjectTrust, ApiProjectTrustChoice, ApiProjectTrustPrompt } from "./project-trust.ts";
 import type { Turn } from "./session-turn.ts";
+import type { TerminalEndReason } from "./terminals.ts";
 import type { TranscriptMessage, TranscriptPage } from "./transcript.ts";
 
 export type ClientRole = "controller" | "viewer";
@@ -97,6 +98,11 @@ export type ApiSessionMissingResponse = ApiErrorResponse & Partial<ApiNeverSaved
  */
 export interface ApiTerminalLockedResponse extends ApiErrorResponse {
 	terminalLocked: true;
+}
+
+/** 404 for a terminal that isn't running: why it ended when the host still knows (until a restart), else null. */
+export interface ApiTerminalMissingResponse extends ApiErrorResponse {
+	ended: TerminalEndReason | null;
 }
 
 export interface ApiSessionSummary {

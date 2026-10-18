@@ -9,7 +9,7 @@
 import { noTerminalLock } from "../core/faceid.js";
 import { createTerminalView, loadTerminalStyles } from "./terminal_view.js";
 
-const EXPIRY_WARNING_MS = 10 * 60_000;
+const EXPIRY_WARNING_MS = 5 * 60_000;
 const RETRY_MS = [500, 1_000, 2_000, 4_000, 8_000];
 const FLASH_MS = 2_000;
 
@@ -296,7 +296,11 @@ export function createTerminalTile(options) {
 		} catch (error) {
 			if (halted()) return;
 			const status = statusOf(error);
-			if (status === 404) await openShell();
+			// gone while the tile wasn't watching (locked, reloaded): it ends here the way it ended there, never as a new
+			// local shell standing in for, say, an ssh that timed out; one the host never heard of (a restart) opens anew
+			const ended = status === 404 ? /** @type {any} */ (error).body?.ended : null;
+			if (typeof ended === "string" && ended !== "shutdown") onExit(ended);
+			else if (status === 404) await openShell();
 			else if (status === 401) await onRefused(error, attach, retried ? null : () => attachOnce(true), "Couldn't attach to the shell");
 			else reconnectLater();
 		}

@@ -1,7 +1,8 @@
 // Terminal tiles: one login shell per tile on this host, in a pty, with a headless xterm mirroring its screen so a
 // browser that (re)attaches (a reload, another tab, a dropped socket) gets the exact screen back before the live bytes.
 // Shells live in memory only: nothing they print or read is logged or written to disk, a restart ends them, and each
-// one ends when the Face ID check it was opened under runs out (a newer check on this host pushes that back).
+// one ends when the server's deadline for it passes (its Face ID check got too old; a newer check on this host pushes
+// that back).
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -33,6 +34,8 @@ const COLS = { min: 10, max: 500, fallback: 80 };
 const ROWS = { min: 4, max: 300, fallback: 24 };
 const EXPIRY_SWEEP_MS = 10_000;
 const KILL_GRACE_MS = 3_000;
+/** How many ended shells the manager remembers why for, so a tile that wasn't watching learns it on its way back. */
+const ENDED_MEMORY = 256;
 const SHELL_DIR = join(import.meta.dir, "terminal-shell");
 const EMPTY = new Uint8Array(0);
 
@@ -195,6 +198,8 @@ export function createTerminalManager(options: TerminalManagerOptions = {}) {
 	let shell = options.shell ?? null;
 	const baseEnv = options.env ?? process.env;
 	const terminals = new Map<string, LiveTerminal>();
+	/** Why recently ended shells ended, oldest first. */
+	const endedReasons = new Map<string, TerminalEndReason>();
 
 	const send = (peer: TerminalPeer, message: TerminalServerMessage): void => {
 		peer.sendText(JSON.stringify(message));
@@ -237,6 +242,9 @@ export function createTerminalManager(options: TerminalManagerOptions = {}) {
 		if (live.ended) return;
 		live.ended = true;
 		terminals.delete(live.info.id);
+		endedReasons.set(live.info.id, reason);
+		const oldest = endedReasons.size > ENDED_MEMORY ? endedReasons.keys().next().value : undefined;
+		if (oldest !== undefined) endedReasons.delete(oldest);
 		if (reason !== "exited") {
 			// a hangup ends the shell and whatever runs in its foreground (ssh, vim), like closing a terminal window
 			live.pty.close();
@@ -391,6 +399,8 @@ export function createTerminalManager(options: TerminalManagerOptions = {}) {
 		},
 		list: (): TerminalInfo[] => [...terminals.values()].filter((target) => !target.ended).map((target) => ({ ...target.info })),
 		count: (): number => terminals.size,
+		/** Why a shell that's gone ended, while the manager remembers it (the last few hundred, until a restart). */
+		endedReason: (id: string): TerminalEndReason | null => endedReasons.get(id) ?? null,
 		/** What runs in the foreground of a terminal's shell, so closing it can ask first. */
 		foreground: async (id: string): Promise<string | null> => {
 			const target = live(id);
