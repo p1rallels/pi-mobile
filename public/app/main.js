@@ -4,6 +4,7 @@ import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
 import { createSessionPane } from "./session/pane.js";
+import { createLauncherSheet } from "./ui/launcher_sheet.js";
 import { createSidebar } from "./ui/sidebar.js";
 
 /** Boots the phone shell; app.js picks it unless the canvas was asked for. */
@@ -114,6 +115,63 @@ export async function bootPhone() {
 
 	let sidebarCtrl = null;
 
+	/** Terminals run on the host serving the page (its cookies, its websocket), never on a linked one. */
+	const terminalsHere = () => api.getBaseUrl() === window.location.origin;
+	/** @type {Promise<typeof import("./terminal/phone_terminal.js")> | null} */
+	let phoneTerminalModule = null;
+	/** @type {ReturnType<typeof import("./terminal/phone_terminal.js").createPhoneTerminal> | null} */
+	let phoneTerminal = null;
+
+	/** The terminal screen, loaded (xterm and all) the first time one opens. @param {{ terminalId: string | null, cwd: string | null, title?: string | null }} spec */
+	async function openTerminal(spec) {
+		if (!terminalsHere()) return;
+		try {
+			phoneTerminalModule ??= import("./terminal/phone_terminal.js");
+			const { createPhoneTerminal } = await phoneTerminalModule;
+			phoneTerminal ??= createPhoneTerminal({
+				doc: document,
+				api,
+				refreshClient: refreshClientSession,
+				onClosed: () => void sidebarCtrl?.refresh(),
+			});
+			phoneTerminal.open(spec);
+		} catch (error) {
+			phoneTerminalModule = null;
+			pane.appendNotice(`Couldn't open the terminal: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
+	}
+
+	/** The host's shells for the sidebar; null when it has none to offer (another host's page, or terminals off). */
+	async function listTerminals() {
+		if (!terminalsHere()) return null;
+		try {
+			const data = await api.getJson("/api/terminals");
+			return Array.isArray(data?.terminals) ? data.terminals : [];
+		} catch {
+			return null;
+		}
+	}
+
+	/** @param {import("./canvas/launcher.js").LauncherPick} pick */
+	async function onMenuPick(pick) {
+		try {
+			if (pick.kind === "terminal") await openTerminal({ terminalId: null, cwd: pick.cwd });
+			else if (pick.kind === "created") pane.openSessionId(pick.sessionId);
+			else await pane.selectSession(pick.session);
+		} catch (error) {
+			pane.appendNotice(error instanceof Error ? error.message : String(error), "error");
+		}
+		void sidebarCtrl?.refresh();
+	}
+
+	const launcherSheet = createLauncherSheet({
+		doc: document,
+		api,
+		getClientId: () => clientId,
+		canOpenTerminal: terminalsHere,
+		onPick: (pick) => void onMenuPick(pick),
+	});
+
 	function fillBorders() {
 		const chat = document.querySelector(".chat");
 		const w = chat.getBoundingClientRect().width;
@@ -134,6 +192,12 @@ export async function bootPhone() {
 		getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 		onSidebarClose: () => sidebarCtrl?.setOpen(false),
 		onSidebarRefresh: () => sidebarCtrl?.refresh(),
+		// /quit stopped the session: the pane empties and the menu opens at picking a directory, like a canvas tile
+		onQuit: () => {
+			pane.reset();
+			launcherSheet.open();
+			void sidebarCtrl?.refresh();
+		},
 	});
 
 	sidebarCtrl = createSidebar({
@@ -144,22 +208,25 @@ export async function bootPhone() {
 		btnSidebarLeft,
 		btnSidebarRight,
 		api,
-		getClientId: () => clientId,
 		onNotice: pane.appendNotice,
 		getActiveSessionId: () => pane.getSessionId(),
 		onSelectSession: (session) => pane.selectSession(session),
-		onSessionIdSelected: (sessionId) => pane.openSessionId(sessionId),
 		getHosts: () => hosts,
 		getActiveHost: () => activeHost,
 		onSelectHost: switchHost,
-		createSession: pane.createSession,
+		onOpenMenu: () => launcherSheet.open(),
+		terminals: { list: listTerminals, open: (spec) => void openTerminal(spec) },
 	});
 
 	if (kbMenu) kbMenu.addEventListener("click", () => sidebarCtrl.toggleOpen());
 	if (sidebarOverlay) sidebarOverlay.addEventListener("click", () => sidebarCtrl.setOpen(false));
 
 	window.addEventListener("keydown", (e) => {
-		if (e.key === "Escape") pane.handleEscape(e);
+		if (e.key !== "Escape") return;
+		// esc in a terminal is the shell's (vim), never an abort of the session behind it
+		if (phoneTerminal?.isOpen()) return;
+		if (launcherSheet.isOpen()) launcherSheet.handleEscape(e);
+		else pane.handleEscape(e);
 	});
 
 	fillBorders();

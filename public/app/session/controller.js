@@ -1100,15 +1100,17 @@ export function createSessionController({
 	}
 
 	/**
-	 * /quit (a canvas tile): stops the session this pane runs here, the way quitting pi does; its file stays, so it can
-	 * be resumed later. A pane with nothing running here has nothing to stop (no session yet, or one another pi writes),
-	 * and a session that already stopped counts as quit. A fresh pane whose first send is still starting its session
-	 * waits for it and stops that one. The shell takes the pane away once this resolves.
+	 * /quit (a canvas tile, the phone): stops the session this pane runs here, the way quitting pi does; its file stays,
+	 * so it can be resumed later. A pane with nothing running here has nothing to stop (no session yet, or one another
+	 * pi writes), and a session that already stopped counts as quit. A fresh pane whose first send is still starting its
+	 * session waits for it and stops that one. While pi works (a turn, a compaction) it refuses rather than cut the work
+	 * short: Esc stops it first. The shell takes the pane away once this resolves.
 	 */
 	async function quit() {
 		if (freshStart) await freshStart.catch(() => {});
 		const sessionId = activeSessionId;
 		if (!sessionId || mode !== "hosted") return;
+		if (activeState?.isStreaming || activeState?.isCompacting) throw new Error("pi is still working. Esc stops it, then /quit");
 		leaving = true;
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(sessionId)}/release`, { clientId: getClientId() });

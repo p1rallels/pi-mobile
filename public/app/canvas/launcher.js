@@ -154,9 +154,11 @@ export function matchesQuery(query, text) {
  *   onClose: () => void,
  *   onTitle?: (title: string) => void,
  *   canOpenTerminal?: () => boolean,
+ *   touch?: boolean,
  * }} options
+ * `touch` (the phone's menu): hints for fingers, and a › on each folder a typed path lists, which looks inside it the way tab does.
  */
-export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onClose, onTitle = () => {}, canOpenTerminal = () => false }) {
+export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onClose, onTitle = () => {}, canOpenTerminal = () => false, touch = false }) {
 	/** @template {keyof HTMLElementTagNameMap} K @param {K} tag @param {string} className @param {string} [text] */
 	function h(tag, className, text) {
 		const el = doc.createElement(tag);
@@ -176,6 +178,9 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 	search.type = "text";
 	search.spellcheck = false;
 	search.autocomplete = "off";
+	// phone keyboards would capitalize and correct folder names
+	search.setAttribute("autocapitalize", "off");
+	search.setAttribute("autocorrect", "off");
 	const list = h("div", "cv-launch-list");
 	list.setAttribute("role", "listbox");
 	const foot = h("div", "cv-launch-foot");
@@ -218,6 +223,10 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 	}
 
 	function hint() {
+		if (touch) {
+			if (view.step !== "repos") return "";
+			return isPathQuery(search.value) ? "› looks inside a folder" : "type / or ~/ to browse the host's folders";
+		}
 		if (view.step === "trust") return "enter answers · esc cancels";
 		if (view.step === "sessions") return "↑↓ · enter opens · esc goes back";
 		return isPathQuery(search.value) ? "↑↓ · enter opens · tab completes · esc closes" : "↑↓ · enter opens · / or ~/ browses folders · esc closes";
@@ -341,7 +350,8 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 		back.hidden = view.step === "repos";
 		crumb.textContent = view.step === "repos" ? "open a session · pick a directory" : view.step === "trust" ? "trust this folder?" : `${repoName(view.cwd)} · pick a session`;
 		crumb.title = view.step === "repos" ? "" : view.cwd;
-		search.placeholder = view.step === "repos" ? "filter directories, or type a /path or ~/path" : view.step === "trust" ? "" : "filter sessions";
+		const reposPlaceholder = touch ? "filter, or type a /path or ~/path" : "filter directories, or type a /path or ~/path";
+		search.placeholder = view.step === "repos" ? reposPlaceholder : view.step === "trust" ? "" : "filter sessions";
 		search.hidden = view.step === "trust";
 		const activeKey = navigated ? rows[active]?.key : undefined;
 		rows = buildRows();
@@ -360,7 +370,20 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 			button.append(text);
 			if (row.badge) button.append(h("span", `cv-launch-badge${row.muted ? " is-muted" : ""}`, row.badge));
 			button.addEventListener("click", () => row.pick());
-			return button;
+			const completion = row.complete;
+			if (!touch || !completion || completion === search.value || view.step !== "repos" || !isPathQuery(search.value)) return button;
+			const drill = h("button", "cv-launch-drill", "›");
+			drill.type = "button";
+			drill.disabled = busy;
+			drill.setAttribute("aria-label", `Look inside ${row.primary}`);
+			drill.addEventListener("click", () => {
+				search.value = completion;
+				queryChanged();
+				search.focus({ preventScroll: true });
+			});
+			const item = h("div", "cv-launch-item");
+			item.append(button, drill);
+			return item;
 		});
 		if (view.step === "trust" && trustPrompt) {
 			const intro = h("div", "cv-launch-note", `${trustPrompt.title}\n${trustPrompt.message}`);

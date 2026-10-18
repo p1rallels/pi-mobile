@@ -75,6 +75,7 @@ const PILLS = {
  *   onIdChange: (id: string) => void,
  *   onChange: () => void,
  *   onRemove: () => void,
+ *   view?: import("./terminal_view.js").TerminalViewExtras,
  * }} options
  */
 export function createTerminalTile(options) {
@@ -177,6 +178,7 @@ export function createTerminalTile(options) {
 		await loadTerminalStyles(doc);
 		if (destroyed || screen) return screen;
 		screen = createTerminalView({
+			...options.view,
 			container: screenEl,
 			socketUrl: (size) => {
 				const query = size ? `?${new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString()}` : "";
@@ -343,6 +345,9 @@ export function createTerminalTile(options) {
 		getId: () => id,
 		getCwd: () => cwd,
 		getTitle: () => title,
+		/** The screen once it opened (the phone's key bar types into it). */
+		getView: () => screen,
+		flash,
 		focus() {
 			screen?.focus();
 		},

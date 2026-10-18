@@ -86,6 +86,17 @@ function decodeBase64Utf8(payload) {
 }
 
 /**
+ * What the phone's terminal screen adds: a smaller font, a look at every key xterm handles (a return that may run
+ * pbcopy), a map over typed input (its sticky ctrl key) and its own handling of what pbcopy sends.
+ * @typedef {{
+ *   fontSize?: number,
+ *   onKey?: (event: KeyboardEvent) => void,
+ *   mapInput?: (data: string) => string,
+ *   onClipboard?: (text: string) => void,
+ * }} TerminalViewExtras
+ */
+
+/**
  * @param {{
  *   container: HTMLElement,
  *   socketUrl: (size: { cols: number, rows: number } | null) => string,
@@ -97,7 +108,7 @@ function decodeBase64Utf8(payload) {
  *   onLost: () => void,
  *   onCopied: (text: string) => void,
  *   onCopyFailed: (error: unknown) => void,
- * }} options
+ * } & TerminalViewExtras} options
  */
 export function createTerminalView(options) {
 	const { container } = options;
@@ -107,7 +118,7 @@ export function createTerminalView(options) {
 
 	const term = new Terminal({
 		fontFamily: FONT_FAMILY,
-		fontSize: 13,
+		fontSize: options.fontSize ?? 13,
 		theme: THEME,
 		scrollback: SCROLLBACK,
 		cursorBlink: true,
@@ -155,9 +166,16 @@ export function createTerminalView(options) {
 	});
 	resizeObserver.observe(container);
 
-	term.onData((data) => send({ type: "input", data }));
+	const { mapInput, onKey, onClipboard } = options;
+	term.onData((data) => send({ type: "input", data: mapInput ? mapInput(data) : data }));
 	term.onBinary((data) => send({ type: "binary", data }));
 	term.onTitleChange((title) => options.onTitle(title));
+	if (onKey) {
+		term.attachCustomKeyEventHandler((event) => {
+			onKey(event);
+			return true;
+		});
+	}
 	// a second tab on the same shell: the one you type in decides its size
 	term.textarea?.addEventListener("focus", () => send({ type: "resize", cols: term.cols, rows: term.rows }));
 	term.parser.registerOscHandler(52, (data) => {
@@ -167,6 +185,10 @@ export function createTerminalView(options) {
 		try {
 			text = decodeBase64Utf8(payload);
 		} catch {
+			return true;
+		}
+		if (onClipboard) {
+			onClipboard(text);
 			return true;
 		}
 		navigator.clipboard.writeText(text).then(
@@ -227,11 +249,50 @@ export function createTerminalView(options) {
 		current?.close();
 	}
 
+	/** The rows of the screen xterm shows now (scrollback included on the shell's own screen), trailing blanks dropped. */
+	function screenLines() {
+		const buffer = term.buffer.active;
+		/** @type {string[]} */
+		const lines = [];
+		for (let index = 0; index < buffer.length; index += 1) {
+			const line = buffer.getLine(index);
+			if (!line) continue;
+			const text = line.translateToString(true);
+			if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+			else lines.push(text);
+		}
+		while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+		return lines;
+	}
+
+	/** The line the cursor is on, with the rows it wrapped from. */
+	function cursorLine() {
+		const buffer = term.buffer.active;
+		let row = buffer.baseY + buffer.cursorY;
+		let text = buffer.getLine(row)?.translateToString(true) ?? "";
+		while (row > 0 && buffer.getLine(row)?.isWrapped) {
+			row -= 1;
+			text = (buffer.getLine(row)?.translateToString(true) ?? "") + text;
+		}
+		return text;
+	}
+
 	return {
 		connect,
 		size: proposedSize,
 		focus: () => term.focus(),
 		isConnected: () => socket?.readyState === WebSocket.OPEN,
+		/** Keys from outside the keyboard (the phone's key bar) go to the shell as typed, past `mapInput`. @param {string} data */
+		input(data) {
+			term.scrollToBottom();
+			send({ type: "input", data });
+		},
+		/** @param {string} text */
+		paste: (text) => term.paste(text),
+		screenText: () => screenLines().join("\n"),
+		cursorLine,
+		/** vim and friends want arrows as ESC O A rather than ESC [ A. */
+		appCursorKeys: () => term.modes.applicationCursorKeysMode,
 		dispose() {
 			disposed = true;
 			view.cancelAnimationFrame(fitFrame);

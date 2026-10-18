@@ -15,10 +15,6 @@ function formatRelativeTime(iso) {
 
 const ICON_PLUS =
 	'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
-const ICON_FOLDER =
-	'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H3z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h8a2 2 0 0 1 2 2v2"/></svg>';
-const ICON_BACK =
-	'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>';
 
 function setSidebarButton(btn, icon, label) {
 	if (!btn) return;
@@ -46,15 +42,6 @@ export function elsewhereLabel(s) {
 	return "";
 }
 
-function shouldShowSessionInLists(s) {
-	if (!s || typeof s !== "object") return false;
-	if (s.isRunning || elsewhereLabel(s)) return true;
-	const name = typeof s.name === "string" ? s.name.trim() : "";
-	if (name) return true;
-	const first = typeof s.firstMessage === "string" ? s.firstMessage.trim() : "";
-	return first && first !== "(no messages)";
-}
-
 function currentOrigin() {
 	return new URL(window.location.href).origin;
 }
@@ -67,6 +54,15 @@ function hostOrigin(host) {
 	}
 }
 
+/** @param {string | null | undefined} cwd */
+const folderName = (cwd) => (cwd ? (cwd.split("/").filter(Boolean).at(-1) ?? cwd) : "terminal");
+
+/**
+ * The phone's menu: hosts, the sessions running here and the host's terminals. New opens the launcher sheet (pick a
+ * folder, then a session, a new session or a new terminal).
+ * `terminals` lists the host's shells (null: none on this host, or turned off) and opens one; without it there is no
+ * terminals section.
+ */
 export function createSidebar({
 	sessionsList,
 	sidebar,
@@ -74,22 +70,17 @@ export function createSidebar({
 	sidebarLabel,
 	btnSidebarLeft,
 	btnSidebarRight,
-	api,
-	getClientId,
 	onNotice,
 	getActiveSessionId,
 	onSelectSession,
-	onSessionIdSelected,
+	api,
 	getHosts = () => [],
 	getActiveHost = () => null,
 	onSelectHost = () => {},
-	createSession = (payload) => api.postJson("/api/sessions", payload),
+	onOpenMenu = () => {},
+	terminals = null,
 }) {
-	const REPO_PAGE_SIZE = 100;
 	let isOpen = false;
-	let mode = "active"; // active | repos | repoSessions
-	let selectedRepoCwd = null;
-	let repoLimit = REPO_PAGE_SIZE;
 
 	function setOpen(open) {
 		if (!sidebar) return;
@@ -109,45 +100,19 @@ export function createSidebar({
 		setOpen(!isOpen);
 	}
 
-	function setMode(nextMode, repoCwd = null) {
-		mode = nextMode;
-		selectedRepoCwd = repoCwd;
-		repoLimit = REPO_PAGE_SIZE;
-		updateHeader();
-		void refresh();
-	}
-
 	function updateHeader() {
 		if (!sidebarLabel || !btnSidebarLeft || !btnSidebarRight) return;
-		btnSidebarLeft.onclick = null;
-		btnSidebarRight.onclick = null;
-
-		if (mode === "repos") {
-			sidebarLabel.textContent = "Repos";
-			setSidebarButton(btnSidebarLeft, ICON_BACK, "Back");
-			setSidebarButton(btnSidebarRight, ICON_PLUS, "Add repo");
-			btnSidebarLeft.onclick = () => setMode("active");
-			btnSidebarRight.onclick = () => void promptAddRepo();
-			return;
-		}
-
-		if (mode === "repoSessions") {
-			sidebarLabel.textContent = "Repo Sessions";
-			sidebarLabel.title = selectedRepoCwd || "";
-			setSidebarButton(btnSidebarLeft, ICON_BACK, "Back");
-			setSidebarButton(btnSidebarRight, ICON_PLUS, "New session");
-			btnSidebarLeft.onclick = () => setMode("repos");
-			btnSidebarRight.onclick = () => void startNewSessionInRepo(selectedRepoCwd);
-			return;
-		}
-
 		sidebarLabel.textContent = "Menu";
 		sidebarLabel.title = "";
-		setSidebarButton(btnSidebarLeft, ICON_FOLDER, "Repos");
+		setSidebarButton(btnSidebarLeft, ICON_PLUS, "New");
 		setSidebarButton(btnSidebarRight, "", "");
 		btnSidebarLeft.classList.add("wide");
 		btnSidebarRight.classList.add("hidden");
-		btnSidebarLeft.onclick = () => setMode("repos");
+		btnSidebarRight.onclick = null;
+		btnSidebarLeft.onclick = () => {
+			setOpen(false);
+			onOpenMenu();
+		};
 	}
 
 	function highlightSessionRow(sessionId) {
@@ -205,8 +170,7 @@ export function createSidebar({
 		appendSectionLabel("Active Sessions");
 	}
 
-	function renderSessions(sessions, view = "active", { clear = true } = {}) {
-		if (clear) sessionsList.innerHTML = "";
+	function renderSessions(sessions) {
 		for (const s of sessions) {
 			const row = document.createElement("div");
 			row.className = `si${s.id === getActiveSessionId() ? " active" : ""}`;
@@ -242,7 +206,6 @@ export function createSidebar({
 				void (async () => {
 					try {
 						await onSelectSession(s);
-						if (view === "repoSessions") setMode("active");
 					} catch (error) {
 						onNotice(error instanceof Error ? error.message : String(error), "error");
 					}
@@ -253,104 +216,51 @@ export function createSidebar({
 		}
 	}
 
-	function appendShowMore() {
+	/** @param {string} label @param {string} metaText @param {() => void} onClick */
+	function appendRow(label, metaText, onClick) {
 		const row = document.createElement("div");
-		row.className = "si si-more";
+		row.className = "si";
 		const name = document.createElement("div");
 		name.className = "si-name";
-		name.textContent = "show older sessions";
+		name.textContent = label;
+		name.title = label;
+		const meta = document.createElement("div");
+		meta.className = "si-meta";
+		meta.textContent = metaText;
 		row.appendChild(name);
+		row.appendChild(meta);
 		row.addEventListener("click", () => {
-			repoLimit += REPO_PAGE_SIZE;
-			void refresh();
+			setOpen(false);
+			onClick();
 		});
 		sessionsList.appendChild(row);
+		return row;
 	}
 
-	function renderRepos(repos) {
-		sessionsList.innerHTML = "";
-		for (const cwd of repos) {
-			const row = document.createElement("div");
-			row.className = "si";
-			row.dataset.repoCwd = cwd;
-
-			const name = document.createElement("div");
-			name.className = "si-name";
-			name.textContent = cwd;
-			name.title = cwd;
-
-			const meta = document.createElement("div");
-			meta.className = "si-meta";
-			meta.textContent = "tap to view sessions";
-
-			row.appendChild(name);
-			row.appendChild(meta);
-
-			row.addEventListener("click", () => {
-				setMode("repoSessions", cwd);
-			});
-
-			sessionsList.appendChild(row);
+	/** The host's shells, newest last, then a new one in the home folder. */
+	function renderTerminals(list) {
+		appendSectionLabel("Terminals");
+		for (const info of list) {
+			if (typeof info?.id !== "string") continue;
+			const cwd = typeof info.cwd === "string" ? info.cwd : null;
+			const title = typeof info.title === "string" && info.title.trim() ? info.title.trim() : null;
+			const opened = Number.isFinite(info.createdAt) ? `opened ${formatRelativeTime(new Date(info.createdAt).toISOString())} · ` : "";
+			const row = appendRow(title || folderName(cwd), `${opened}${cwd ?? ""}`, () => terminals.open({ terminalId: info.id, cwd, title }));
+			row.dataset.terminalId = info.id;
 		}
-	}
-
-	async function promptAddRepo() {
-		const cwd = window.prompt("Repo path (absolute)", "");
-		if (cwd === null) return;
-		const trimmed = cwd.trim();
-		if (!trimmed) return;
-		try {
-			await api.postJson("/api/repos", { cwd: trimmed });
-			void refresh();
-		} catch (error) {
-			onNotice(error instanceof Error ? error.message : String(error), "error");
-		}
-	}
-
-	async function startNewSessionInRepo(repoCwd) {
-		if (!repoCwd || typeof repoCwd !== "string") return;
-		const cwd = repoCwd.trim();
-		if (!cwd) return;
-		try {
-			const result = await createSession({ clientId: getClientId(), cwd });
-			if (!result?.sessionId) throw new Error("Session did not start.");
-			onSessionIdSelected(result.sessionId);
-			setOpen(false);
-			setMode("active");
-		} catch (error) {
-			onNotice(error instanceof Error ? error.message : String(error), "error");
-		}
+		const fresh = appendRow("+ new terminal", "in your home folder (New picks a folder)", () => terminals.open({ terminalId: null, cwd: "~" }));
+		fresh.classList.add("si-new-terminal");
 	}
 
 	async function refresh() {
 		try {
-			if (mode === "repos") {
-				const data = await api.getJson("/api/repos");
-				const repos = Array.isArray(data.repos) ? data.repos : [];
-				renderRepos(repos);
-				return;
-			}
-
-			if (mode === "repoSessions") {
-				if (!selectedRepoCwd) {
-					renderSessions([]);
-					return;
-				}
-				const qs = new URLSearchParams({ cwd: selectedRepoCwd, limit: String(repoLimit) });
-				const data = await api.getJson(`/api/sessions?${qs.toString()}`);
-				const raw = Array.isArray(data.sessions) ? data.sessions : [];
-				const filtered = raw.filter(shouldShowSessionInLists);
-				renderSessions(filtered, "repoSessions");
-				if (data.hasMore) appendShowMore();
-				return;
-			}
-
-			const sessionData = await api.getJson("/api/active-sessions");
+			const [sessionData, terminalList] = await Promise.all([api.getJson("/api/active-sessions"), terminals ? terminals.list() : null]);
 			const hosts = getHosts();
 			const raw = Array.isArray(sessionData.sessions) ? sessionData.sessions : [];
 			sessionsList.innerHTML = "";
 			renderHosts(hosts);
-			renderSessions(raw, "active", { clear: false });
+			renderSessions(raw);
+			if (terminals && Array.isArray(terminalList)) renderTerminals(terminalList);
 		} catch (error) {
 			sessionsList.innerHTML = "";
 			const row = document.createElement("div");
@@ -373,10 +283,8 @@ export function createSidebar({
 		isOpen: () => isOpen,
 		setOpen,
 		toggleOpen,
-		setMode,
 		updateHeader,
 		refresh,
 		highlightSessionRow,
 	};
 }
-

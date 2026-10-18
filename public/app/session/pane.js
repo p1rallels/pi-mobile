@@ -71,8 +71,9 @@ export function autoResize(el) {
  * `tileUi` keeps extension dialogs and the extension title inside a canvas tile instead of on the page.
  * `onFreshStarted` hears the session a fresh pane's first send started (see fresh.js); `goneNotice` replaces
  * what the pane says when its session ended for good (null: nothing, the shell says it).
- * `onQuit` makes a message starting with /quit stop the session instead of going to pi, and then hears that the
- * pane is done (a canvas tile goes back to its launcher); without it /quit is sent like any prompt.
+ * `onQuit` makes a message starting with /quit stop the session instead of going to pi (refused while pi works), and
+ * then hears that the pane is done (a canvas tile goes back to its launcher, the phone opens its menu); without it
+ * /quit is sent like any prompt.
  */
 export function createSessionPane({
 	refs,
@@ -346,6 +347,8 @@ export function createSessionPane({
 			return;
 		}
 		if (!destroyed) done();
+		// the phone's pane stays for the next session
+		quitting = false;
 	}
 
 	/** @param {() => Promise<unknown>} action */

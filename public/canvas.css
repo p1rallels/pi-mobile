@@ -374,3 +374,19 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
   font-size: 11px;
   pointer-events: none;
 }
+
+/* ── The phone's menu: › looks inside a folder, the way tab does ─────── */
+.cv-launch-item { display: flex; align-items: stretch; gap: 4px; }
+.cv-launch-item .cv-launch-row { flex: 1; min-width: 0; width: auto; }
+.cv-launch-drill {
+  flex: none;
+  width: 42px;
+  border: 1px solid #2a2a32;
+  border-radius: 6px;
+  background: #1a1a22;
+  color: #9a9aa2;
+  font: inherit;
+  font-size: 17px;
+  cursor: pointer;
+}
+.cv-launch-drill:disabled { opacity: 0.55; cursor: default; }
