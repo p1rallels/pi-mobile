@@ -44,6 +44,7 @@ export async function bootPhone() {
 		extAbove: document.getElementById("ext-widgets-above"),
 		extBelow: document.getElementById("ext-widgets-below"),
 		rolePill: document.getElementById("role-pill"),
+		lineage: document.getElementById("lineage-line"),
 		btnModel: document.getElementById("btn-model"),
 		btnThinking: document.getElementById("btn-thinking"),
 		lblModel: document.getElementById("lbl-model"),

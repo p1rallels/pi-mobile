@@ -44,6 +44,8 @@ import {
 import { findGitHead, readGitBranch, watchGitBranch, type GitBranchWatch } from "./git-branch.ts";
 import type { DetachedRef, MailHost, MailReopen, Room } from "./msg-mail.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
+import { createLineageFeed, msgStoreRoot, type LineageFeed, type PidProbe } from "./msg-lineage.ts";
+import { advanceRelay, relayStateOf, relayView, type RelayFold } from "./relay-state.ts";
 import { classifyNeverSaved } from "./never-saved.ts";
 import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";
 import { createSessionFolders, createSessionIndex, sessionDirForCwd, type SessionFolder, type SessionSummary } from "./session-index.ts";
@@ -68,6 +70,7 @@ import type {
 	ApiPromptDisposition,
 	ApiModelInfo,
 	ApiNeverSaved,
+	ApiRelayState,
 	ApiRepoSuggestion,
 	ApiResyncTranscript,
 	ApiSessionState,
@@ -140,6 +143,9 @@ interface RunningSession {
 	live: LiveSnapshot;
 	outbox: SseEvent[];
 	flushScheduled: boolean;
+	/** relay's state at the leaf the header last saw, and what the viewers were last sent of it */
+	relay: RelayFold | null;
+	relayKey: string;
 }
 
 interface PiWebRuntimeOptions {
@@ -160,6 +166,12 @@ interface PiWebRuntimeOptions {
 	listForks?: (root: string) => Promise<string | null>;
 	/** Folders whose sessions are never suggested as repos (default: the temp roots); tests pass their own. */
 	scratchRoots?: string[];
+	/** msg's store, for lineage (default: $PI_MSG_DIR, else $PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg). */
+	msgDir?: string;
+	/** How often lineage is read again while someone looks at a session. */
+	lineageRefreshMs?: number;
+	/** Whether a pid runs, for lineage; tests pass a fake. */
+	pidAlive?: PidProbe;
 }
 
 const DEFAULT_FOLLOW_POLL_MS = 700;
@@ -515,10 +527,11 @@ export class PiWebRuntime implements MailHost {
 	private piProcesses: ReturnType<typeof createProcessCache>;
 	private stopPiProcess: (proc: PiProcess) => Promise<"stopped" | "killed" | "alive">;
 	private followPollMs: number;
-	private followers = new Set<{ stop(): void }>();
+	private followers = new Set<{ stop(): void; sessionId: string }>();
 	private forkLabels: ReturnType<typeof createForkLabels>;
 	/** Set by shutdown: nothing comes back by itself (msg mail) once the server is stopping. */
 	private closing = false;
+	private lineage: LineageFeed;
 
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.forkLabels = createForkLabels(options.listForks);
@@ -535,6 +548,35 @@ export class PiWebRuntime implements MailHost {
 		this.modelRuntimePromise = options.modelRuntime
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
+		this.lineage = createLineageFeed({
+			root: options.msgDir ?? msgStoreRoot(),
+			sessionsDir: join(this.agentDir, "sessions"),
+			isHosted: (id) => this.runningById.has(id),
+			watched: () => this.watchedSessionIds(),
+			onChange: (id, lineage) => this.broadcast(id, { type: "state_patch", patch: { lineage } }),
+			intervalMs: options.lineageRefreshMs,
+			probe: options.pidAlive,
+		});
+	}
+
+	/** Sessions someone looks at: hosted ones with a viewer, and the ones followed here. */
+	private *watchedSessionIds(): Generator<string> {
+		for (const [id, runtime] of this.runningById) if (runtime.clients.size > 0) yield id;
+		for (const follower of this.followers) yield follower.sessionId;
+	}
+
+	private relayOf(runtime: RunningSession): ApiRelayState | null {
+		runtime.relay = advanceRelay(runtime.relay, runtime.session.sessionManager);
+		return relayView(runtime.relay.state);
+	}
+
+	/** An entry landed: the viewers hear when what the header shows of relay changed (a reset, the loop, a nudge). */
+	private patchRelay(runtime: RunningSession): void {
+		const relay = this.relayOf(runtime);
+		const key = JSON.stringify(relay);
+		if (key === runtime.relayKey) return;
+		runtime.relayKey = key;
+		this.broadcast(runtime.session.sessionId, { type: "state_patch", patch: { relay } });
 	}
 
 	private async loadReposFromDisk(): Promise<string[]> {
@@ -991,11 +1033,18 @@ export class PiWebRuntime implements MailHost {
 		const transcript = buildResyncTranscript(runtime.session, since, initialTranscriptLimits(options.limit));
 		const cursor = runtime.session.sessionManager.getLeafId();
 		const live = runtime.live;
+		const relay = this.relayOf(runtime);
+		runtime.relayKey = JSON.stringify(relay);
 		const { role, controllerClientId } = this.addClient(sessionId, client);
+		this.lineage.kick();
 		return {
 			init: {
 				type: "init",
-				state: buildStatus(runtime.session, runtime.cwd, runtime.projectTrust, runtime.git.current()),
+				state: {
+					...buildStatus(runtime.session, runtime.cwd, runtime.projectTrust, runtime.git.current()),
+					lineage: this.lineage.current(sessionId) ?? null,
+					relay,
+				},
 				transcript,
 				live,
 				ui: runtime.ui.snapshot(),
@@ -1165,9 +1214,22 @@ export class PiWebRuntime implements MailHost {
 		let follow = await this.followState(path, cwd, turn, lastWriteMs);
 		let checkedAtMs = Date.now();
 		let busy = false;
+		let relay = relayStateOf(snapshot.branch);
+		const lineageNow = () => this.lineage.current(sessionId) ?? null;
+		let lineageKey = JSON.stringify(lineageNow());
 		// read once: following is read-only, and a branch switch elsewhere shows on the next open
 		const gitBranch = await readGitBranch(findGitHead(cwd));
-		const describe = (): ApiFollowSession => ({ sessionId, path, cwd, gitBranch, sessionName: info.sessionName, model: info.model, thinkingLevel: info.thinkingLevel });
+		const describe = (): ApiFollowSession => ({
+			sessionId,
+			path,
+			cwd,
+			gitBranch,
+			sessionName: info.sessionName,
+			model: info.model,
+			thinkingLevel: info.thinkingLevel,
+			lineage: lineageNow(),
+			relay: relayView(relay),
+		});
 
 		const tick = async () => {
 			const appended = await readAppended(path, offset);
@@ -1181,7 +1243,13 @@ export class PiWebRuntime implements MailHost {
 			if (grew) {
 				turn = turnOfEntries(appended.entries, turn);
 				info = followInfo(appended.entries, info);
+				relay = relayStateOf(appended.entries, relay);
 				lastWriteMs = appended.mtimeMs;
+			}
+			// a lineage change (a child came, ended or died) goes out as a new description with no entries
+			const lineage = JSON.stringify(lineageNow());
+			if (grew || lineage !== lineageKey) {
+				lineageKey = lineage;
 				const messages = appended.entries.flatMap(entryTranscriptMessages);
 				client.send({ type: "follow_entries", messages, session: describe() }, appended.entries.at(-1)?.id);
 			}
@@ -1205,13 +1273,14 @@ export class PiWebRuntime implements MailHost {
 				});
 		}, this.followPollMs);
 		timer.unref?.();
-		const follower = { stop };
+		const follower = { stop, sessionId };
 		const followers = this.followers;
 		function stop(): void {
 			clearInterval(timer);
 			followers.delete(follower);
 		}
 		followers.add(follower);
+		this.lineage.kick();
 
 		const transcript = resyncTranscript(snapshot.branch, since, initialTranscriptLimits(options.limit));
 		const init: FollowSseEvent = { type: "follow_init", session: describe(), transcript, follow, cursor: snapshot.leafId };
@@ -1327,6 +1396,7 @@ export class PiWebRuntime implements MailHost {
 	/** Stops runs, records every session for re-attach after the restart (resumes under way too), and disposes them. */
 	async shutdown(timeoutMs = 5_000): Promise<void> {
 		this.closing = true;
+		this.lineage.stop();
 		for (const follower of [...this.followers]) follower.stop();
 		if (this.resumingByPath.size > 0) {
 			const resumed = Promise.allSettled([...this.resumingByPath.values()]);
@@ -1685,6 +1755,8 @@ export class PiWebRuntime implements MailHost {
 			live: EMPTY_LIVE_SNAPSHOT,
 			outbox: [],
 			flushScheduled: false,
+			relay: null,
+			relayKey: "null",
 		};
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
@@ -1723,6 +1795,8 @@ export class PiWebRuntime implements MailHost {
 			if (event.type === "entry_appended" && event.entry.type === "compaction") {
 				this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session, runtime.git.current()) });
 			}
+			if (event.type === "entry_appended" || event.type === "compaction_end") this.patchRelay(runtime);
+			if (event.type === "message_end") queueMicrotask(() => this.patchRelay(runtime));
 		});
 		runtime.unsubscribe = unsubscribe;
 

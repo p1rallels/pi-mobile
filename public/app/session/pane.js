@@ -1,12 +1,14 @@
 // One session pane: transcript, queued messages, working line, composer, footer and the per-session
-// controls (role, model, thinking, take over, abort, release), with its own controller, extension ui
-// and menus. The phone shell runs one pane on the static markup in index.html; the canvas runs one per
+// controls (role, model, thinking, take over, abort, release, the lineage line), with its own controller,
+// extension ui and menus. The phone shell runs one pane on the static markup in index.html; the canvas runs one per
 // tile on markup from pane_dom.js. Everything the pane touches comes in through `refs`.
 import { isPhoneLike } from "../core/device.js";
 import { createExtensionUi } from "../ui/extension_ui.js";
 import { createMenu } from "../ui/menu.js";
 import { isQuitCommand } from "./commands.js";
 import { createSessionController } from "./controller.js";
+import { lineageDetails } from "./lineage.js";
+import { buildLineageMenu, createLineageLine } from "./lineage_line.js";
 import { composerPlaceholder, elsewherePlaceholder, footerLines, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
 import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./project_trust.js";
 
@@ -30,6 +32,7 @@ const STOP_WRITER_TITLE = "Stop the pi writing this session (Esc)";
  *   extAbove?: HTMLElement | null,
  *   extBelow?: HTMLElement | null,
  *   rolePill?: HTMLElement | null,
+ *   lineage?: HTMLElement | null,
  *   btnModel?: HTMLButtonElement | null,
  *   btnThinking?: HTMLButtonElement | null,
  *   lblModel?: HTMLElement | null,
@@ -75,8 +78,8 @@ export function autoResize(el) {
  * `onQuit` makes a message starting with /quit stop the session instead of going to pi (refused while pi works), and
  * then hears that the pane is done (a canvas tile goes back to its launcher, the phone opens its menu); without it
  * /quit is sent like any prompt.
- * `onOpenSession` opens a session the transcript names, like a msg message's sender (the phone switches to it,
- * the canvas gives it a tile); without it the sender is plain text.
+ * `onOpenSession` opens a session the transcript or the lineage line names, like a msg message's sender or the
+ * session's parent (the phone switches to it, the canvas gives it a tile); without it they are plain text.
  */
 export function createSessionPane({
 	refs,
@@ -165,6 +168,16 @@ export function createSessionPane({
 		getActiveSessionId: () => sessionCtrl.getActiveSessionId(),
 		getActiveState: () => sessionCtrl.getActiveState(),
 	});
+
+	const lineageLine = refs.lineage
+		? createLineageLine(refs.lineage, {
+				onOpen: onOpenSession,
+				onDetails: (anchor) =>
+					menuCtrl.openCustom(anchor, (/** @type {HTMLElement} */ panel) =>
+						buildLineageMenu(panel, lineageDetails(sessionCtrl.getActiveState()), { onOpen: onOpenSession, close: () => menuCtrl.close() }),
+					),
+			})
+		: null;
 
 	/** Where a session another pi writes stands, or null when this pane hosts its session. */
 	function followed() {
@@ -309,6 +322,7 @@ export function createSessionPane({
 		if (destroyed) return;
 		renderFooter();
 		renderControls();
+		lineageLine?.render(sessionCtrl.getActiveState());
 	}
 
 	/** @param {string} text */
@@ -480,6 +494,7 @@ export function createSessionPane({
 			if (workingIntervalId) clearInterval(workingIntervalId);
 			workingIntervalId = null;
 			menuCtrl.destroy();
+			lineageLine?.destroy();
 			extensionUi.reset();
 			sessionCtrl.destroy();
 		},

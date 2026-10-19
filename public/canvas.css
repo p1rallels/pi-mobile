@@ -130,6 +130,28 @@ html.cv-page, html.cv-page body { overscroll-behavior: none; }
 /* a dormant tile's pill resumes it, like a click on the body */
 .cv-pill.is-dormant { cursor: pointer; }
 .cv-pill.is-dormant:hover { background: #1a1a22; border-color: #3a3a44; color: #d4d4d4; }
+/* msg's lineage and relay's state, a pill of its own (.cv-pill is the status): cut short before the status is,
+   the children first */
+.cv-lineage {
+  display: flex;
+  align-items: center;
+  flex: 0 4 auto;
+  min-width: 0;
+  max-width: 340px;
+  overflow: hidden;
+  padding: 1px 7px;
+  border: 1px solid #2a2a32;
+  border-radius: 999px;
+  color: #808080;
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cv-lineage[hidden] { display: none; }
+.cv-lineage:hover { border-color: #3a3a44; }
+.cv-lineage .lin-seg + .lin-seg { margin-left: 7px; }
+.cv-lineage.lin-has-children > .lin-seg:not(.lin-seg-children) { max-width: 50%; }
+.cv-lineage .lin-seg + .lin-seg::before { height: 9px; margin-right: 7px; vertical-align: 0; }
 .cv-ctl {
   max-width: 220px;
   overflow: hidden;

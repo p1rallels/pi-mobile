@@ -29,6 +29,8 @@ function elsewhereStatus(session, follow) {
 		queuedMessages: EMPTY_QUEUE,
 		stats: null,
 		contextUsage: null,
+		lineage: session.lineage ?? null,
+		relay: session.relay ?? null,
 	};
 }
 

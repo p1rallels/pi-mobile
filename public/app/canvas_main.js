@@ -55,7 +55,7 @@ export async function bootCanvas() {
 	 *   path: string | null,
 	 *   title: string,
 	 *   pane: ReturnType<typeof createSessionPane>,
-	 *   controls: { btnModel: HTMLButtonElement, btnThinking: HTMLButtonElement, lblModel: HTMLElement, lblThinking: HTMLElement },
+	 *   controls: { btnModel: HTMLButtonElement, btnThinking: HTMLButtonElement, lblModel: HTMLElement, lblThinking: HTMLElement, lineage: HTMLElement },
 	 *   pill: HTMLElement,
 	 *   dormant: boolean,
 	 *   nothingToResume: boolean,
@@ -807,7 +807,12 @@ export async function bootCanvas() {
 		if (existing) return existing;
 		const tile = canvas.tiles.addTile({ id, rect, title });
 		const pill = h("span", "cv-pill");
-		tile.statusEl.append(pill);
+		// msg's lineage and relay's state (session/lineage_line.js): its links open sessions and a click shows it all,
+		// so pressing it mustn't start a title-bar drag
+		const lineage = h("span", "cv-lineage");
+		lineage.hidden = true;
+		lineage.setAttribute("data-no-drag", "");
+		tile.statusEl.append(lineage, pill);
 		const combo = h("span", "cv-combo");
 		const btnModel = h("button", "cv-ctl cv-ctl-model");
 		btnModel.type = "button";
@@ -831,7 +836,7 @@ export async function bootCanvas() {
 			path,
 			title,
 			pane: /** @type {any} */ (null),
-			controls: { btnModel, btnThinking, lblModel, lblThinking },
+			controls: { btnModel, btnThinking, lblModel, lblThinking, lineage },
 			pill,
 			dormant: !running && !elsewhere,
 			nothingToResume: false,
