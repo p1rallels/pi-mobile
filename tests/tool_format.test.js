@@ -62,6 +62,11 @@ describe("tool format", () => {
 		expect(toolCallToText("relay", { note: "tests pass, docs left" })).toBe("relay: tests pass, docs left");
 		expect(toolCallToText("relay", { note: "shipped", done: true })).toBe("relay (done): shipped");
 		expect(toolCallToText("relay", {})).toBe("relay");
+		expect(toolOutputText("relay", { content: text("reset #2 queued: it happens as soon as this turn's tool calls finish"), details: { outcome: "queued", note: "x", n: 2 } })).toBe(
+			"reset #2 queued for the end of this turn",
+		);
+		expect(toolOutputText("relay", { content: text("loop finished, no reset."), details: { outcome: "done" } })).toBe("done, no reset");
+		expect(toolOutputText("relay", { content: text("relay is capped at 20 resets."), details: { outcome: "capped" } })).toBe("relay is capped at 20 resets.");
 	});
 
 	test("formats durations compactly", () => {

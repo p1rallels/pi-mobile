@@ -139,7 +139,8 @@ function sentWhen(text) {
 
 /**
  * What msg's tools came back with, said short: sent (and when it lands), the reply, no reply; the message a
- * wait got. Null when the result isn't one of theirs or doesn't carry what this needs (then its text shows).
+ * wait got; whether relay queued a reset. Null when the result isn't one of theirs or doesn't carry what this
+ * needs (then its text shows).
  * @param {string} toolName @param {any} result @param {{ isError?: boolean, partial?: boolean }} [options]
  */
 export function peerToolOutcome(toolName, result, { isError = false, partial = false } = {}) {
@@ -165,6 +166,13 @@ export function peerToolOutcome(toolName, result, { isError = false, partial = f
 			}
 			if (details.outcome === "timeout") return "no message";
 			if (details.outcome === "aborted") return "stopped waiting";
+			return null;
+		}
+		case "relay": {
+			const n = typeof details.n === "number" && Number.isFinite(details.n) ? ` #${details.n}` : "";
+			if (details.outcome === "queued") return `reset${n} queued for the end of this turn`;
+			if (details.outcome === "duplicate") return "a reset was already queued; this call did nothing";
+			if (details.outcome === "done") return "done, no reset";
 			return null;
 		}
 		default:

@@ -295,7 +295,7 @@ test.describe("with a fake event stream", () => {
 			"relay · 41% · 41%: finish the step, commit, then call relay with a note for whoever picks this up",
 			`relay #1 · reset at 45% · ${RESET_NOTE}`,
 			"relay · 47% · 47%: wrap up this step and relay",
-			"relay · loop · ship relay",
+			"relay · loop · keep going",
 			"relay #2 · reset at 50% · cut mid-step: run git status first",
 		]);
 		const resets = msgs.locator(".compact-card.relay");

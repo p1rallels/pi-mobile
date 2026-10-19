@@ -29,10 +29,16 @@ export function partyLabel(party) {
 	return trimmed(party.name) || trimmed(party.id).slice(0, 8);
 }
 
-/** "45%" from relay's percent (0-100), or null. @param {unknown} percent */
+/**
+ * "45%" from relay's percent (0-100), or null. Floored to a tenth like relay's own text, so 44.96 never reads as
+ * the 45% step: "44.9%".
+ * @param {unknown} percent
+ */
 export function percentLabel(percent) {
 	const value = finite(percent);
-	return value === null || value < 0 ? null : `${Math.round(value)}%`;
+	if (value === null || value < 0) return null;
+	const tenth = Math.floor(value * 10 + 1e-9) / 10;
+	return `${Number.isInteger(tenth) ? tenth : tenth.toFixed(1)}%`;
 }
 
 /**
@@ -85,8 +91,9 @@ export function msgView(message) {
  */
 
 /**
- * A relay notice (customType "relay"): "relay · 41% · finish the step…" on one line, the full text a tap away.
- * Nudges show their own text, resets their note, loops their goal; each falls back to the others.
+ * A relay notice (customType "relay"): "relay · 41% · you're at 41%…" on one line, the full text a tap away.
+ * Nudges and loop prompts show their own text (without relay's "[relay]" tag), resets their note; each falls
+ * back to the others.
  * @param {any} message @returns {RelayView | null}
  */
 export function relayView(message) {
@@ -96,13 +103,12 @@ export function relayView(message) {
 	const kind = trimmed(details.kind);
 	const note = trimmed(details.note);
 	const goal = trimmed(details.goal);
-	const lead = firstLine(full);
-	const byKind = { reset: [note, lead, goal], loop: [goal, lead, note] };
-	const summary = (byKind[/** @type {keyof typeof byKind} */ (kind)] ?? [lead, note, goal]).find(Boolean) ?? "";
+	const lead = firstLine(full).replace(/^\[relay(?: loop)?\]\s*/i, "");
+	const summary = (kind === "reset" ? [note, lead, goal] : [lead, note, goal]).find(Boolean) ?? "";
 	const n = finite(details.n);
 	const percent = percentLabel(details.percent);
-	const shownKind = kind === "nudge" ? "" : kind;
-	const meta = shownKind ? [percent ? `${shownKind} at ${percent}` : shownKind] : percent ? [percent] : [];
+	const shownKind = kind === "nudge" ? "" : kind === "loop" && trimmed(details.stopped) ? "loop stopped" : kind;
+	const meta = [...(shownKind ? [percent ? `${shownKind} at ${percent}` : shownKind] : percent ? [percent] : []), ...(details.byUser === true ? ["by you"] : [])];
 	if (!summary && meta.length === 0) return null;
 	return { label: n === null ? "relay" : `relay #${n}`, meta, summary, full: full === summary ? "" : full };
 }

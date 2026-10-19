@@ -46,8 +46,22 @@ describe("msg messages", () => {
 
 describe("relay notices", () => {
 	test("read as one line: relay, how full, and what it says", () => {
-		const nudge = { role: "custom", customType: "relay", content: "41%: finish the step, commit, then call relay with a note", details: { kind: "nudge", percent: 41.4 } };
+		const nudge = { role: "custom", customType: "relay", content: "41%: finish the step, commit, then call relay with a note", details: { kind: "nudge", percent: 41 } };
 		expect(relayView(nudge)).toEqual({ label: "relay", meta: ["41%"], summary: "41%: finish the step, commit, then call relay with a note", full: "" });
+	});
+
+	test("drop relay's [relay] tag from the line, and floor the percent to a tenth like relay does", () => {
+		const nudge = { role: "custom", customType: "relay", content: "[relay] you're at 44.9% of your context window. get to a clean checkpoint.", details: { kind: "nudge", percent: 44.96, step: 1 } };
+		expect(relayView(nudge)).toMatchObject({ meta: ["44.9%"], summary: "you're at 44.9% of your context window. get to a clean checkpoint." });
+		expect(percentLabel(45)).toBe("45%");
+		expect(percentLabel(41.44)).toBe("41.4%");
+	});
+
+	test("a reset or nudge the human asked for says so, and a stopped loop says it stopped", () => {
+		const asked = { role: "custom", customType: "relay", content: "[relay] context reset #3 (was at 30%), asked for by the human, in place", details: { kind: "reset", n: 3, percent: 30, byUser: true } };
+		expect(relayView(asked)).toMatchObject({ label: "relay #3", meta: ["reset at 30%", "by you"], summary: "context reset #3 (was at 30%), asked for by the human, in place" });
+		const stopped = { role: "custom", customType: "relay", content: "[relay loop] stopped: the human turned it off.", details: { kind: "loop", goal: "ship", stopped: "user" } };
+		expect(relayView(stopped)).toMatchObject({ meta: ["loop stopped"], summary: "stopped: the human turned it off." });
 	});
 
 	test("a reset leads with its note and keeps the full text a tap away", () => {
@@ -55,9 +69,10 @@ describe("relay notices", () => {
 		expect(relayView(reset)).toEqual({ label: "relay #2", meta: ["reset at 45%"], summary: "tests pass, docs left", full: "context reset\n\nlookup catchup:\n…" });
 	});
 
-	test("a loop leads with its goal", () => {
-		const loop = { role: "custom", customType: "relay", content: [{ type: "text", text: "keep going" }], details: { kind: "loop", goal: "ship relay" } };
-		expect(relayView(loop)).toMatchObject({ label: "relay", meta: ["loop"], summary: "ship relay", full: "keep going" });
+	test("a loop prompt leads with its own words, else its goal", () => {
+		const loop = { role: "custom", customType: "relay", content: [{ type: "text", text: "[relay loop] keep going toward the goal: ship relay." }], details: { kind: "loop", goal: "ship relay", errors: 0, idle: 0 } };
+		expect(relayView(loop)).toMatchObject({ label: "relay", meta: ["loop"], summary: "keep going toward the goal: ship relay." });
+		expect(relayView({ ...loop, content: [] })).toMatchObject({ summary: "ship relay", full: "" });
 	});
 
 	test("missing details still read, and an empty notice draws nothing", () => {
