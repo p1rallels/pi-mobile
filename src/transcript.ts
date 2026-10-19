@@ -26,11 +26,26 @@ function isDisplayed(message: AgentMessage): boolean {
 	return true;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A relay reset is a compaction whose details say which relay it was (`{ relay: { n, percent, note?, goal? } }`).
+ * pi's summary message drops a compaction's details, so the page gets that mark back to draw a context reset.
+ */
+function relayMark(entry: SessionEntry): Record<string, unknown> | null {
+	if (entry.type !== "compaction" || !isRecord(entry.details)) return null;
+	const relay = entry.details.relay;
+	return isRecord(relay) ? relay : null;
+}
+
 /** Raw session history for display: unlike the model projection, compaction never drops earlier entries. */
 export function entryTranscriptMessages(entry: SessionEntry): TranscriptMessage[] {
+	const relay = relayMark(entry);
 	return sessionEntryToContextMessages(entry)
 		.filter(isDisplayed)
-		.map((message) => ({ ...message, entryId: entry.id }));
+		.map((message) => (relay && message.role === "compactionSummary" ? { ...message, details: { relay }, entryId: entry.id } : { ...message, entryId: entry.id }));
 }
 
 function hasDisplayedEntry(entries: readonly SessionEntry[]): boolean {
@@ -63,6 +78,8 @@ function messageEntryMatcher(message: AgentMessage): (entry: SessionEntry) => bo
 
 function announcedEntryMatcher(event: JsonAgentSessionEvent): ((entry: SessionEntry) => boolean) | null {
 	switch (event.type) {
+		case "entry_appended":
+			return (entry) => entry.id === event.entry.id;
 		case "message_end":
 			return messageEntryMatcher(event.message);
 		case "compaction_end": {

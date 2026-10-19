@@ -780,8 +780,12 @@ export class PiWebRuntime {
 		return this.withForkLabels(sessions);
 	}
 
-	async listSessions(options: { cwd?: string; limit?: number; offset?: number } = {}): Promise<{ sessions: ApiSessionSummary[]; hasMore: boolean }> {
-		const saved = await this.sessionIndex.list({ cwd: options.cwd }).catch(() => []);
+	/** `id` narrows the list to that one session, wherever it lives (a msg sender's link opens it). */
+	async listSessions(
+		options: { cwd?: string; id?: string; limit?: number; offset?: number } = {},
+	): Promise<{ sessions: ApiSessionSummary[]; hasMore: boolean }> {
+		const listed = await this.sessionIndex.list({ cwd: options.cwd }).catch(() => []);
+		const saved = options.id === undefined ? listed : listed.filter((entry) => entry.id === options.id);
 		const elsewhere = await this.elsewhereOf(saved);
 		const byId = new Map<string, ApiSessionSummary>();
 
@@ -791,6 +795,7 @@ export class PiWebRuntime {
 
 		for (const [sessionId, runtime] of this.runningById.entries()) {
 			if (options.cwd !== undefined && runtime.cwd !== options.cwd) continue;
+			if (options.id !== undefined && sessionId !== options.id) continue;
 			// If the saved list already contains this session id, just mark it running and move on.
 			const existing = byId.get(sessionId);
 			if (existing) {
@@ -1660,6 +1665,10 @@ export class PiWebRuntime {
 			// pi's own footer); pi writes the message to the session after message_end listeners ran, so read then
 			if (event.type === "message_end") {
 				queueMicrotask(() => this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session, runtime.git.current()) }));
+			}
+			// an extension's compaction at a turn boundary (a relay reset) empties the context without compaction events
+			if (event.type === "entry_appended" && event.entry.type === "compaction") {
+				this.broadcast(sessionId, { type: "state_patch", patch: buildPatch(session, runtime.git.current()) });
 			}
 		});
 		runtime.unsubscribe = unsubscribe;

@@ -1100,10 +1100,12 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 
 		if (req.method === "GET" && url.pathname === "/api/sessions") {
 			const cwd = url.searchParams.get("cwd")?.trim() || undefined;
+			const id = url.searchParams.get("id")?.trim() || undefined;
 			const limit = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
 			const offset = Number.parseInt(url.searchParams.get("offset") ?? "", 10);
 			const body: ApiListSessionsResponse = await runtime.listSessions({
 				cwd,
+				id,
 				limit: Number.isFinite(limit) ? Math.min(limit, 500) : 200,
 				offset: Number.isFinite(offset) ? offset : 0,
 			});
