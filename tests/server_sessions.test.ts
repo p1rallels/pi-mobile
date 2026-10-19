@@ -175,7 +175,7 @@ describe("server session files", () => {
 		const read = (query: string) => fetch(`${base}/api/session-transcript?${query}`);
 		const tail = await read(`path=${encodeURIComponent(path)}&limit=1`);
 		expect(tail.status).toBe(200);
-		expect(await tail.json()).toEqual({ sessionId: id, messages: [expect.objectContaining({ role: "assistant", entryId: "a0000001" })], hasOlder: true });
+		expect(await tail.json()).toEqual({ sessionId: id, messages: [expect.objectContaining({ role: "assistant", entryId: "a0000001" })], hasOlder: true, readOnly: null });
 		const older = (await (await read(`path=${encodeURIComponent(path)}&before=a0000001`)).json()) as { messages: Array<{ entryId: string }>; hasOlder: boolean };
 		expect(older.messages.map((message) => message.entryId)).toEqual(["u0000001"]);
 		expect(older.hasOlder).toBe(false);

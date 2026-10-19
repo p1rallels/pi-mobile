@@ -96,8 +96,8 @@ describe("a hosted session's header", () => {
 		expect(first).toEqual({
 			parent: null,
 			children: [
-				{ id: SCOUT, label: "scout", state: "live", openable: true, where: `pi -p · ${tildify(join(agentDir, "scout"), homedir())}` },
-				{ id: FLAKY, label: "flaky", state: "died", openable: false, where: "pi -p · /repo" },
+				{ id: SCOUT, label: "scout", state: "live", openable: true, readOnly: true, where: `pi -p · ${tildify(join(agentDir, "scout"), homedir())}` },
+				{ id: FLAKY, label: "flaky", state: "died", openable: false, readOnly: true, where: "pi -p · /repo" },
 			],
 			childCount: 2,
 		});
@@ -169,14 +169,14 @@ describe("a session another pi writes", () => {
 		const parentFirst = described().find((event) => event.session.lineage?.parent);
 		expect(parentFirst?.messages).toEqual([]);
 		expect(parentFirst?.session.lineage).toEqual({
-			parent: { id: LEAD, label: "main", state: "live", openable: false, where: "pi-web · /Users/me/Desktop/cc" },
+			parent: { id: LEAD, label: "main", state: "live", openable: false, readOnly: false, where: "pi-web · /Users/me/Desktop/cc" },
 			children: [],
 			childCount: 0,
 		});
 
 		await writePresence(store, { id: FLAKY, parent: WORKER, name: "sub", pid: 999 });
 		await waitFor(() => described().some((event) => event.session.lineage?.childCount === 1));
-		expect(described().at(-1)?.session.lineage?.children).toEqual([{ id: FLAKY, label: "sub", state: "died", openable: false, where: "pi -p · /repo" }]);
+		expect(described().at(-1)?.session.lineage?.children).toEqual([{ id: FLAKY, label: "sub", state: "died", openable: false, readOnly: true, where: "pi -p · /repo" }]);
 		stop();
 	});
 });

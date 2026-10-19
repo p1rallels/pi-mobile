@@ -3,12 +3,14 @@
 //
 // Every live session rewrites its presence record at least every 10s, through a temp file renamed into place, and the
 // store can hold hundreds of records: one index keeps them, refreshed from a readdir and the files' mtimes, and reads
-// only the records that changed. A feed refreshes it on a timer while someone looks at a session, works out each
-// watched session's lineage and says when one changes.
+// only the records that changed. The runtime keeps one for everything that reads presence (this feed, the idle sweep's
+// waiting rule, which sessions open read-only: msg-subs.ts). A feed refreshes it on a timer while someone looks at a
+// session, works out each watched session's lineage and says when one changes.
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parsePresence, pidAlive, STALE_AFTER_MS, type PidProbe, type Presence, type PresenceMode } from "./msg-store.ts";
+import { isSub } from "./msg-subs.ts";
 import { sessionDirForCwd } from "./session-index.ts";
 import type { ApiLineage, ApiLineageParty, ApiLineageState } from "./types.ts";
 
@@ -70,15 +72,15 @@ export const whereOf = (record: Presence, home: string): string => [MODE_LABELS[
 
 const shortId = (id: string): string => id.slice(0, 8);
 
-/** A child as the header lists it: its name, else the first 8 characters of its id (msg's partyLabel). */
+/** A child as the header lists it: its name, else the first 8 characters of its id (msg's partyLabel). Every child is a sub, so it opens read-only. */
 export function childParty({ record, state }: JudgedPresence, openable: boolean, home: string): ApiLineageParty {
-	return { id: record.id, label: record.name ?? shortId(record.id), state, openable, where: whereOf(record, home) };
+	return { id: record.id, label: record.name ?? shortId(record.id), state, openable, readOnly: true, where: whereOf(record, home) };
 }
 
 /** The parent: its name, else its folder, else the first 8 characters of its id; `record` is missing when it never ran msg. */
 export function parentParty(id: string, record: Presence | undefined, state: ApiLineageState | null, openable: boolean, home: string): ApiLineageParty {
 	const folder = record?.cwd ? basename(record.cwd) : "";
-	return { id, label: record?.name ?? (folder || shortId(id)), state, openable, where: record ? whereOf(record, home) : null };
+	return { id, label: record?.name ?? (folder || shortId(id)), state, openable, readOnly: isSub(record), where: record ? whereOf(record, home) : null };
 }
 
 async function mapLimited<T, R>(items: readonly T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
@@ -132,7 +134,7 @@ export function createPresenceIndex(root: string, clock: () => number = Date.now
 		}
 	}
 
-	async function refresh(): Promise<void> {
+	async function scan(): Promise<void> {
 		let mtimeMs: number;
 		try {
 			mtimeMs = (await stat(dir)).mtimeMs;
@@ -171,6 +173,26 @@ export function createPresenceIndex(root: string, clock: () => number = Date.now
 		folderMtimeMs = mtimeMs;
 		fullScanAt = now;
 		if (changed) rebuild();
+	}
+
+	let scanning: Promise<void> | null = null;
+	let queued: Promise<void> | null = null;
+
+	/** Reads the store again; asked while a read is under way, one more follows it, shared by everyone who asked meanwhile. */
+	function refresh(): Promise<void> {
+		if (!scanning) {
+			scanning = scan().finally(() => {
+				scanning = null;
+			});
+			return scanning;
+		}
+		queued ??= scanning
+			.catch(() => undefined)
+			.then(() => {
+				queued = null;
+				return refresh();
+			});
+		return queued;
 	}
 
 	return {
@@ -239,6 +261,8 @@ export function createSessionFiles(sessionsDir: string, clock: () => number = Da
 export interface LineageFeedOptions {
 	/** msg's store (msgStoreRoot). */
 	root: string;
+	/** The presence index to read and refresh, shared with the rest of the runtime; one of its own by default. */
+	index?: PresenceIndex;
 	/** pi's sessions folder, where the files pi-web can open live. */
 	sessionsDir: string;
 	/** pi-web hosts it: it opens, and has no parent (its process is pi-web's). */
@@ -262,7 +286,7 @@ export function createLineageFeed(options: LineageFeedOptions) {
 	const probe = options.probe ?? pidAlive;
 	const home = options.home ?? homedir();
 	const intervalMs = options.intervalMs ?? DEFAULT_LINEAGE_REFRESH_MS;
-	const index = createPresenceIndex(options.root, clock);
+	const index = options.index ?? createPresenceIndex(options.root, clock);
 	const files = createSessionFiles(options.sessionsDir, clock);
 	const views = new Map<string, { view: ApiLineage | null; key: string; watchedAt: number }>();
 	let timer: ReturnType<typeof setInterval> | null = null;

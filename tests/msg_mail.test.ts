@@ -45,6 +45,7 @@ function input(fields: Partial<MailInput> & { detached: DetachedRef[] }): MailIn
 		inbox: new Map(),
 		reopenedFor: new Map(),
 		unchanged: new Set(fields.detached.map((item) => item.sessionId)),
+		readOnly: new Map(),
 		presence: new Map(),
 		room: { max: 24, running: [], resuming: [] },
 		selfPid: SELF,
@@ -211,6 +212,7 @@ function fakeHost(options: { max?: number; decline?: number; fail?: string } = {
 	const running = new Map<string, RunningRef>();
 	const changed = new Set<string>();
 	const calls: Array<[string, string | null]> = [];
+	const dropped: string[] = [];
 	let declines = options.decline ?? 0;
 	const host: MailHost = {
 		detachedSessions: () => [...detached.values()],
@@ -231,12 +233,17 @@ function fakeHost(options: { max?: number; decline?: number; fail?: string } = {
 			running.set(sessionId, { sessionId, path, evictable: true, lastActivityAtMs: NOW });
 			return { evicted: evict, running: Promise.resolve() };
 		},
+		dropDetached(sessionId) {
+			dropped.push(sessionId);
+			detached.delete(sessionId);
+		},
+		async refreshPresence() {},
 	};
 	const dispose = (sessionId: string) => {
 		running.delete(sessionId);
 		detached.set(sessionId, ref(sessionId));
 	};
-	return { host, detached, running, changed, calls, dispose };
+	return { host, detached, running, changed, calls, dropped, dispose };
 }
 
 async function storeRoot(): Promise<string> {

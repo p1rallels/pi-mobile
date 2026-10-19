@@ -15,7 +15,15 @@ import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
-import { AmbiguousWritersError, NeverSavedError, PiWebRuntime, RunningElsewhereError, type FollowClient, type SessionClient } from "./session-runtime.ts";
+import {
+	AmbiguousWritersError,
+	NeverSavedError,
+	PiWebRuntime,
+	ReadOnlySessionError,
+	RunningElsewhereError,
+	type FollowClient,
+	type SessionClient,
+} from "./session-runtime.ts";
 import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PING_INTERVAL_MS } from "./sse.ts";
 import { createTerminalManager, parseTerminalsMode } from "./terminals.ts";
 import type {
@@ -33,6 +41,8 @@ import type {
 	ApiListSessionsResponse,
 	ApiOkResponse,
 	ApiProjectTrustRequiredResponse,
+	ApiReadOnly,
+	ApiReadOnlyResponse,
 	ApiRepoSuggestionsResponse,
 	ApiReleaseRequest,
 	ApiRunningElsewhereResponse,
@@ -115,6 +125,23 @@ function parsePositiveInt(raw: string | undefined, fallback: number, name: strin
 		throw new Error(`Invalid ${name}: ${String(raw)}`);
 	}
 	return value;
+}
+
+/** Like parsePositiveInt, fractions allowed (PI_WEB_IDLE_SESSION_MINUTES=0.05 sweeps a test server every few seconds). */
+function parsePositiveNumber(raw: string | undefined, fallback: number, name: string): number {
+	if (!raw?.trim()) return fallback;
+	const value = Number(raw.trim());
+	if (!Number.isFinite(value) || value <= 0) {
+		throw new Error(`Invalid ${name}: ${String(raw)}`);
+	}
+	return value;
+}
+
+/** 409 for a session pi-web only shows: the page opens it read-only (the follow view) instead. */
+function readOnlyResponse(readOnly: ApiReadOnly): Response {
+	const error = readOnly.reason === "sub" ? "A sub opens read-only: its parent session manages it" : "Its folder is gone, so it opens read-only";
+	const body: ApiReadOnlyResponse = { error, readOnly };
+	return json(body, 409);
 }
 
 function createRateLimiter(windowMs: number, maxHits: number) {
@@ -295,7 +322,7 @@ function parseArgs(argv: string[]): ServerArgs {
 	const clientCertHeader = process.env.PI_WEB_CLIENT_CERT_HEADER?.trim() || "x-pi-web-client-cert-fingerprint";
 	const maxRunningSessions = parsePositiveInt(process.env.PI_WEB_MAX_RUNNING_SESSIONS, 24, "PI_WEB_MAX_RUNNING_SESSIONS");
 	const maxClientsPerSession = parsePositiveInt(process.env.PI_WEB_MAX_CLIENTS_PER_SESSION, 8, "PI_WEB_MAX_CLIENTS_PER_SESSION");
-	const idleSessionMinutes = parsePositiveInt(process.env.PI_WEB_IDLE_SESSION_MINUTES, 15, "PI_WEB_IDLE_SESSION_MINUTES");
+	const idleSessionMinutes = parsePositiveNumber(process.env.PI_WEB_IDLE_SESSION_MINUTES, 15, "PI_WEB_IDLE_SESSION_MINUTES");
 
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
@@ -321,7 +348,7 @@ Env:
   PI_WEB_TRUST_PROXY=1
   PI_WEB_MAX_RUNNING_SESSIONS
   PI_WEB_MAX_CLIENTS_PER_SESSION
-  PI_WEB_IDLE_SESSION_MINUTES (dispose unwatched idle sessions after this long, default 15)
+  PI_WEB_IDLE_SESSION_MINUTES (dispose unwatched idle sessions no sub waits on after this long, default 15; fractions allowed)
   PI_WEB_TRIPWIRE=on|off (block critical tool calls, default on)
   PI_WEB_PROJECT_TRUST=always|ask|never (projects without a trust.json decision, default always)
   PI_WEB_TERMINALS=on|off (terminal tiles on the canvas, default on)
@@ -802,6 +829,7 @@ async function attachIfNeeded(req: Request, url: URL, sessionId: string, request
 		await runtime.attachSession(sessionId, path, client.clientId);
 		return null;
 	} catch (error) {
+		if (error instanceof ReadOnlySessionError) return readOnlyResponse(error.readOnly);
 		const message = error instanceof Error ? error.message : String(error);
 		if (message === "too_many_active_sessions") return errorResponse("Too many active sessions", 429);
 		return sessionMissing("Session not running", path, sessionId);
@@ -885,13 +913,14 @@ const msgRoot = msgStoreRoot(process.env);
 const runtime = new PiWebRuntime({
 	maxRunningSessions,
 	maxClientsPerSession,
-	idleSessionTtlMs: idleSessionMinutes * 60_000,
+	idleSessionTtlMs: Math.round(idleSessionMinutes * 60_000),
 	projectTrustMode,
 	tripwire: tripwireMode,
 	msgDir: msgRoot,
 });
-runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
+// the first sweep runs now: sessions from before the restart that subs still count on come back right away
+runtime.startIdleSweep();
 const msgMail = watchMsgMail(runtime, { root: msgRoot });
 const faceId = new FaceIdService(join(getAgentDir(), "pi-web", "faceid-credentials.json"));
 const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));
@@ -1326,6 +1355,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 					const body: ApiProjectTrustRequiredResponse = { error: "Project trust required", projectTrust: error.prompt };
 					return json(body, 409);
 				}
+				if (error instanceof ReadOnlySessionError) return readOnlyResponse(error.readOnly);
 				if (error instanceof RunningElsewhereError) {
 					const body: ApiRunningElsewhereResponse = { error: "Another pi is still writing this session", elsewhere: error.elsewhere };
 					return json(body, 409);
@@ -1616,7 +1646,7 @@ console.log(
 	`Face ID remote session window: ${String(FACEID_TTL_MS / 60_000)}m total, ${String(FACEID_COMMAND_TTL_MS / 60_000)}m for prompts and take over, ${String(FACEID_FRESH_TTL_MS / 60_000)}m for new sessions, repos and release; terminals close ${String(TERMINAL_TTL_MS / 60_000)}m after the last check.`,
 );
 console.log(
-	`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session, idle sessions disposed after ${String(idleSessionMinutes)}m.`,
+	`Runtime caps: ${String(maxRunningSessions)} active sessions, ${String(maxClientsPerSession)} viewers per session, idle sessions disposed after ${String(idleSessionMinutes)}m unless a sub of theirs is still around.`,
 );
 if (secureMode) {
 	console.log(`Secure mode enabled: client certificate fingerprints must be allowed in ${deviceRegistryPath}.`);
@@ -1627,6 +1657,7 @@ console.log(`Tripwire: ${tripwireMode === "on" ? "on, critical tool calls are bl
 console.log(`Terminal tiles: ${terminalsMode} (PI_WEB_TERMINALS).`);
 if (restoredSessions > 0) console.log(`${String(restoredSessions)} session(s) from before the restart can re-attach.`);
 console.log(`msg mail: a session pi-web disposed comes back when mail for it lands in ${join(msgRoot, "inbox")}.`);
+console.log(`msg subs: sessions whose presence record in ${join(msgRoot, "sessions")} names a parent open read-only, like sessions whose folder is gone; a parent stays loaded while a sub of its counts.`);
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {

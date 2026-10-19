@@ -269,7 +269,7 @@ describe("msg mail for a session pi-web disposed", () => {
 
 		const restarted = new PiWebRuntime({ modelRuntime });
 		expect(await restarted.loadDetachedSessions()).toBe(1);
-		expect(restarted.detachedSessions()).toEqual([{ sessionId, path: sessionFile }]);
+		expect(restarted.detachedSessions()).toEqual([{ sessionId, path: sessionFile, cwd: process.cwd() }]);
 	});
 
 	test("mail that came while pi-web was down brings its session back at the start", async () => {

@@ -119,6 +119,20 @@ export interface ApiSessionSummary {
 	elsewhere?: ApiElsewhere;
 	/** "repo · fork 8-hooks" when the session ran in a pfs fork (<repo>/.forks/<n>). */
 	forkLabel?: string;
+	/** Set when pi-web only shows the session, never loads it: a sub, or its folder is gone. */
+	readOnly?: ApiReadOnly;
+}
+
+/**
+ * Why pi-web shows a session and never loads it (msg-subs.ts): a sub (msg's presence record names a parent, the session
+ * whose bash started it and manages it), or a session whose folder is gone (pfs deleted its fork).
+ */
+export type ApiReadOnly = { reason: "sub"; parent: string } | { reason: "folder" };
+
+/** 409 from resuming or attaching a session pi-web only shows: open it read-only instead (the follow view). */
+export interface ApiReadOnlyResponse {
+	error: string;
+	readOnly: ApiReadOnly;
 }
 
 export type ApiElsewhereState = ElsewhereState;
@@ -169,6 +183,8 @@ export interface ApiFollowSession {
 	thinkingLevel: string | null;
 	lineage?: ApiLineage | null;
 	relay?: ApiRelayState | null;
+	/** pi-web only shows it (a sub, a folder gone): nothing continues it here, even once nobody writes it. */
+	readOnly?: ApiReadOnly | null;
 }
 
 /**
@@ -246,6 +262,8 @@ export interface ApiLineageParty {
 	state: ApiLineageState | null;
 	/** pi-web can open it: it hosts it, or the session's file is in pi-web's sessions folder */
 	openable: boolean;
+	/** it opens read-only: a sub (every child is one), never loaded here */
+	readOnly: boolean;
 	/** how and where it runs, like "pi -p · ~/repo/.forks/3"; null without a presence record */
 	where: string | null;
 }
@@ -303,8 +321,8 @@ export interface ApiSessionState extends ApiSessionStatus {
 
 export type ApiTranscriptPageResponse = TranscriptPage;
 
-/** GET /api/session-transcript?path=&limit=&before=: a page of a session file, no runtime attached. */
-export type ApiSessionFileTranscriptResponse = TranscriptPage & { sessionId: string };
+/** GET /api/session-transcript?path=&limit=&before=: a page of a session file, no runtime attached; `readOnly` when pi-web only shows it. */
+export type ApiSessionFileTranscriptResponse = TranscriptPage & { sessionId: string; readOnly?: ApiReadOnly | null };
 
 export type ApiLiveSnapshot = LiveSnapshot;
 

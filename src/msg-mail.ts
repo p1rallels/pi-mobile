@@ -5,9 +5,13 @@
 // session delivers what waited and wakes it.
 //
 // pi-web only reads the store (msg-store.ts), and never writes, claims or moves a message. The decision
-// (planMailReopens) is pure; watchMsgMail feeds it every few seconds and carries it out.
+// (planMailReopens) is pure; watchMsgMail feeds it every few seconds and carries it out. Mail never brings back a
+// session pi-web only shows (a sub, a folder gone: msg-subs.ts); its re-attach record goes instead.
 import { readdir, readFile } from "node:fs/promises";
+import { isDirectory } from "./directories.ts";
 import { isMsgId, newMailDir, parsePresence, pidAlive as probePid, presencePath, STALE_AFTER_MS, type Presence } from "./msg-store.ts";
+import { readOnlyOf, readOnlyWords } from "./msg-subs.ts";
+import type { ApiReadOnly } from "./types.ts";
 
 /** How often the detached sessions' inboxes are looked at: a readdir each, nothing read. */
 export const MAIL_SWEEP_MS = 3_000;
@@ -43,6 +47,8 @@ export function ownedElsewhere(presence: ProbedPresence | undefined, selfPid: nu
 export interface DetachedRef {
 	sessionId: string;
 	path: string;
+	/** The folder it ran in, when pi-web recorded it. */
+	cwd?: string;
 }
 
 export interface RunningRef {
@@ -66,7 +72,7 @@ export interface WaitingMail extends DetachedRef {
 	newest: string;
 }
 
-export type MailSkip = "hosted" | "changed" | "owned";
+export type MailSkip = "hosted" | "read_only" | "changed" | "owned";
 
 export interface MailPlan {
 	/** Oldest mail first; `evict` gives up its slot first when there's no free one. */
@@ -84,6 +90,8 @@ export interface MailInput {
 	reopenedFor: ReadonlyMap<string, string>;
 	/** Detached sessions whose file is as pi-web left it (attachSession's rule); any other counts as changed. */
 	unchanged: ReadonlySet<string>;
+	/** Detached sessions pi-web only shows (a sub, a folder gone): never reopened. */
+	readOnly: ReadonlyMap<string, ApiReadOnly>;
 	presence: ReadonlyMap<string, ProbedPresence>;
 	room: Room;
 	selfPid: number;
@@ -116,6 +124,7 @@ export function freeSlots(room: Room): number {
 
 function skipReason(mail: WaitingMail, input: MailInput, hostedIds: ReadonlySet<string>, hostedPaths: ReadonlySet<string>): MailSkip | null {
 	if (hostedIds.has(mail.sessionId) || hostedPaths.has(mail.path)) return "hosted";
+	if (input.readOnly.has(mail.sessionId)) return "read_only";
 	if (!input.unchanged.has(mail.sessionId)) return "changed";
 	return ownedElsewhere(input.presence.get(mail.sessionId), input.selfPid, input.now) ? "owned" : null;
 }
@@ -126,9 +135,10 @@ function hasNoMail(names: readonly string[] | undefined): boolean {
 }
 
 /**
- * Which detached sessions to reopen for their mail: not running or resuming here, unchanged since pi-web disposed them,
- * not run by another live process, and only into a free slot or one given up by an idle unwatched session (least
- * recently active first) that has no mail of its own, so two sessions with mail never take turns evicting each other.
+ * Which detached sessions to reopen for their mail: not running or resuming here, not read-only, unchanged since pi-web
+ * disposed them, not run by another live process, and only into a free slot or one given up by an idle unwatched session
+ * (least recently active first; `evictable` leaves out the ones subs wait on) that has no mail of its own, so two
+ * sessions with mail never take turns evicting each other.
  */
 export function planMailReopens(input: MailInput): MailPlan {
 	const { room } = input;
@@ -162,6 +172,10 @@ export interface MailHost {
 	isUnchangedSinceDetach(path: string, sessionId: string): boolean;
 	/** Null when the session can't be reopened right now; checked and started in one synchronous step. */
 	reopenForMail(sessionId: string, path: string, evict: string | null): MailReopen | null;
+	/** Forgets a detached session that opens read-only now: nothing brings it back. */
+	dropDetached(sessionId: string, path: string): void;
+	/** Reads msg's presence records again, so who may give up a slot (subs waiting) is judged as things stand. */
+	refreshPresence(): Promise<void>;
 }
 
 export interface MailWatchOptions {
@@ -240,13 +254,18 @@ export function watchMsgMail(host: MailHost, options: MailWatchOptions): MailWat
 		told = new Map([...told].filter(([sessionId]) => withMail.has(sessionId)));
 	}
 
-	function explain(plan: MailPlan, room: Room, presence: ReadonlyMap<string, ProbedPresence>): void {
+	function explain(plan: MailPlan, room: Room, presence: ReadonlyMap<string, ProbedPresence>, readOnly: ReadonlyMap<string, ApiReadOnly>): void {
 		for (const mail of plan.noRoom) {
 			tell(mail, "room", `[pi-web] no room to reopen ${mail.sessionId} for msg mail: ${String(room.running.length + room.resuming.length)} of ${String(room.max)} sessions running, none idle, unwatched and without mail of its own; the mail waits`);
 		}
 		for (const mail of plan.skipped) {
 			if (mail.reason === "changed") tell(mail, "changed", `[pi-web] not reopening ${mail.sessionId} for msg mail: its file changed since pi-web disposed it`);
 			if (mail.reason === "owned") tell(mail, "owned", `[pi-web] not reopening ${mail.sessionId} for msg mail: pid ${String(presence.get(mail.sessionId)?.pid)} runs it`);
+			const why = mail.reason === "read_only" ? readOnly.get(mail.sessionId) : undefined;
+			if (!why) continue;
+			// said once: the record goes, so the session is no longer one pi-web brings back
+			log(`[pi-web] not reopening ${mail.sessionId} for msg mail: ${readOnlyWords(why)}; forgot it for re-attach`);
+			host.dropDetached(mail.sessionId, mail.path);
 		}
 	}
 
@@ -279,17 +298,24 @@ export function watchMsgMail(host: MailHost, options: MailWatchOptions): MailWat
 		const waiting = waitingMail(detached, inbox, reopenedFor);
 		if (waiting.length === 0 || stopped) return;
 		const unchanged = new Set(waiting.filter((mail) => host.isUnchangedSinceDetach(mail.path, mail.sessionId)).map((mail) => mail.sessionId));
-		const records = await Promise.all(waiting.map(async (mail) => [mail.sessionId, await readPresence(root, mail.sessionId)] as const));
-		const presence = new Map(records.flatMap(([sessionId, record]) => (record ? [[sessionId, { ...record, pidAlive: pidAlive(record.pid) }] as const] : [])));
+		const records = await Promise.all(waiting.map(async (mail) => [mail, await readPresence(root, mail.sessionId)] as const));
+		const presence = new Map(records.flatMap(([mail, record]) => (record ? [[mail.sessionId, { ...record, pidAlive: pidAlive(record.pid) }] as const] : [])));
+		// a sub, or a session whose folder (as pi-web recorded it when it disposed it) is gone: pi-web only shows those
+		const judged = await Promise.all(
+			records.map(async ([mail, record]) => [mail.sessionId, readOnlyOf(record ?? undefined, mail.cwd === undefined || (await isDirectory(mail.cwd)))] as const),
+		);
+		const readOnly = new Map(judged.flatMap(([sessionId, why]) => (why ? [[sessionId, why] as const] : [])));
 		// a running session gives up its slot only with a known empty inbox, so list the ones that could when slots are short
+		const short = waiting.length > freeSlots(host.sessionRoom());
+		// and whether subs wait on it decides too: read who waits on whom as it stands
+		if (short) await host.refreshPresence();
 		const roomNow = host.sessionRoom();
-		const short = waiting.length > freeSlots(roomNow);
 		const evictable = short ? roomNow.running.filter((slot) => slot.evictable && isMsgId(slot.sessionId)).map((slot) => slot.sessionId) : [];
 		const evictableInbox = await listNewMail(root, evictable);
 		if (stopped) return;
 		const room = host.sessionRoom();
-		const plan = planMailReopens({ detached, inbox: new Map([...inbox, ...evictableInbox]), reopenedFor, unchanged, presence, room, selfPid, now: now() });
-		explain(plan, room, presence);
+		const plan = planMailReopens({ detached, inbox: new Map([...inbox, ...evictableInbox]), reopenedFor, unchanged, readOnly, presence, room, selfPid, now: now() });
+		explain(plan, room, presence, readOnly);
 		for (const item of plan.reopen.slice(0, MAX_REOPENS_PER_LOOK)) start(item);
 	}
 

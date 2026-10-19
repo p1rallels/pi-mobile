@@ -282,13 +282,25 @@ export interface SessionFolder {
 
 const HEADER_BYTES = 16 * 1024;
 
-/** The cwd a session file's header names; complete is false while the header line isn't written out yet. */
-async function readHeaderCwd(path: string): Promise<{ cwd: string | null; complete: boolean }> {
+/** The id and cwd a session file's header names (null when it has none yet); complete is false while the header line isn't written out yet. */
+async function readHeader(path: string): Promise<{ header: { id: string; cwd: string | null } | null; complete: boolean }> {
 	const head = new Uint8Array(await Bun.file(path).slice(0, HEADER_BYTES).arrayBuffer());
 	const end = head.indexOf(NEWLINE);
-	if (end === -1) return { cwd: null, complete: head.length >= HEADER_BYTES };
-	const cwd = headerOf(head.subarray(0, end))?.header.cwd;
-	return { cwd: typeof cwd === "string" && cwd ? cwd : null, complete: true };
+	if (end === -1) return { header: null, complete: head.length >= HEADER_BYTES };
+	const parsed = headerOf(head.subarray(0, end))?.header;
+	if (!parsed) return { header: null, complete: true };
+	const cwd = typeof parsed.cwd === "string" && parsed.cwd ? parsed.cwd : null;
+	return { header: { id: parsed.id as string, cwd }, complete: true };
+}
+
+async function readHeaderCwd(path: string): Promise<{ cwd: string | null; complete: boolean }> {
+	const { header, complete } = await readHeader(path);
+	return { cwd: header?.cwd ?? null, complete };
+}
+
+/** The session a file holds and the folder it ran in, from its first line only; null when that isn't a session header. */
+export async function readSessionHeader(path: string): Promise<{ id: string; cwd: string | null } | null> {
+	return (await readHeader(path)).header;
 }
 
 /**

@@ -42,14 +42,16 @@ import {
 	type PiProcess,
 } from "./outside-writers.ts";
 import { findGitHead, readGitBranch, watchGitBranch, type GitBranchWatch } from "./git-branch.ts";
-import type { DetachedRef, MailHost, MailReopen, Room } from "./msg-mail.ts";
+import { MAX_REOPENS_PER_LOOK, ownedElsewhere, type DetachedRef, type MailHost, type MailReopen, type Room } from "./msg-mail.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
-import { createLineageFeed, type LineageFeed } from "./msg-lineage.ts";
-import { msgStoreRoot, type PidProbe } from "./msg-store.ts";
+import { createLineageFeed, createPresenceIndex, type LineageFeed, type PresenceIndex } from "./msg-lineage.ts";
+import { msgStoreRoot, pidAlive, type PidProbe } from "./msg-store.ts";
+import { isWaiting, planWaitingReopens, readOnlyOf, readOnlyWords, type WaitingSkip } from "./msg-subs.ts";
 import { advanceRelay, relayStateOf, relayView, type RelayFold } from "./relay-state.ts";
 import { classifyNeverSaved } from "./never-saved.ts";
 import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";
-import { createSessionFolders, createSessionIndex, sessionDirForCwd, type SessionFolder, type SessionSummary } from "./session-index.ts";
+import { createSessionFolders, createSessionIndex, readSessionHeader, sessionDirForCwd, type SessionFolder, type SessionSummary } from "./session-index.ts";
+import { capacityVictim, idleVictims, isEvictable as isEvictableSlot, type Slot } from "./session-slots.ts";
 import { isOpenTurn, turnOfEntries, type Turn } from "./session-turn.ts";
 import {
 	announcedEntryId,
@@ -71,6 +73,7 @@ import type {
 	ApiPromptDisposition,
 	ApiModelInfo,
 	ApiNeverSaved,
+	ApiReadOnly,
 	ApiRelayState,
 	ApiRepoSuggestion,
 	ApiResyncTranscript,
@@ -124,6 +127,23 @@ export class NeverSavedError extends Error {
 	}
 }
 
+/** Refused load: pi-web only shows this session (a sub, or its folder is gone; msg-subs.ts), so it opens read-only instead. */
+export class ReadOnlySessionError extends Error {
+	constructor(readonly readOnly: ApiReadOnly) {
+		super("read_only_session");
+	}
+}
+
+/** What one idle sweep did (session-runtime.ts sweep). */
+export interface SweepReport {
+	/** Re-attach records dropped: those sessions open read-only now. */
+	forgotten: Array<{ sessionId: string; readOnly: ApiReadOnly }>;
+	/** Idle sessions nobody watched and no sub counted on, disposed. */
+	disposed: string[];
+	/** Detached sessions brought back, with no viewer, because subs still count on them. */
+	reopened: string[];
+}
+
 interface RunningSession {
 	session: AgentSession;
 	ui: ExtensionUiBridge;
@@ -171,8 +191,12 @@ interface PiWebRuntimeOptions {
 	msgDir?: string;
 	/** How often lineage is read again while someone looks at a session. */
 	lineageRefreshMs?: number;
-	/** Whether a pid runs, for lineage; tests pass a fake. */
+	/** Whether a pid runs, for lineage and for who else runs a session; tests pass a fake. */
 	pidAlive?: PidProbe;
+	/** What the idle sweep and the waiting rule take for now; tests pass their own. */
+	clock?: () => number;
+	/** Where the sweep says what it did and why it didn't (default console.log). */
+	log?: (line: string) => void;
 }
 
 const DEFAULT_FOLLOW_POLL_MS = 700;
@@ -186,6 +210,8 @@ interface DetachedSession {
 	detachedAtMs: number;
 	/** The trust decision the session ran with, so an unanswered "ask" never comes back on re-attach. */
 	projectTrusted?: boolean;
+	/** The folder it ran in, so a session whose folder is gone is forgotten (it opens read-only); read from the file for older records. */
+	cwd?: string;
 }
 
 const DETACHED_RECORD_TTL_MS = 30 * 24 * 60 * 60_000;
@@ -195,7 +221,7 @@ function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
 	if (!Array.isArray(raw)) return [];
 	return raw.flatMap((record): Array<[string, DetachedSession]> => {
 		if (!record || typeof record !== "object") return [];
-		const { path, sessionId, size, mtimeMs, detachedAtMs, projectTrusted } = record as Record<string, unknown>;
+		const { path, sessionId, size, mtimeMs, detachedAtMs, projectTrusted, cwd } = record as Record<string, unknown>;
 		if (typeof path !== "string" || typeof sessionId !== "string" || typeof size !== "number" || typeof mtimeMs !== "number") return [];
 		return [
 			[
@@ -206,6 +232,7 @@ function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
 					mtimeMs,
 					detachedAtMs: typeof detachedAtMs === "number" ? detachedAtMs : Date.now(),
 					...(typeof projectTrusted === "boolean" ? { projectTrusted } : {}),
+					...(typeof cwd === "string" && cwd ? { cwd } : {}),
 				},
 			],
 		];
@@ -214,6 +241,8 @@ function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
 
 const DEFAULT_IDLE_SESSION_TTL_MS = 15 * 60_000;
 const DEFAULT_CONTROLLER_GRACE_MS = 10_000;
+/** A short idle ttl (tests) sweeps a few times per ttl, never more often than this. */
+const MIN_IDLE_SWEEP_INTERVAL_MS = 250;
 
 function fileFingerprint(path: string): { size: number; mtimeMs: number } | null {
 	try {
@@ -505,7 +534,7 @@ export class PiWebRuntime implements MailHost {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
 	private statusListeners = new Set<() => void>();
-	private transcriptFiles = new Map<string, { mtimeMs: number; size: number; sessionId: string; branch: SessionEntry[] }>();
+	private transcriptFiles = new Map<string, { mtimeMs: number; size: number; sessionId: string; cwd: string; branch: SessionEntry[] }>();
 	private resumingByPath = new Map<string, Promise<RunningSession>>();
 	private detachedByPath = new Map<string, DetachedSession>();
 	private agentDir = getAgentDir();
@@ -530,11 +559,24 @@ export class PiWebRuntime implements MailHost {
 	private followPollMs: number;
 	private followers = new Set<{ stop(): void; sessionId: string }>();
 	private forkLabels: ReturnType<typeof createForkLabels>;
-	/** Set by shutdown: nothing comes back by itself (msg mail) once the server is stopping. */
+	/** Set by shutdown: nothing comes back by itself (msg mail, subs waiting) once the server is stopping. */
 	private closing = false;
 	private lineage: LineageFeed;
+	/** msg's presence records, one index for the lineage feed, the waiting rule and which sessions open read-only. */
+	private presence: PresenceIndex;
+	private presenceFailure: string | null = null;
+	private clock: () => number;
+	private log: (line: string) => void;
+	private probePid: PidProbe;
+	/** What the sweep last said about a parent it didn't bring back, so each reason is said once. */
+	private waitingTold = new Map<string, string>();
+	/** Parents whose reopen failed: not tried again until the next server run. */
+	private waitingFailed = new Set<string>();
 
 	constructor(options: PiWebRuntimeOptions = {}) {
+		this.clock = options.clock ?? Date.now;
+		this.log = options.log ?? ((line) => console.log(line));
+		this.probePid = options.pidAlive ?? pidAlive;
 		this.forkLabels = createForkLabels(options.listForks);
 		this.scratchRoots = options.scratchRoots ?? defaultScratchRoots();
 		this.piProcesses = createProcessCache(options.listPiProcesses ?? (() => listPiProcesses()), options.processCacheMs);
@@ -549,8 +591,11 @@ export class PiWebRuntime implements MailHost {
 		this.modelRuntimePromise = options.modelRuntime
 			? Promise.resolve(options.modelRuntime)
 			: ModelRuntime.create({ authPath: join(this.agentDir, "auth.json"), modelsPath: join(this.agentDir, "models.json") });
+		const msgDir = options.msgDir ?? msgStoreRoot();
+		this.presence = createPresenceIndex(msgDir, this.clock);
 		this.lineage = createLineageFeed({
-			root: options.msgDir ?? msgStoreRoot(),
+			root: msgDir,
+			index: this.presence,
 			sessionsDir: join(this.agentDir, "sessions"),
 			isHosted: (id) => this.runningById.has(id),
 			watched: () => this.watchedSessionIds(),
@@ -578,6 +623,61 @@ export class PiWebRuntime implements MailHost {
 		if (key === runtime.relayKey) return;
 		runtime.relayKey = key;
 		this.broadcast(runtime.session.sessionId, { type: "state_patch", patch: { relay } });
+	}
+
+	/** msg's presence records read again (a readdir, then only the files that changed); a store that can't be read keeps the last ones. */
+	async refreshPresence(): Promise<void> {
+		try {
+			await this.presence.refresh();
+			this.presenceFailure = null;
+		} catch (error) {
+			const message = errorMessage(error);
+			if (message !== this.presenceFailure) console.error(`[pi-web] can't read msg's presence records: ${message}`);
+			this.presenceFailure = message;
+		}
+	}
+
+	/** Some sub still counts on the session (msg-subs.ts): it's waiting, never idle. From the presence records as last read. */
+	private waitingOnSubs(sessionId: string, now = this.clock()): boolean {
+		return isWaiting(this.presence.childrenOf(sessionId), now);
+	}
+
+	/** Why pi-web only shows a session (msg-subs.ts), from its presence record as last read and its folder as it is now. */
+	private async readOnlyFor(sessionId: string, cwd: string | null | undefined): Promise<ApiReadOnly | null> {
+		return readOnlyOf(this.presence.record(sessionId), Boolean(cwd) && (await isDirectory(cwd ?? "")));
+	}
+
+	/**
+	 * Refuses to load a session pi-web only shows (a sub, a folder gone) before anything gives up its slot for it, and
+	 * forgets its re-attach record. A file that isn't there, or isn't a session's, is left for the load to report.
+	 */
+	private async assertLoadable(path: string): Promise<void> {
+		const header = await readSessionHeader(path).catch(() => null);
+		if (!header) return;
+		await this.refreshPresence();
+		const readOnly = await this.readOnlyFor(header.id, header.cwd);
+		if (!readOnly) return;
+		this.forgetDetached(path);
+		throw new ReadOnlySessionError(readOnly);
+	}
+
+	/** Listed sessions pi-web doesn't run say when they open read-only; msg's records are read once, each folder looked at once. */
+	private async withReadOnly(sessions: ApiSessionSummary[]): Promise<ApiSessionSummary[]> {
+		if (!sessions.some((session) => !session.isRunning)) return sessions;
+		await this.refreshPresence();
+		const folders = new Map<string, Promise<boolean>>();
+		const folderExists = (cwd: string): Promise<boolean> => {
+			const known = folders.get(cwd) ?? (cwd ? isDirectory(cwd) : Promise.resolve(false));
+			folders.set(cwd, known);
+			return known;
+		};
+		return Promise.all(
+			sessions.map(async (session) => {
+				if (session.isRunning) return session;
+				const readOnly = readOnlyOf(this.presence.record(session.id), await folderExists(session.cwd));
+				return readOnly ? { ...session, readOnly } : session;
+			}),
+		);
 	}
 
 	private async loadReposFromDisk(): Promise<string[]> {
@@ -823,7 +923,7 @@ export class PiWebRuntime implements MailHost {
 			});
 		}
 		sessions.sort((a, b) => b.modified.localeCompare(a.modified));
-		return this.withForkLabels(sessions);
+		return this.withForkLabels(await this.withReadOnly(sessions));
 	}
 
 	/** `id` narrows the list to that one session, wherever it lives (a msg sender's link opens it). */
@@ -871,7 +971,8 @@ export class PiWebRuntime implements MailHost {
 		const sessions = [...byId.values()].sort((a, b) => b.modified.localeCompare(a.modified));
 		const offset = Math.max(0, Math.floor(options.offset ?? 0));
 		const limit = Math.max(1, Math.floor(options.limit ?? sessions.length));
-		return { sessions: await this.withForkLabels(sessions.slice(offset, offset + limit)), hasMore: offset + limit < sessions.length };
+		const page = await this.withReadOnly(sessions.slice(offset, offset + limit));
+		return { sessions: await this.withForkLabels(page), hasMore: offset + limit < sessions.length };
 	}
 
 	private async assertAllowedCwd(rawCwd: string): Promise<string> {
@@ -914,13 +1015,24 @@ export class PiWebRuntime implements MailHost {
 		return this.runningById.has(sessionId);
 	}
 
-	getHealth(): { runningSessions: number; busySessions: number; viewers: number; detachedSessions: number; tripwire: TripwireMode; projectTrust: ProjectTrustMode } {
+	getHealth(): {
+		runningSessions: number;
+		busySessions: number;
+		waitingSessions: number;
+		viewers: number;
+		detachedSessions: number;
+		tripwire: TripwireMode;
+		projectTrust: ProjectTrustMode;
+	} {
 		const runtimes = [...this.runningById.values()];
+		const now = this.clock();
 		return {
 			tripwire: this.tripwireMode,
 			projectTrust: this.projectTrustMode,
 			runningSessions: runtimes.length,
 			busySessions: runtimes.filter((runtime) => !runtime.session.isIdle).length,
+			// idle, but kept loaded while their subs count; a restart brings them back, so they never hold a deploy up
+			waitingSessions: runtimes.filter((runtime) => runtime.session.isIdle && this.waitingOnSubs(runtime.session.sessionId, now)).length,
 			viewers: runtimes.reduce((total, runtime) => total + runtime.clients.size, 0),
 			detachedSessions: this.detachedByPath.size,
 		};
@@ -952,14 +1064,21 @@ export class PiWebRuntime implements MailHost {
 	 * tail, the follow view pages back. A hosted session's page comes from its runtime. `sessionId`, when
 	 * given, must be the file's.
 	 */
-	async readTranscriptFile(rawPath: string, request: { before?: string; limit?: number; sessionId?: string }): Promise<TranscriptPage & { sessionId: string }> {
+	async readTranscriptFile(
+		rawPath: string,
+		request: { before?: string; limit?: number; sessionId?: string },
+	): Promise<TranscriptPage & { sessionId: string; readOnly: ApiReadOnly | null }> {
 		const path = this.assertAllowedResumePath(rawPath);
 		const runningId = this.runningByPath.get(path);
 		const running = runningId ? this.runningById.get(runningId) : undefined;
-		const file = running ? { sessionId: running.session.sessionId, branch: running.session.sessionManager.getBranch() } : await this.parsedSessionFile(path);
+		const file = running ? { sessionId: running.session.sessionId, cwd: running.cwd, branch: running.session.sessionManager.getBranch() } : await this.parsedSessionFile(path);
 		if (request.sessionId !== undefined && file.sessionId !== request.sessionId) throw new Error("session_path_mismatch");
 		const limit = Math.min(Math.max(1, Math.floor(request.limit ?? TRANSCRIPT_PAGE_MESSAGES)), MAX_TRANSCRIPT_PAGE_MESSAGES);
-		return { sessionId: file.sessionId, ...transcriptPage(file.branch, { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES }) };
+		const page = transcriptPage(file.branch, { before: request.before, maxMessages: limit, maxBytes: TRANSCRIPT_PAGE_BYTES });
+		// a dormant tile learns here that its session opens read-only, so it offers no resume
+		if (running) return { sessionId: file.sessionId, ...page, readOnly: null };
+		await this.refreshPresence();
+		return { sessionId: file.sessionId, ...page, readOnly: await this.readOnlyFor(file.sessionId, file.cwd) };
 	}
 
 	/**
@@ -967,14 +1086,14 @@ export class PiWebRuntime implements MailHost {
 	 * newline after a line another pi is halfway through, and rewrites old formats). The newest few parsed
 	 * files are kept until they change.
 	 */
-	private async parsedSessionFile(path: string): Promise<{ sessionId: string; branch: SessionEntry[] }> {
+	private async parsedSessionFile(path: string): Promise<{ sessionId: string; cwd: string; branch: SessionEntry[] }> {
 		const { mtimeMs, size } = await stat(path).catch((error: unknown) => {
 			throw isMissingFileError(error) ? new Error("session_file_missing") : error;
 		});
 		let parsed = this.transcriptFiles.get(path);
 		if (!parsed || parsed.mtimeMs !== mtimeMs || parsed.size !== size) {
 			const snapshot = await readSessionSnapshot(path);
-			parsed = { mtimeMs, size, sessionId: snapshot.sessionId, branch: snapshot.branch };
+			parsed = { mtimeMs, size, sessionId: snapshot.sessionId, cwd: snapshot.cwd, branch: snapshot.branch };
 		}
 		this.transcriptFiles.delete(path);
 		this.transcriptFiles.set(path, parsed);
@@ -1106,6 +1225,8 @@ export class PiWebRuntime implements MailHost {
 			if (!this.isHostedPath(path)) {
 				const neverSaved = await this.neverSaved(path);
 				if (neverSaved) throw new NeverSavedError(neverSaved.cwd);
+				// read-only first: a sub stays read-only after its writer stops, so the page follows it either way
+				await this.assertLoadable(path);
 				await this.assertNotRunningElsewhere(path, request.takeOver === true);
 			}
 			const runtime = await this.resumeSession(path, clientId, { choice: request.projectTrust });
@@ -1114,6 +1235,8 @@ export class PiWebRuntime implements MailHost {
 
 		const cwd = await this.assertAllowedCwd(request.cwd ?? process.cwd());
 		const projectTrust = this.decideProjectTrust(cwd, request.projectTrust);
+		// at the cap a slot goes to the new session: who waits on subs right now decides which
+		if (!this.hasRoom()) await this.refreshPresence();
 		this.ensureCapacity();
 		const sessionManager = SessionManager.create(cwd);
 		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager, projectTrust);
@@ -1220,6 +1343,9 @@ export class PiWebRuntime implements MailHost {
 		let lineageKey = JSON.stringify(lineageNow());
 		// read once: following is read-only, and a branch switch elsewhere shows on the next open
 		const gitBranch = await readGitBranch(findGitHead(cwd));
+		await this.refreshPresence();
+		// a sub, or a session whose folder is gone: the page never offers to continue it here
+		let readOnly = await this.readOnlyFor(sessionId, cwd);
 		const describe = (): ApiFollowSession => ({
 			sessionId,
 			path,
@@ -1230,6 +1356,7 @@ export class PiWebRuntime implements MailHost {
 			thinkingLevel: info.thinkingLevel,
 			lineage: lineageNow(),
 			relay: relayView(relay),
+			readOnly,
 		});
 
 		const tick = async () => {
@@ -1256,6 +1383,12 @@ export class PiWebRuntime implements MailHost {
 			}
 			if (!grew && Date.now() - checkedAtMs < FOLLOW_STATE_CHECK_MS) return;
 			checkedAtMs = Date.now();
+			// its folder can go while it's followed (pfs removed the fork): a new description, no entries
+			const nextReadOnly = await this.readOnlyFor(sessionId, cwd);
+			if (JSON.stringify(nextReadOnly) !== JSON.stringify(readOnly)) {
+				readOnly = nextReadOnly;
+				client.send({ type: "follow_entries", messages: [], session: describe() });
+			}
 			const next = await this.followState(path, cwd, turn, lastWriteMs);
 			if (sameFollowState(next, follow)) return;
 			follow = next;
@@ -1296,15 +1429,28 @@ export class PiWebRuntime implements MailHost {
 		if (this.runningById.has(sessionId)) return;
 		if (!rawPath) throw new Error("session_not_running");
 		const path = this.assertAllowedResumePath(rawPath);
+		// a page holding a session that opens read-only now (a sub, its folder gone) is told so, and follows it instead
+		if (!this.resumingByPath.has(path)) await this.assertLoadable(path);
 		if (!this.resumingByPath.has(path) && !this.isUnchangedSinceDetach(path, sessionId)) {
 			throw new Error("session_not_attachable");
 		}
 		await this.resumeSession(path, clientId, { expectedSessionId: sessionId, restoredTrust: this.detachedByPath.get(path)?.projectTrusted });
 	}
 
-	/** Sessions pi-web disposed (idle, at the cap, at a restart) that it may bring back by itself, for msg mail (msg-mail.ts). */
+	/** Sessions pi-web disposed (idle, at the cap, at a restart) that it may bring back by itself, for msg mail (msg-mail.ts) and subs waiting. */
 	detachedSessions(): DetachedRef[] {
-		return [...this.detachedByPath].map(([path, record]) => ({ sessionId: record.sessionId, path }));
+		return [...this.detachedByPath].map(([path, record]) => ({ sessionId: record.sessionId, path, ...(record.cwd ? { cwd: record.cwd } : {}) }));
+	}
+
+	/** Forgets the re-attach record of a detached session that opens read-only now (msg mail found it): nothing brings it back. */
+	dropDetached(sessionId: string, path: string): void {
+		if (this.detachedByPath.get(path)?.sessionId === sessionId) this.forgetDetached(path);
+	}
+
+	private forgetDetached(path: string): boolean {
+		if (!this.detachedByPath.delete(path)) return false;
+		this.persistDetached();
+		return true;
 	}
 
 	/** Who holds the session slots, for msg mail's rule on making room (msg-mail.ts). */
@@ -1358,11 +1504,15 @@ export class PiWebRuntime implements MailHost {
 			...fingerprint,
 			detachedAtMs: Date.now(),
 			projectTrusted: runtime.projectTrust.trusted,
+			cwd: runtime.cwd,
 		});
 		this.persistDetached();
 	}
 
-	/** Restores re-attach records written before a restart, keeping only files nobody touched since. */
+	/**
+	 * Restores re-attach records written before a restart, keeping only files nobody touched since, and forgets the ones
+	 * that open read-only now (subs, folders gone).
+	 */
 	async loadDetachedSessions(now = Date.now()): Promise<number> {
 		let raw: unknown = [];
 		try {
@@ -1377,7 +1527,30 @@ export class PiWebRuntime implements MailHost {
 				this.detachedByPath.set(path, record);
 			}
 		}
+		// records from before pi-web kept the folder: the file's header names it
+		const unknownFolders = [...this.detachedByPath].filter(([, record]) => record.cwd === undefined);
+		await Promise.all(
+			unknownFolders.map(async ([path, record]) => {
+				const header = await readSessionHeader(path).catch(() => null);
+				if (header?.cwd) record.cwd = header.cwd;
+			}),
+		);
+		await this.refreshPresence();
+		await this.pruneDetached();
 		return this.detachedByPath.size;
+	}
+
+	/** Forgets the re-attach records of sessions that open read-only now (subs, folders gone): nothing brings those back. */
+	private async pruneDetached(): Promise<SweepReport["forgotten"]> {
+		const judged = await Promise.all(
+			[...this.detachedByPath].map(async ([path, record]) => ({ path, record, readOnly: await this.detachedReadOnly(record.sessionId, record.cwd) })),
+		);
+		const forgotten = judged.flatMap(({ path, record, readOnly }) => (readOnly && this.detachedByPath.get(path) === record ? [{ path, sessionId: record.sessionId, readOnly }] : []));
+		if (forgotten.length === 0) return [];
+		for (const { path } of forgotten) this.detachedByPath.delete(path);
+		this.persistDetached();
+		for (const { sessionId, readOnly } of forgotten) this.log(`[pi-web] forgot ${sessionId} for re-attach: ${readOnlyWords(readOnly)}`);
+		return forgotten.map(({ sessionId, readOnly }) => ({ sessionId, readOnly }));
 	}
 
 	private persistDetached(): void {
@@ -1465,6 +1638,8 @@ export class PiWebRuntime implements MailHost {
 		if (!existsSync(path)) {
 			throw new Error(`session file does not exist: ${path}`);
 		}
+		// every load comes through here: a sub or a session whose folder is gone never gets a runtime (msg-subs.ts)
+		await this.assertLoadable(path);
 		const sessionManager = SessionManager.open(path);
 		if (options.expectedSessionId !== undefined && sessionManager.getSessionId() !== options.expectedSessionId) {
 			throw new Error("session_path_mismatch");
@@ -1485,34 +1660,50 @@ export class PiWebRuntime implements MailHost {
 		return Math.max(runtime.modifiedAtMs, runtime.lastSeenAtMs);
 	}
 
-	private isEvictable(runtime: RunningSession): boolean {
-		return runtime.clients.size === 0 && runtime.session.isIdle;
+	/** A running session as eviction sees it (session-slots.ts): who watches it, whether it works, whether subs wait on it. */
+	private slotOf(runtime: RunningSession, now: number): Slot {
+		return {
+			sessionId: runtime.session.sessionId,
+			viewers: runtime.clients.size,
+			idle: runtime.session.isIdle,
+			waiting: this.waitingOnSubs(runtime.session.sessionId, now),
+			lastActivityAtMs: this.lastActivityAtMs(runtime),
+		};
+	}
+
+	/** Idle with nobody watching and no sub counting on it: what the idle sweep and the cap may dispose. */
+	private isEvictable(runtime: RunningSession, now = this.clock()): boolean {
+		return isEvictableSlot(this.slotOf(runtime, now));
 	}
 
 	private hasRoom(): boolean {
 		return this.runningById.size + this.resumingByPath.size < this.maxRunningSessions;
 	}
 
-	/** Frees a slot by disposing the least recently used idle session nobody is watching. */
+	/** Frees a slot by disposing the least recently used idle session nobody is watching and no sub waits on; full otherwise. */
 	private ensureCapacity(): void {
 		if (this.hasRoom()) return;
-		const victim = [...this.runningById.values()]
-			.filter((runtime) => this.isEvictable(runtime))
-			.sort((a, b) => this.lastActivityAtMs(a) - this.lastActivityAtMs(b))[0];
+		const now = this.clock();
+		const victimId = capacityVictim([...this.runningById.values()].map((runtime) => this.slotOf(runtime, now)));
+		const victim = victimId === null ? undefined : this.runningById.get(victimId);
 		if (!victim) throw new Error("too_many_active_sessions");
 		this.rememberDetached(victim);
 		this.disposeRuntime(victim);
 	}
 
-	/** Disposes idle sessions without viewers; their jsonl is already persisted, so attaching resumes them. */
-	evictIdleSessions(now = Date.now()): string[] {
-		const expired = [...this.runningById.values()].filter(
-			(runtime) =>
-				this.isEvictable(runtime) &&
-				runtime.sessionFile !== null &&
-				existsSync(runtime.sessionFile) &&
-				now - this.lastActivityAtMs(runtime) >= this.idleSessionTtlMs,
-		);
+	/**
+	 * Disposes idle sessions without viewers that no sub waits on; their jsonl is already persisted, so attaching resumes
+	 * them. Waiting is judged from the presence records as last read (sweep reads them first).
+	 */
+	evictIdleSessions(now = this.clock()): string[] {
+		const slots = [...this.runningById.values()].map((runtime) => ({
+			...this.slotOf(runtime, now),
+			saved: runtime.sessionFile !== null && existsSync(runtime.sessionFile),
+		}));
+		const expired = idleVictims(slots, now, this.idleSessionTtlMs).flatMap((sessionId) => {
+			const runtime = this.runningById.get(sessionId);
+			return runtime ? [runtime] : [];
+		});
 		for (const runtime of expired) {
 			this.rememberDetached(runtime);
 			this.disposeRuntime(runtime);
@@ -1520,13 +1711,115 @@ export class PiWebRuntime implements MailHost {
 		return expired.map((runtime) => runtime.session.sessionId);
 	}
 
-	startIdleSweep(intervalMs = IDLE_SWEEP_INTERVAL_MS): () => void {
-		const timer = setInterval(() => {
-			for (const sessionId of this.evictIdleSessions()) {
-				console.log(`[pi-web] disposed idle session ${sessionId}`);
+	/**
+	 * One idle sweep, with msg's presence records read once (a readdir and the files that changed, never a read per
+	 * session): re-attach records of sessions that open read-only now are forgotten, idle sessions nobody watches and no
+	 * sub waits on are disposed, and detached sessions some sub still counts on come back with no viewer (after a restart,
+	 * so msg in them watches their subs again), a few a sweep.
+	 */
+	async sweep(now = this.clock()): Promise<SweepReport> {
+		await this.refreshPresence();
+		const forgotten = await this.pruneDetached();
+		const disposed = this.evictIdleSessions(now);
+		for (const sessionId of disposed) this.log(`[pi-web] disposed idle session ${sessionId}`);
+		const reopened = await this.reopenWaiting(now);
+		return { forgotten, disposed, reopened };
+	}
+
+	/** Says once per reason why a parent its subs wait on stays down. */
+	private tellWaiting(sessionId: string, key: string, line: string): void {
+		if (this.waitingTold.get(sessionId) === key) return;
+		this.waitingTold.set(sessionId, key);
+		this.log(line);
+	}
+
+	private whyNotReopened(sessionId: string, reason: WaitingSkip): string {
+		if (reason === "changed") return "its file changed since pi-web disposed it";
+		if (reason === "owned") return `pid ${String(this.presence.record(sessionId)?.pid)} runs it`;
+		return "it opens read-only";
+	}
+
+	/** msg's live (no end, a fresh heartbeat, a running pid) in a process that isn't this server. */
+	private runsElsewhere(sessionId: string, now: number): boolean {
+		const record = this.presence.record(sessionId);
+		return record !== undefined && ownedElsewhere({ ...record, pidAlive: this.probePid(record.pid) }, process.pid, now);
+	}
+
+	/** A detached session opens read-only now; one whose record never said where it ran is judged by msg's record alone. */
+	private async detachedReadOnly(sessionId: string, cwd: string | undefined): Promise<ApiReadOnly | null> {
+		return readOnlyOf(this.presence.record(sessionId), cwd === undefined || (await isDirectory(cwd)));
+	}
+
+	/**
+	 * Brings back, with no viewer, the detached sessions some sub still counts on: only a restart detaches one (nothing
+	 * else disposes a session that waits). Not one released, changed since, run by another live process or read-only;
+	 * a full house takes a slot from an idle session nothing waits on, or the parent waits for the next sweep.
+	 */
+	private async reopenWaiting(now: number): Promise<string[]> {
+		if (this.closing) return [];
+		const detached = this.detachedSessions().filter((ref) => !this.waitingFailed.has(ref.sessionId));
+		const waiting = new Set(detached.filter((ref) => this.waitingOnSubs(ref.sessionId, now)).map((ref) => ref.sessionId));
+		for (const sessionId of [...this.waitingTold.keys()]) if (!waiting.has(sessionId)) this.waitingTold.delete(sessionId);
+		if (waiting.size === 0) return [];
+		const candidates = detached.filter((ref) => waiting.has(ref.sessionId));
+		const judged = await Promise.all(candidates.map(async (ref) => ({ ref, readOnly: await this.detachedReadOnly(ref.sessionId, ref.cwd) })));
+		const plan = planWaitingReopens({
+			detached: candidates,
+			waiting,
+			readOnly: new Set(judged.flatMap(({ ref, readOnly }) => (readOnly ? [ref.sessionId] : []))),
+			unchanged: new Set(candidates.filter((ref) => this.isUnchangedSinceDetach(ref.path, ref.sessionId)).map((ref) => ref.sessionId)),
+			owned: new Set(candidates.filter((ref) => this.runsElsewhere(ref.sessionId, now)).map((ref) => ref.sessionId)),
+			hostedIds: new Set(this.runningById.keys()),
+			hostedPaths: new Set([...this.runningByPath.keys(), ...this.resumingByPath.keys()]),
+			limit: MAX_REOPENS_PER_LOOK,
+		});
+		for (const skip of plan.skipped) {
+			this.tellWaiting(skip.sessionId, skip.reason, `[pi-web] not reopening ${skip.sessionId} for its subs: ${this.whyNotReopened(skip.sessionId, skip.reason)}`);
+		}
+		const results = await Promise.all(plan.reopen.map(async (ref) => ((await this.reopenParent(ref)) ? [ref.sessionId] : [])));
+		return results.flat();
+	}
+
+	/** One parent back with no viewer; false when it isn't (no room: the next sweep tries again; anything else: not this run). */
+	private async reopenParent(ref: DetachedRef): Promise<boolean> {
+		if (this.closing || this.runningById.has(ref.sessionId) || this.isHostedPath(ref.path)) return false;
+		try {
+			const restoredTrust = this.detachedByPath.get(ref.path)?.projectTrusted;
+			await this.resumeSession(this.assertAllowedResumePath(ref.path), null, { expectedSessionId: ref.sessionId, restoredTrust });
+		} catch (error) {
+			const message = errorMessage(error);
+			if (message === "too_many_active_sessions") {
+				const line = `[pi-web] no room to reopen ${ref.sessionId} for its subs: ${String(this.runningById.size + this.resumingByPath.size)} of ${String(this.maxRunningSessions)} sessions running, none idle, unwatched and without subs of its own; it waits for a slot`;
+				this.tellWaiting(ref.sessionId, "room", line);
+				return false;
 			}
-		}, intervalMs);
+			this.waitingFailed.add(ref.sessionId);
+			this.tellWaiting(ref.sessionId, "failed", `[pi-web] could not reopen ${ref.sessionId} for its subs: ${message}`);
+			return false;
+		}
+		this.waitingTold.delete(ref.sessionId);
+		this.log(`[pi-web] reopened ${ref.sessionId} for its subs`);
+		return true;
+	}
+
+	/**
+	 * Sweeps every intervalMs (by default every minute, or a quarter of a short idle ttl), the first one right away: after
+	 * a restart, the parents whose subs still count come back at once.
+	 */
+	startIdleSweep(intervalMs = Math.min(IDLE_SWEEP_INTERVAL_MS, Math.max(MIN_IDLE_SWEEP_INTERVAL_MS, Math.floor(this.idleSessionTtlMs / 4)))): () => void {
+		let sweeping = false;
+		const run = () => {
+			if (sweeping || this.closing) return;
+			sweeping = true;
+			void this.sweep()
+				.catch((error: unknown) => console.error(`[pi-web] idle sweep failed: ${errorMessage(error)}`))
+				.finally(() => {
+					sweeping = false;
+				});
+		};
+		const timer = setInterval(run, intervalMs);
 		timer.unref?.();
+		run();
 		return () => clearInterval(timer);
 	}
 

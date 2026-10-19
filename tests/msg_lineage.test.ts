@@ -66,10 +66,13 @@ describe("msg's lineage", () => {
 			label: "cc",
 			state: "live",
 			openable: true,
+			readOnly: false,
 			where: "pi-web · ~/Desktop/cc",
 		});
 		expect(parentParty(LEAD, presence({ id: LEAD, name: "main" }), "live", true, "/h").label).toBe("main");
-		expect(parentParty(LEAD, undefined, null, false, "/h")).toEqual({ id: LEAD, label: "01a152a0", state: null, openable: false, where: null });
+		expect(parentParty(LEAD, undefined, null, false, "/h")).toEqual({ id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null });
+		// a parent that is a sub itself opens read-only too
+		expect(parentParty(LEAD, presence({ id: LEAD, parent: PILL }), "live", true, "/h").readOnly).toBe(true);
 	});
 });
 
@@ -190,8 +193,8 @@ describe("the lineage feed", () => {
 		expect(first).toEqual({
 			parent: null,
 			children: [
-				{ id: DIED, label: "died", state: "live", openable: true, where: "pi -p · ~/msg-cli" },
-				{ id: MAIL, label: "mail-wakes", state: "died", openable: false, where: "pi -p · ~/f1" },
+				{ id: DIED, label: "died", state: "live", openable: true, readOnly: true, where: "pi -p · ~/msg-cli" },
+				{ id: MAIL, label: "mail-wakes", state: "died", openable: false, readOnly: true, where: "pi -p · ~/f1" },
 			],
 			childCount: 2,
 		});
@@ -219,7 +222,7 @@ describe("the lineage feed", () => {
 		watched.add(PILL);
 		await feed.refresh();
 		expect(feed.current(PILL)).toEqual({
-			parent: { id: LEAD, label: "01a152a0", state: null, openable: false, where: null },
+			parent: { id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null },
 			children: [],
 			childCount: 0,
 		});
