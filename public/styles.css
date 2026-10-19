@@ -529,6 +529,63 @@
       word-break: break-word;
     }
 
+    /* ── Relay: a context reset (compaction), one-line notices ── */
+    .compact-card.relay { background: #2a2619; border-color: #4d4329; }
+    .compact-card.relay:hover { background: #302b1c; }
+    .compact-card.relay .compact-label { color: #f0c674; }
+    .compact-card.relay .compact-summary { white-space: pre-wrap; word-break: break-word; }
+    .compact-card.relay .compact-expanded { color: #b8ad8f; }
+    .relay-note { margin-top: 1em; padding: 0 16px; color: #9a9070; }
+    .relay-note.has-more { cursor: pointer; }
+    .relay-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .relay-note.open .relay-line { white-space: normal; }
+    .relay-label { color: #f0c674; font-weight: 700; }
+    .relay-meta { color: #de935f; }
+    .relay-full {
+      margin-top: 4px;
+      padding-left: 10px;
+      border-left: 1px solid #4d4329;
+      color: #8f8a7a;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── msg: a message from another session ─────────────────── */
+    .msg-card {
+      margin-top: 1em;
+      padding: 0.75em 16px 0.75em 13px;
+      background: #1f2630;
+      border-left: 3px solid #81a2be;
+    }
+    .msg-card.by-user { border-left-color: #8abeb7; }
+    .msg-card.ended { border-left-color: #b5bd68; }
+    .msg-card.died { border-left-color: #cc6666; }
+    .msg-head { color: #808080; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .msg-icon { color: #81a2be; }
+    .msg-you { color: #8abeb7; }
+    .msg-from {
+      color: #81a2be;
+      font: inherit;
+      font-weight: 700;
+      background: none;
+      border: 0;
+      padding: 0;
+    }
+    button.msg-from { cursor: pointer; text-decoration: underline; text-decoration-color: #3f5161; text-underline-offset: 3px; }
+    button.msg-from:hover { color: #a3c1da; text-decoration-color: currentColor; }
+    .msg-tag {
+      margin-left: 8px;
+      padding: 0 6px;
+      border-radius: 4px;
+      background: #2a2a32;
+      color: #b4b4bc;
+      font-size: 12px;
+    }
+    .msg-tag.ended { background: #2c3320; color: #b5bd68; }
+    .msg-tag.died { background: #3c2828; color: #cc6666; }
+    .msg-re { margin-left: 8px; color: #666666; font-size: 12px; }
+    .msg-body { color: #d4d4d4; }
+
     .queued-panel {
       display: none;
       flex-shrink: 0;
@@ -687,6 +744,9 @@
       #btn-thinking span.txt, #btn-thinking .sel, #btn-thinking .chev { display: none; }
       #btn-thinking .ico { display: inline-flex; }
       #btn-abort, #btn-release, #btn-takeover { display: none; }
+
+      /* a msg sender is a link inside a line: a finger-sized target without moving the line */
+      button.msg-from { padding: 8px 4px; margin: -8px -4px; }
 
       /* Prevent iOS input focus zoom + horizontal drift */
       .editor-input { font-size: 16px; }

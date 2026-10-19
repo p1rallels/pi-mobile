@@ -66,6 +66,7 @@ export function autoResize(el) {
  *   onFreshStarted?: (sessionId: string) => void,
  *   goneNotice?: string | null,
  *   onQuit?: (() => void) | null,
+ *   onOpenSession?: ((session: import("./chat_view.js").SessionRef) => void) | null,
  * }} options
  * `transcriptWindow` keeps only the newest entries of the transcript (canvas tiles); the phone keeps them all.
  * `tileUi` keeps extension dialogs and the extension title inside a canvas tile instead of on the page.
@@ -74,6 +75,8 @@ export function autoResize(el) {
  * `onQuit` makes a message starting with /quit stop the session instead of going to pi (refused while pi works), and
  * then hears that the pane is done (a canvas tile goes back to its launcher, the phone opens its menu); without it
  * /quit is sent like any prompt.
+ * `onOpenSession` opens a session the transcript names, like a msg message's sender (the phone switches to it,
+ * the canvas gives it a tile); without it the sender is plain text.
  */
 export function createSessionPane({
 	refs,
@@ -90,6 +93,7 @@ export function createSessionPane({
 	onFreshStarted,
 	goneNotice,
 	onQuit = null,
+	onOpenSession = null,
 }) {
 	const { input } = refs;
 	const abortTitle = refs.btnAbort?.title ?? "";
@@ -148,6 +152,7 @@ export function createSessionPane({
 		transcriptWindow,
 		onFreshStarted: (/** @type {string} */ sessionId) => onFreshStarted?.(sessionId),
 		...(goneNotice !== undefined ? { goneNotice } : {}),
+		onOpenSession,
 	});
 
 	const menuCtrl = createMenu({

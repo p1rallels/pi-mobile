@@ -51,6 +51,8 @@ export function createSessionController({
 	onFreshStarted = () => {},
 	// what a pane says when its session ended for good; null says nothing (a canvas tile's pill says it)
 	goneNotice = "This session is no longer running. Open it again from the sidebar.",
+	// opens a session the transcript names (a msg sender): the phone switches to it, the canvas gives it a tile
+	onOpenSession = null,
 }) {
 	let activeSessionId = null;
 	let activeState = null;
@@ -93,6 +95,7 @@ export function createSessionController({
 		msgsEl,
 		queuedEl,
 		pillEl,
+		onOpenSession,
 		onTrim: (oldest) => {
 			if (!historySource()) return;
 			hasOlderMessages = true;
@@ -727,6 +730,11 @@ export function createSessionController({
 		}
 
 		if (event.type === "tool_execution_end") {
+			chatView.handleAgentEvent(event, entryId);
+			return;
+		}
+
+		if (event.type === "entry_appended") {
 			chatView.handleAgentEvent(event, entryId);
 			return;
 		}

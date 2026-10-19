@@ -1,8 +1,9 @@
 import { safeRandomUUID } from "../core/uuid.js";
 import { safeStringify } from "../core/stringify.js";
-import { toolResultToText } from "../core/tool_format.js";
+import { peerToolOutcome, toolOutputText } from "../core/tool_format.js";
 import { renderMarkdown } from "../render/markdown.js";
 import { extractTextContent, parseAssistantContent } from "./content.js";
+import { entryMessage, msgView, relayResetView, relayView } from "./custom_messages.js";
 import { createScrollFollower } from "./scroll_follow.js";
 import { createToolBoxManager } from "./tool_boxes.js";
 
@@ -117,11 +118,24 @@ export function windowStart(ids, max) {
 	return ids[ids.length - Math.max(1, Math.floor(max))] ?? null;
 }
 
+/** @typedef {{ id: string, label: string, cwd: string }} SessionRef a session another one names (a msg sender) */
+
+/** @param {string} className @param {string} text */
+function span(className, text) {
+	const el = document.createElement("span");
+	el.className = className;
+	el.textContent = text;
+	return el;
+}
+
+const MSG_KIND_CLASSES = new Set(["ended", "died"]);
+
 /**
- * @param {{ msgsEl: HTMLElement, queuedEl: HTMLElement | null, pillEl?: HTMLElement | null, onTrim?: (oldestEntryId: string) => void }} options
+ * @param {{ msgsEl: HTMLElement, queuedEl: HTMLElement | null, pillEl?: HTMLElement | null, onTrim?: (oldestEntryId: string) => void, onOpenSession?: ((session: SessionRef) => void) | null }} options
  * `onTrim` hears about entries a windowed view dropped from its top, so "earlier messages" can fetch them again.
+ * `onOpenSession` opens a session a message names (a msg sender); without it the name is plain text.
  */
-export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () => {} }) {
+export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () => {}, onOpenSession = null }) {
 	let currentAssistant = null; // { block, text, thinking, rawText, rawThinking, shownText, shownThinking }
 	let renderedEntryIds = new Set();
 	let entryOrder = []; // rendered entry ids in display order, including ones that draw nothing of their own
@@ -152,7 +166,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 
 	function writePendingToolOutput() {
 		for (const [toolCallId, { toolName, result }] of pendingToolOutput) {
-			if (tools.has(toolCallId)) tools.setText(toolCallId, toolName, toolResultToText(result));
+			if (tools.has(toolCallId)) tools.setText(toolCallId, toolName, toolOutputText(toolName, result, { partial: true }));
 		}
 		pendingToolOutput.clear();
 	}
@@ -409,6 +423,11 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 	function appendCompactionSummary(message) {
 		if (!message || typeof message !== "object") return null;
 		const tokensBefore = typeof message.tokensBefore === "number" ? message.tokensBefore : 0;
+		const relay = relayResetView(message);
+		if (relay) {
+			const line = relay.note || (relay.goal ? `goal: ${relay.goal}` : "no note");
+			return appendSummaryCard(message, { kind: "relay", label: relay.title, line: `${line} `, key: tokensBefore });
+		}
 		return appendSummaryCard(message, {
 			kind: "compaction",
 			label: "[compaction]",
@@ -431,7 +450,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		const expanded = expandedCompactionIds.has(id);
 
 		const card = document.createElement("div");
-		card.className = `compact-card${expanded ? " expanded" : ""}`;
+		card.className = `compact-card ${kind}${expanded ? " expanded" : ""}`;
 		card.dataset.compactionId = id;
 		card.compactionSummary = summary;
 
@@ -506,11 +525,91 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		return typeof message.errorMessage === "string" && message.errorMessage.trim() ? `Error: ${message.errorMessage.trim()}` : "Error";
 	}
 
+	/** Extension messages: msg's as messages from another session, relay's as one-line notices, others as a notice. */
 	function appendCustomMessage(message) {
+		if (message.customType === "msg") {
+			const view = msgView(message);
+			if (view) return appendMsgMessage(view);
+		}
+		if (message.customType === "relay") {
+			const view = relayView(message);
+			if (view) return appendRelayNotice(view);
+		}
 		const text = extractTextContent(message.content);
 		if (!text) return null;
 		const type = typeof message.customType === "string" && message.customType ? `[${message.customType}] ` : "";
 		return appendNotice(`${type}${text}`, "custom");
+	}
+
+	/** @param {SessionRef} sender */
+	function senderLink(sender) {
+		const title = [sender.id, sender.cwd].filter(Boolean).join(" \u00b7 ");
+		if (!onOpenSession || !sender.id) {
+			const el = span("msg-from", sender.label);
+			if (title) el.title = title;
+			return el;
+		}
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "msg-from";
+		button.textContent = sender.label;
+		button.title = `open ${title}`;
+		button.addEventListener("click", () => onOpenSession({ ...sender }));
+		return button;
+	}
+
+	/** @param {import("./custom_messages.js").MsgView} view */
+	function appendMsgMessage(view) {
+		const card = document.createElement("div");
+		card.className = "msg-card";
+		if (MSG_KIND_CLASSES.has(view.kind)) card.classList.add(view.kind);
+		if (view.byUser) card.classList.add("by-user");
+
+		const head = document.createElement("div");
+		head.className = "msg-head";
+		head.appendChild(span("msg-icon", "\u2709 "));
+		if (view.byUser) head.appendChild(span("msg-you", "you, via "));
+		head.appendChild(senderLink(view.sender));
+		if (view.kindLabel) head.appendChild(span(`msg-tag${MSG_KIND_CLASSES.has(view.kind) ? ` ${view.kind}` : ""}`, view.kindLabel));
+		if (view.replyTo) head.appendChild(span("msg-re", `re ${view.replyTo}`));
+
+		const body = document.createElement("div");
+		body.className = "msg-body md";
+		renderMarkdown(body, view.text);
+
+		card.appendChild(head);
+		card.appendChild(body);
+		mount(card);
+		scheduleFrame();
+		return card;
+	}
+
+	/** @param {import("./custom_messages.js").RelayView} view */
+	function appendRelayNotice(view) {
+		const note = document.createElement("div");
+		note.className = "relay-note";
+		const line = document.createElement("div");
+		line.className = "relay-line";
+		line.appendChild(span("relay-label", view.label));
+		for (const part of view.meta) line.appendChild(span("relay-meta", ` \u00b7 ${part}`));
+		if (view.summary) line.appendChild(span("relay-summary", ` \u00b7 ${view.summary}`));
+		note.appendChild(line);
+		if (view.full) {
+			const full = document.createElement("div");
+			full.className = "relay-full";
+			full.textContent = view.full;
+			full.hidden = true;
+			note.appendChild(full);
+			note.classList.add("has-more");
+			note.addEventListener("click", () => {
+				full.hidden = !full.hidden;
+				note.classList.toggle("open", !full.hidden);
+				scheduleFrame();
+			});
+		}
+		mount(note);
+		scheduleFrame();
+		return note;
 	}
 
 	function appendBashExecution(message, index) {
@@ -593,7 +692,8 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 			tools.ensure(toolCallId, toolName, isError ? "error" : "success");
 		}
 		tools.setStatus(toolCallId, isError ? "error" : "success");
-		tools.setText(toolCallId, toolName, contentText || safeStringify(m.content));
+		const outcome = peerToolOutcome(toolName, { content: m.content, details: m.details }, { isError });
+		tools.setText(toolCallId, toolName, outcome ?? (contentText || safeStringify(m.content)));
 		tools.setImages(toolCallId, imageBlocks(m.content));
 		for (const call of Array.isArray(m.nestedCalls?.calls) ? m.nestedCalls.calls : []) {
 			tools.setNested(toolCallId, {
@@ -759,6 +859,14 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 			return;
 		}
 
+		// pi's turn boundaries append entries (relay's notices and resets) with no message events: draw them the way
+		// history does, under their entry id, so a resync that brings the same entry skips it
+		if (event.type === "entry_appended") {
+			const message = entryMessage(event.entry);
+			if (message) renderHistory([message]);
+			return;
+		}
+
 		if (event.type === "message_start") {
 			if (event.message && event.message.role === "user") {
 				maybeAppendUserMessage(event.message);
@@ -903,7 +1011,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 				tools.ensure(event.toolCallId, event.toolName, event.isError ? "error" : "success");
 			}
 			tools.setStatus(event.toolCallId, event.isError ? "error" : "success");
-			tools.setText(event.toolCallId, event.toolName, toolResultToText(event.result));
+			tools.setText(event.toolCallId, event.toolName, toolOutputText(event.toolName, event.result, { isError: Boolean(event.isError) }));
 			tools.setDuration(event.toolCallId, event.durationMs);
 			tools.setImages(event.toolCallId, imageBlocks(event.result?.content));
 			return;

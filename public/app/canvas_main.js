@@ -17,6 +17,7 @@ import { createLauncher } from "./canvas/launcher.js";
 import { nextFreeSlot, rectCenteredAt } from "./canvas/layout.js";
 import { createLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
 import { renameKey } from "./canvas/tiles.js";
+import { findSession } from "./session/find_session.js";
 import { freshRecord, neverSavedOf } from "./session/fresh.js";
 import { buildPaneDom } from "./session/pane_dom.js";
 import { createSessionPane } from "./session/pane.js";
@@ -354,8 +355,16 @@ export async function bootCanvas() {
 			addTerminalTile({ terminalId: null, cwd: pick.cwd, title: null, rect, focus: true });
 			return;
 		}
-		const sessionId = pick.kind === "created" ? pick.sessionId : pick.session.id;
 		closeLauncher(launcherId);
+		placeSession(rect, pick);
+	}
+
+	/**
+	 * A session's tile at `rect`, or the one already on the canvas (one tile per session).
+	 * @param {import("./canvas/camera.js").Rect} rect @param {Exclude<import("./canvas/launcher.js").LauncherPick, { kind: "terminal" }>} pick
+	 */
+	function placeSession(rect, pick) {
+		const sessionId = pick.kind === "created" ? pick.sessionId : pick.session.id;
 		if (entries.has(sessionId)) {
 			// one tile per session: fly to the one that's already here
 			canvas.tiles.focusTile(sessionId);
@@ -373,6 +382,31 @@ export async function bootCanvas() {
 		canvas.tiles.focusTile(sessionId);
 		if (!running && !elsewhere) wake(sessionId);
 		focusComposer(sessionId);
+	}
+
+	/**
+	 * A session a message names (its sender) gets a tile in the next free slot, like a launcher pick: hosted here,
+	 * following another pi, or resumed. One already on the canvas just comes into view.
+	 * @param {import("./session/chat_view.js").SessionRef} ref
+	 */
+	async function openNamedSession(ref) {
+		if (entries.has(ref.id)) {
+			canvas.tiles.focusTile(ref.id);
+			canvas.revealTile(ref.id);
+			return;
+		}
+		try {
+			const session = await findSession(api, ref.id);
+			if (!session) {
+				notice(`${ref.label} (${ref.id}) isn't a session on this host.`);
+				return;
+			}
+			const rect = nextFreeSlot(canvas.tiles.rects());
+			placeSession(rect, { kind: "session", session });
+			canvas.revealTile(session.id);
+		} catch (error) {
+			notice(`Couldn't open ${ref.label}: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	/** A composer that can't take input yet (dormant tile, session still loading) gets focus once it can. @param {string} id */
@@ -577,6 +611,7 @@ export async function bootCanvas() {
 			onStateChange: () => renderTileChrome(entry.id),
 			onFreshStarted: (sessionId) => adoptSession(entry, sessionId),
 			onQuit: () => backToLauncher(entry),
+			onOpenSession: (ref) => void openNamedSession(ref),
 			goneNotice: null,
 			transcriptWindow: TRANSCRIPT_WINDOW,
 			tileUi: {

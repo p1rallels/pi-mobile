@@ -3,6 +3,7 @@ import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { installFaceIdGuard } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
+import { findSession } from "./session/find_session.js";
 import { createSessionPane } from "./session/pane.js";
 import { createLauncherSheet } from "./ui/launcher_sheet.js";
 import { createSidebar } from "./ui/sidebar.js";
@@ -199,7 +200,28 @@ export async function bootPhone() {
 			launcherSheet.open();
 			void sidebarCtrl?.refresh();
 		},
+		onOpenSession: (ref) => void openNamedSession(ref),
 	});
+
+	/**
+	 * A session a message names (its sender), opened the way the sidebar opens one: wherever it lives, hosted here,
+	 * followed while another pi runs it, or resumed.
+	 * @param {import("./session/chat_view.js").SessionRef} ref
+	 */
+	async function openNamedSession(ref) {
+		if (ref.id === pane.getSessionId()) return;
+		try {
+			const session = await findSession(api, ref.id);
+			if (!session) {
+				pane.appendNotice(`${ref.label} (${ref.id}) isn't a session on this host.`, "error");
+				return;
+			}
+			await pane.selectSession(session);
+		} catch (error) {
+			pane.appendNotice(`Couldn't open ${ref.label}: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
+		void sidebarCtrl?.refresh();
+	}
 
 	sidebarCtrl = createSidebar({
 		sessionsList,
