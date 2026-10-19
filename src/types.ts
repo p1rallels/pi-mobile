@@ -167,9 +167,14 @@ export interface ApiFollowSession {
 	sessionName?: string;
 	model: { provider: string; id: string } | null;
 	thinkingLevel: string | null;
+	lineage?: ApiLineage | null;
+	relay?: ApiRelayState | null;
 }
 
-/** GET /api/sessions/:id/follow?path=: a read-only stream of a session file another process writes. */
+/**
+ * GET /api/sessions/:id/follow?path=: a read-only stream of a session file another process writes. A follow_entries
+ * without messages carries a new description (its lineage changed).
+ */
 export type FollowSseEvent =
 	| { type: "follow_init"; session: ApiFollowSession; transcript: ApiResyncTranscript; follow: ApiFollowState; cursor: string | null }
 	| { type: "follow_entries"; messages: TranscriptMessage[]; session: ApiFollowSession }
@@ -226,6 +231,47 @@ export interface ApiQueuedMessages {
 	followUp: string[];
 }
 
+/**
+ * How a session in msg's lineage stands, from its presence record: live (no end, a heartbeat under 45s old, its process
+ * running), ended (it said so), died (its process is gone and it never ended) or offline (no heartbeat for 45s, though
+ * its process is still there). null for a parent that never ran msg (no record).
+ */
+export type ApiLineageState = "live" | "ended" | "died" | "offline";
+
+/** The parent or a child of a session, as the header shows it (see msg-lineage.ts). */
+export interface ApiLineageParty {
+	id: string;
+	/** msg's name for it; else a parent's folder, a child's first 8 id characters */
+	label: string;
+	state: ApiLineageState | null;
+	/** pi-web can open it: it hosts it, or the session's file is in pi-web's sessions folder */
+	openable: boolean;
+	/** how and where it runs, like "pi -p · ~/repo/.forks/3"; null without a presence record */
+	where: string | null;
+}
+
+/** Who started a session and whom it started, from msg's store. */
+export interface ApiLineage {
+	/** never set for a session pi-web hosts: its process is pi-web's, nobody's child */
+	parent: ApiLineageParty | null;
+	/** the first few: the ones still around in the order they started, then the ended ones, latest first */
+	children: ApiLineageParty[];
+	/** every child, listed or not */
+	childCount: number;
+}
+
+/** Where relay stands on a session's branch (see relay-state.ts); null when it has nothing to say. */
+export interface ApiRelayState {
+	/** context resets so far */
+	resets: number;
+	/** the keep-going loop is on */
+	loop: boolean;
+	/** the goal the loop was switched on with, clipped; null: the session's first message */
+	goal: string | null;
+	/** the percent relay last nudged the agent at, while that nudge still stands (no compaction since) */
+	nudge: number | null;
+}
+
 export interface ApiSessionStatus {
 	sessionId: string;
 	projectTrust: ApiProjectTrust;
@@ -245,6 +291,9 @@ export interface ApiSessionStatus {
 	queuedMessages: ApiQueuedMessages;
 	stats: ApiSessionStats | null;
 	contextUsage: ApiContextUsage | null;
+	/** msg's lineage; null without family, missing until pi-web has read msg's store for it */
+	lineage?: ApiLineage | null;
+	relay?: ApiRelayState | null;
 }
 
 export interface ApiSessionState extends ApiSessionStatus {
@@ -296,6 +345,8 @@ export interface ApiSessionPatch {
 	queuedMessages?: ApiSessionState["queuedMessages"];
 	stats?: ApiSessionState["stats"];
 	contextUsage?: ApiSessionState["contextUsage"];
+	lineage?: ApiSessionState["lineage"];
+	relay?: ApiSessionState["relay"];
 }
 
 export type ApiTripwireSeverity = "observe" | "critical";

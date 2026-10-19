@@ -34,7 +34,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * A relay reset is a compaction whose details say which relay it was (`{ relay: { n, percent, note?, goal? } }`).
  * pi's summary message drops a compaction's details, so the page gets that mark back to draw a context reset.
  */
-function relayMark(entry: SessionEntry): Record<string, unknown> | null {
+export function relayMark(entry: SessionEntry): Record<string, unknown> | null {
 	if (entry.type !== "compaction" || !isRecord(entry.details)) return null;
 	const relay = entry.details.relay;
 	return isRecord(relay) ? relay : null;
