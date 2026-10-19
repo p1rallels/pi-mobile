@@ -202,12 +202,18 @@ describe("a parent with subs stays loaded", () => {
 	});
 
 	test("a sub that never ended (crashed, hung, its process gone) keeps its parent for 5 minutes past its last heartbeat", async () => {
-		const { runtime, sessionId, root } = await persistedSession();
+		// the runtime's own clock: the sweep and /health both read it
+		let now = Date.now();
+		const { runtime, sessionId, root } = await persistedSession({ runtime: { clock: () => now } });
 		const heartbeatAt = Date.now() + HOUR;
 		await writePresence(root, { id: SUB, parent: sessionId, cwd: process.cwd(), heartbeatAt, pid: DEAD_PID });
-		expect((await runtime.sweep(heartbeatAt + SUB_GRACE_MS - 1_000)).disposed).toEqual([]);
+		now = heartbeatAt + SUB_GRACE_MS - 1_000;
+		expect((await runtime.sweep()).disposed).toEqual([]);
 		expect(runtime.isRunning(sessionId)).toBe(true);
-		expect((await runtime.sweep(heartbeatAt + SUB_GRACE_MS)).disposed).toEqual([sessionId]);
+		expect(runtime.getHealth().waitingSessions).toBe(1);
+		now = heartbeatAt + SUB_GRACE_MS;
+		expect(runtime.getHealth().waitingSessions).toBe(0);
+		expect((await runtime.sweep()).disposed).toEqual([sessionId]);
 	});
 
 	test("health counts it as waiting, and only while it's idle with a sub that counts", async () => {
