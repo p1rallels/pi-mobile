@@ -33,6 +33,8 @@ export function buildPaneDom(doc) {
 	const editor = h(doc, "div", "editor-wrap", {
 		children: [h(doc, "div", "editor-border", { text: BORDER }), h(doc, "div", "editor-inner", { children: [input] }), h(doc, "div", "editor-border", { text: BORDER })],
 	});
+	// a session pi-web only shows says why where its composer would be (session/read_only.js)
+	const readOnlyNote = h(doc, "div", "read-only-note", { attrs: { hidden: "" } });
 	const extBelow = h(doc, "div", "ext-widgets", { attrs: { hidden: "" } });
 	const footerLine1 = h(doc, "div", "footer-line footer-line-1", { text: "—" });
 	const footerLeft2 = h(doc, "span", "footer-left-2", { text: "—" });
@@ -42,11 +44,27 @@ export function buildPaneDom(doc) {
 		children: [footerLine1, h(doc, "div", "footer-line footer-line-2", { children: [footerLeft2, footerRight2] }), footerExtStatus],
 	});
 	const el = h(doc, "div", "chat pane", {
-		children: [msgs, h(doc, "div", "jump-anchor", { children: [jumpLatest] }), queuedPanel, working, extAbove, editor, extBelow, footer],
+		children: [msgs, h(doc, "div", "jump-anchor", { children: [jumpLatest] }), queuedPanel, working, extAbove, readOnlyNote, editor, extBelow, footer],
 	});
 	return {
 		el,
 		/** @type {import("./pane.js").PaneRefs} */
-		refs: { msgs, jumpLatest, queuedPanel, input, working, workingSpin, workingText, footerLine1, footerLeft2, footerRight2, footerExtStatus, extAbove, extBelow },
+		refs: {
+			msgs,
+			jumpLatest,
+			queuedPanel,
+			input,
+			editor,
+			readOnlyNote,
+			working,
+			workingSpin,
+			workingText,
+			footerLine1,
+			footerLeft2,
+			footerRight2,
+			footerExtStatus,
+			extAbove,
+			extBelow,
+		},
 	};
 }

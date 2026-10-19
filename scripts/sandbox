@@ -6,6 +6,9 @@
 # usage: scripts/sandbox <cmd...>
 #   scripts/sandbox bun run typecheck | scripts/sandbox bun test | scripts/sandbox bun run test:e2e
 # state: $PI_WEB_SANDBOX_DIR, default $TMPDIR/pi-web-sandbox (kept between runs)
+# a pfs fork's run has its own port block in $PORT (anything but 4317, 4318, 4321, 8443 and 2019, the main folder's and
+# the live setup's): there the state defaults to $TMPDIR/pi-web-sandbox-$PORT, and e2e to PI_WEB_E2E_PORT=$PORT and
+# PI_WEB_E2E_MOCK_PORT=$PORT+1. Explicit PI_WEB_SANDBOX_DIR, PI_WEB_E2E_PORT and PI_WEB_E2E_MOCK_PORT win.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -13,8 +16,23 @@ if [ "$#" -eq 0 ]; then
 	exit 2
 fi
 
-state="${PI_WEB_SANDBOX_DIR:-${TMPDIR:-/tmp}/pi-web-sandbox}"
+fork_port=""
+case "${PORT:-}" in
+	"" | *[!0-9]* | 4317 | 4318 | 4321 | 8443 | 2019) ;;
+	*) fork_port="$PORT" ;;
+esac
+
+default_state="${TMPDIR:-/tmp}/pi-web-sandbox"
+[ -n "$fork_port" ] && default_state="${TMPDIR:-/tmp}/pi-web-sandbox-$fork_port"
+state="${PI_WEB_SANDBOX_DIR:-$default_state}"
 mkdir -p "$state/agent" "$state/pi-web-home"
+
+# e2e's ports (playwright.config.js); PORT itself stays out, servers under test pick their own
+ports=()
+e2e_port="${PI_WEB_E2E_PORT:-${fork_port}}"
+mock_port="${PI_WEB_E2E_MOCK_PORT:-${fork_port:+$((fork_port + 1))}}"
+[ -n "$e2e_port" ] && ports+=("PI_WEB_E2E_PORT=$e2e_port")
+[ -n "$mock_port" ] && ports+=("PI_WEB_E2E_MOCK_PORT=$mock_port")
 
 # bun run puts node_modules/.bin on PATH; a server launched that way must not hand its checkout's tools on
 path="$(printf '%s' "$PATH" | tr ':' '\n' | { grep -v '/node_modules/\.bin$' || true; } | paste -sd ':' -)"
@@ -33,5 +51,6 @@ exec env -i \
 	"PATH=$path" \
 	"PI_CODING_AGENT_DIR=$state/agent" \
 	"PI_WEB_HOME=$state/pi-web-home" \
+	${ports[@]+"${ports[@]}"} \
 	${keep[@]+"${keep[@]}"} \
 	"$@"

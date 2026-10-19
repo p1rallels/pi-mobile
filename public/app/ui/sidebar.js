@@ -1,3 +1,5 @@
+import { readOnlyOf } from "../session/read_only.js";
+
 function formatRelativeTime(iso) {
 	const ms = Date.now() - Date.parse(iso);
 	if (!Number.isFinite(ms) || ms < 0) return "just now";
@@ -192,10 +194,12 @@ export function createSidebar({
 			const rel = formatRelativeTime(elsewhere ? s.elsewhere.lastWrite : s.modified);
 			const cwd = escapeHtml(typeof s.forkLabel === "string" && s.forkLabel ? s.forkLabel : s.cwd);
 			meta.title = s.cwd;
+			// a sub, or a session whose folder is gone: it opens read-only
+			const readOnly = readOnlyOf(s.readOnly) ? ` · <span class="si-readonly">read-only</span>` : "";
 			if (elsewhere) {
-				meta.innerHTML = `${rel} · <span class="si-elsewhere ${escapeHtml(s.elsewhere.state)}">${escapeHtml(elsewhere)}</span> · ${cwd}`;
+				meta.innerHTML = `${rel} · <span class="si-elsewhere ${escapeHtml(s.elsewhere.state)}">${escapeHtml(elsewhere)}</span>${readOnly} · ${cwd}`;
 			} else {
-				meta.innerHTML = `${rel} · ${cwd}${s.isRunning ? ` · <span class="si-run">running</span>` : ""}`;
+				meta.innerHTML = `${rel} · ${cwd}${s.isRunning ? ` · <span class="si-run">running</span>` : ""}${readOnly}`;
 			}
 
 			row.appendChild(name);

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { lineageDetails, lineageLine, partyOf, relayOf } from "../public/app/session/lineage.js";
+import { lineageDetails, lineageLine, partyOf, partyTitle, relayOf } from "../public/app/session/lineage.js";
 
 const LEAD = "01a152a0-f00d-72aa-a896-d904c458282b";
-const party = (id, label, state, openable = true, where = "pi -p · ~/repo") => ({ id, label, state, openable, where });
+const party = (id, label, state, openable = true, where = "pi -p · ~/repo", readOnly = false) => ({ id, label, state, openable, readOnly, where });
 
 /** The line as plain text, segment by segment. */
 const textOf = (view) => view?.segments.map((segment) => segment.parts.map((part) => part.text).join("")) ?? null;
@@ -35,7 +35,7 @@ describe("the header's lineage line", () => {
 
 	test("survives odd shapes, and keys change only with what's shown", () => {
 		expect(partyOf({ id: "", label: "x" })).toBeNull();
-		expect(partyOf({ id: LEAD, state: "zombie", openable: "yes" })).toEqual({ id: LEAD, label: "01a152a0", state: null, openable: false, where: null });
+		expect(partyOf({ id: LEAD, state: "zombie", openable: "yes", readOnly: "yes" })).toEqual({ id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null });
 		const state = { lineage: { parent: null, children: [party("a1", "a", "live")], childCount: 1 }, relay: null, isStreaming: true };
 		expect(lineageLine(state)?.key).toBe(lineageLine({ ...state, isStreaming: false })?.key);
 		expect(lineageLine(state)?.key).not.toBe(lineageLine({ ...state, lineage: { ...state.lineage, children: [party("a1", "a", "died")] } })?.key);
@@ -56,5 +56,23 @@ describe("the details a tap opens", () => {
 		]);
 		expect(sections[2].rows.map((row) => row.primary)).toEqual(["2 resets of the context so far", "loop on", "nudged at 45%"]);
 		expect(sections[2].rows[1].secondary).toBe("goal: the task in the session's first message");
+	});
+});
+
+describe("subs open read-only", () => {
+	test("a link to a sub says it opens read-only, in its hover text and in the details", () => {
+		const sub = party("c3", "scout", "ended", true, "pi -p · ~/repo/.forks/1", true);
+		expect(partyOf(sub)?.readOnly).toBe(true);
+		expect(partyTitle(partyOf(sub))).toBe("scout · c3 · ended · pi -p · ~/repo/.forks/1 · click to open read-only");
+		// no link to click (a pane that opens nothing), but it would open read-only
+		expect(partyTitle(partyOf(sub), false)).toBe("scout · c3 · ended · pi -p · ~/repo/.forks/1 · opens read-only");
+		expect(partyTitle(partyOf(party(LEAD, "cc", "live")))).toBe(`cc · ${LEAD} · live · pi -p · ~/repo · click to open`);
+		const [section] = lineageDetails({ lineage: { parent: null, children: [sub, party("b2", "flaky", "died", false, "pi -p · ~/f", true)], childCount: 2 } });
+		expect(section.rows.map((row) => row.secondary)).toEqual(["ended · pi -p · ~/repo/.forks/1 · opens read-only", "died · pi -p · ~/f · pi-web can't open it"]);
+	});
+
+	test("whether it opens read-only is part of what the line shows", () => {
+		const state = (readOnly) => ({ lineage: { parent: party(LEAD, "cc", "live", true, "pi · ~/x", readOnly), children: [], childCount: 0 } });
+		expect(lineageLine(state(true))?.key).not.toBe(lineageLine(state(false))?.key);
 	});
 });

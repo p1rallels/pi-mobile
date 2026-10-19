@@ -2,6 +2,7 @@ import { computeCliCommand } from "./cli.js";
 import { createChatView } from "./chat_view.js";
 import { parseCompactCommand, parseQueueCommand } from "./commands.js";
 import { freshPayload, freshRecord, freshStatus, neverSavedOf } from "./fresh.js";
+import { readOnlyNote, readOnlyOf, readOnlyOfError } from "./read_only.js";
 
 /** The server pings every 5s; a stream silent for longer is dead even if the browser still calls it open. */
 const STALE_STREAM_MS = 15_000;
@@ -85,6 +86,8 @@ export function createSessionController({
 	let follow = null;
 	let followSession = null;
 	let stoppingWriter = false;
+	/** Why the followed session opens read-only (a sub, its folder gone; see read_only.js): nothing continues it here. */
+	let readOnlyWhy = null;
 	/** The session a read-only tail came from (a dormant canvas tile), so it can page back with no session open. */
 	let readOnly = null;
 	/** No session behind the pane: the one it had was never saved (see fresh.js). Sending starts one in `fresh.cwd`. */
@@ -212,6 +215,13 @@ export function createSessionController({
 			connectEvents(sessionId);
 		} catch (error) {
 			if (sessionId !== activeSessionId) return;
+			// the host only shows it now (a sub, its folder gone): it can't come back here, so the pane follows its file
+			const refused = mode === "hosted" ? readOnlyOfError(error) : null;
+			if (refused && activeSessionPath) {
+				stopRecovery();
+				openElsewhere(sessionId, activeSessionPath, null, refused);
+				return;
+			}
 			if (error && error.status === 404) {
 				// nothing was ever sent to it: it never existed for pi, so the pane just starts over in its folder
 				const neverSaved = mode === "hosted" ? neverSavedOf(error) : null;
@@ -398,6 +408,12 @@ export function createSessionController({
 		follow = null;
 		followSession = null;
 		stoppingWriter = false;
+		readOnlyWhy = null;
+	}
+
+	/** The host's word on a followed session: once it says read-only, the pane stays read-only. @param {any} session */
+	function learnReadOnly(session) {
+		readOnlyWhy = readOnlyOf(session?.readOnly) ?? readOnlyWhy;
 	}
 
 	function leaveFresh() {
@@ -455,6 +471,7 @@ export function createSessionController({
 			}
 			if (!sameSession) onCloseMenu();
 			followSession = event.session;
+			learnReadOnly(followSession);
 			follow = event.follow;
 			activeState = elsewhereStatus(followSession, follow);
 			activeSessionPath = followSession.path || activeSessionPath;
@@ -478,6 +495,7 @@ export function createSessionController({
 		if (event.type === "follow_entries") {
 			if (event.session && typeof event.session === "object") {
 				followSession = event.session;
+				learnReadOnly(followSession);
 				if (activeState) Object.assign(activeState, elsewhereStatus(followSession, follow || { state: "running" }));
 			}
 			const wasPinned = chatView.isPinned();
@@ -817,14 +835,18 @@ export function createSessionController({
 		}
 	}
 
-	/** Follows a session another process is writing, read-only, until its turn closes or its writer is gone. */
-	function openElsewhere(sessionId, path, elsewhere) {
+	/**
+	 * Follows a session another process is writing, read-only, until its turn closes or its writer is gone; with
+	 * `readOnly` (a session the host only shows) for good: its file, and Esc while a pi still runs it.
+	 */
+	function openElsewhere(sessionId, path, elsewhere, readOnly = null) {
 		if (sessionId !== activeSessionId) renderedSessionId = null;
 		leaveFresh();
 		mode = "elsewhere";
 		follow = elsewhere && typeof elsewhere === "object" ? { ...elsewhere } : null;
 		followSession = null;
 		stoppingWriter = false;
+		readOnlyWhy = readOnlyOf(readOnly);
 		activeSessionId = sessionId;
 		activeSessionPath = path;
 		controllerClientId = null;
@@ -834,12 +856,15 @@ export function createSessionController({
 		onStateChange();
 	}
 
-	/** For a pane that already knows the session is another pi's (a canvas tile): follow it, whatever its file says now. */
-	function followElsewhere(sessionId, path, elsewhere) {
+	/**
+	 * For a pane that already knows the session is another pi's, or one the host only shows (a canvas tile): follow it,
+	 * whatever its file says now.
+	 */
+	function followElsewhere(sessionId, path, elsewhere, readOnly = null) {
 		stopRecovery();
 		resetTripwireAlerts();
 		if (sessionId !== activeSessionId) extensionUi.reset();
-		openElsewhere(sessionId, path, elsewhere);
+		openElsewhere(sessionId, path, elsewhere, readOnly);
 	}
 
 	function isRunningElsewhereError(error) {
@@ -865,8 +890,10 @@ export function createSessionController({
 			throw new Error("Missing session path");
 		}
 
-		if (session.elsewhere && session.elsewhere.state !== "stopped") {
-			openElsewhere(session.id, session.path, session.elsewhere);
+		// a sub, or a session whose folder is gone: never resumed, shown (followed while a pi still runs it)
+		const readOnly = readOnlyOf(session.readOnly);
+		if (readOnly || (session.elsewhere && session.elsewhere.state !== "stopped")) {
+			openElsewhere(session.id, session.path, session.elsewhere ?? null, readOnly);
 			return;
 		}
 
@@ -874,6 +901,11 @@ export function createSessionController({
 		try {
 			result = await createSession({ clientId: getClientId(), resumeSessionPath: session.path });
 		} catch (error) {
+			const refused = readOnlyOfError(error);
+			if (refused) {
+				openElsewhere(session.id, session.path, null, refused);
+				return;
+			}
 			if (!isRunningElsewhereError(error)) throw error;
 			openElsewhere(session.id, session.path, error.body.elsewhere);
 			return;
@@ -888,7 +920,7 @@ export function createSessionController({
 	}
 
 	function canResumeHere() {
-		return mode === "elsewhere" && Boolean(activeSessionPath) && Boolean(follow) && RESUMABLE_ELSEWHERE.has(follow.state) && !stoppingWriter;
+		return mode === "elsewhere" && !readOnlyWhy && Boolean(activeSessionPath) && Boolean(follow) && RESUMABLE_ELSEWHERE.has(follow.state) && !stoppingWriter;
 	}
 
 	function canStopWriter() {
@@ -900,12 +932,18 @@ export function createSessionController({
 	 * event stream resumes from the entry this page already shows.
 	 */
 	async function resumeHere() {
+		if (mode === "elsewhere" && readOnlyWhy) throw new Error(readOnlyNote(readOnlyWhy));
 		if (!canResumeHere()) throw new Error("Another pi is still writing this session. Esc stops it.");
 		const sessionId = activeSessionId;
 		let result;
 		try {
 			result = await createSession({ clientId: getClientId(), resumeSessionPath: activeSessionPath, takeOver: follow.state === "quiet" });
 		} catch (error) {
+			const refused = readOnlyOfError(error);
+			if (refused && sessionId === activeSessionId && mode === "elsewhere") {
+				readOnlyWhy = refused;
+				onStateChange();
+			}
 			if (isRunningElsewhereError(error) && sessionId === activeSessionId) applyFollowState({ ...error.body.elsewhere });
 			throw error;
 		}
@@ -927,7 +965,8 @@ export function createSessionController({
 			const result = await api.postJson(`/api/sessions/${encodeURIComponent(sessionId)}/stop-elsewhere`, { path: activeSessionPath });
 			if (sessionId !== activeSessionId || mode !== "elsewhere") return;
 			const pids = Array.isArray(result?.stopped) ? result.stopped : [];
-			chatView.appendNotice(pids.length > 0 ? `Stopped pi (pid ${pids.join(", ")}). Type to continue here.` : "Nothing was writing it any more. Type to continue here.");
+			const next = readOnlyWhy ? "" : " Type to continue here.";
+			chatView.appendNotice(pids.length > 0 ? `Stopped pi (pid ${pids.join(", ")}).${next}` : `Nothing was writing it any more.${next}`);
 			stoppingWriter = false;
 			applyFollowState({ ...follow, state: "stopped", writers: [] });
 		} finally {
@@ -1208,6 +1247,8 @@ export function createSessionController({
 		getConnection: () => connection,
 		getMode: () => mode,
 		getFollow: () => follow,
+		/** Why the followed session opens read-only, or null (a session this pane hosts or may continue). */
+		getReadOnly: () => (mode === "elsewhere" ? readOnlyWhy : null),
 		isFresh: () => fresh !== null,
 		getFresh: () => (fresh ? { ...fresh } : null),
 		openFresh,

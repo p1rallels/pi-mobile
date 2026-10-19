@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { entryMessage, msgView, partyLabel, percentLabel, relayResetView, relayView } from "../public/app/session/custom_messages.js";
+import { entryMessage, msgKindLabel, msgView, partyLabel, percentLabel, relayResetView, relayView } from "../public/app/session/custom_messages.js";
 
 const FROM = { id: "01a152d4-d2c3-751d-ab2f-1d14f1974871", name: "worker", cwd: "/repo/.forks/2" };
 
@@ -16,6 +16,7 @@ describe("msg messages", () => {
 			replyTo: "0mgqk3x2p-a1b2c3",
 			kind: "",
 			kindLabel: "",
+			stopped: false,
 			byUser: false,
 			text: "tests pass\n\n- one\n- two",
 		});
@@ -32,6 +33,19 @@ describe("msg messages", () => {
 		expect(msgView(msg({ from: FROM, text: "the process vanished", kind: "died" }))).toMatchObject({ kind: "died", kindLabel: "died" });
 		expect(msgView(msg({ from: FROM, text: "stop and commit", byUser: true }))).toMatchObject({ byUser: true, kindLabel: "" });
 		expect(msgView(msg({ from: FROM, text: "x", kind: "paused" }))).toMatchObject({ kind: "paused", kindLabel: "paused" });
+	});
+
+	test("an ended sub that was cut short says stopped; old ended messages, without the mark, stay finished", () => {
+		expect(msgView(msg({ from: FROM, text: "halfway: tests left", kind: "ended", stopped: true }))).toMatchObject({ kind: "ended", kindLabel: "stopped", stopped: true });
+		expect(msgView(msg({ from: FROM, text: "done: merged", kind: "ended" }))).toMatchObject({ kindLabel: "finished", stopped: false });
+		expect(msgView(msg({ from: FROM, text: "done: merged", kind: "ended", stopped: "true" }))).toMatchObject({ kindLabel: "finished", stopped: false });
+		// only an ended can be stopped
+		expect(msgView(msg({ from: FROM, text: "gone", kind: "died", stopped: true }))).toMatchObject({ kindLabel: "died", stopped: false });
+		expect(msgView(msg({ from: FROM, text: "hi", stopped: true }))).toMatchObject({ kindLabel: "", stopped: false });
+		expect(msgKindLabel("ended", true)).toBe("stopped");
+		expect(msgKindLabel("ended", undefined)).toBe("finished");
+		expect(msgKindLabel(" died ", false)).toBe("died");
+		expect(msgKindLabel(undefined, true)).toBe("");
 	});
 
 	test("survive missing and odd fields", () => {

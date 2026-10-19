@@ -4,13 +4,14 @@
 // the launcher into that session's tile in place, or flies to the tile when the session is already on the canvas. Answers a
 // project trust prompt inline.
 import { createSessionWithTrust } from "../session/project_trust.js";
+import { readOnlyOf } from "../session/read_only.js";
 
 const SESSION_LIMIT = 100;
 /** Typing within one folder waits this long before asking the host again; a new folder is asked for right away. */
 const DIR_DEBOUNCE_MS = 120;
 
 /**
- * @typedef {{ id: string, path: string | null, cwd: string, name?: string, firstMessage?: string, modified?: string, isRunning?: boolean, elsewhere?: { state: string }, forkLabel?: string }} SessionSummary
+ * @typedef {{ id: string, path: string | null, cwd: string, name?: string, firstMessage?: string, modified?: string, isRunning?: boolean, elsewhere?: { state: string }, forkLabel?: string, readOnly?: { reason: string } }} SessionSummary
  * @typedef {{ kind: "created", sessionId: string, cwd: string } | { kind: "session", session: SessionSummary } | { kind: "terminal", cwd: string }} LauncherPick
  * @typedef {{ key: string, primary: string, secondary: string, badge?: string, muted?: boolean, pick: () => void, complete?: string }} Row
  * @typedef {{ name: string, path: string }} DirEntry
@@ -325,7 +326,7 @@ export function createLauncher({ doc, api, getClientId, isOnCanvas, onPick, onCl
 				key: `session:${session.id}`,
 				primary: sessionLabel(session),
 				secondary: [relativeTime(session.modified, now), session.id.slice(0, 8)].filter(Boolean).join(" · "),
-				badge: isOnCanvas(session.id) ? "on canvas" : session.isRunning ? "running" : elsewhereBadge(session) || undefined,
+				badge: isOnCanvas(session.id) ? "on canvas" : session.isRunning ? "running" : elsewhereBadge(session) || (readOnlyOf(session.readOnly) ? "read-only" : undefined),
 				pick: () => onPick({ kind: "session", session }),
 			}));
 		return [fresh, ...terminal, ...listed];

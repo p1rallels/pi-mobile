@@ -61,6 +61,16 @@ const isRecord = (value) => typeof value === "object" && value !== null && !Arra
 const partyName = (party) => (isRecord(party) ? argText(party.name) || argText(party.id).slice(0, 8) : "");
 
 /**
+ * A sub's exit notice, tagged like its card in the stream: " (finished)", " (stopped)" (an ended that msg marks `stopped`:
+ * cut short mid-run or aborted), " (died)"; "" for any other message.
+ * @param {any} message
+ */
+const exitTag = (message) => {
+	if (message.kind === "ended") return message.stopped === true ? " (stopped)" : " (finished)";
+	return message.kind === "died" ? " (died)" : "";
+};
+
+/**
  * msg's tools and relay's, as what they do: `→ worker: message`, `msg_wait ← worker · up to 300s`, `relay: note`.
  * Null for any other tool, and while the call's arguments are still streaming in.
  * @param {string} toolName @param {any} args
@@ -154,7 +164,7 @@ export function peerToolOutcome(toolName, result, { isError = false, partial = f
 	switch (toolName) {
 		case "msg_send": {
 			const reply = isRecord(details.reply) ? details.reply : null;
-			if (reply && typeof reply.text === "string") return `↩ ${partyName(reply.from) || "reply"}: ${reply.text}`;
+			if (reply && typeof reply.text === "string") return `↩ ${partyName(reply.from) || "reply"}${exitTag(reply)}: ${reply.text}`;
 			if (details.outcome === "timeout") return "no reply";
 			if (details.outcome === "aborted") return "stopped waiting, no reply";
 			if (!isRecord(details.message)) return null;
@@ -168,7 +178,8 @@ export function peerToolOutcome(toolName, result, { isError = false, partial = f
 			const message = isRecord(details.message) ? details.message : null;
 			if (message && typeof message.text === "string") {
 				const who = partyName(message.from) || "message";
-				const how = message.kind === "ended" ? " (finished)" : message.kind === "died" ? " (died)" : message.byUser === true ? " (you)" : "";
+				// msg_wait and byUser are gone from msg; old sessions still show them
+				const how = exitTag(message) || (message.byUser === true ? " (you)" : "");
 				return `${who}${how}: ${message.text}`;
 			}
 			if (details.outcome === "timeout") return "no message";

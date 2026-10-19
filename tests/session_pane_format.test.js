@@ -5,8 +5,10 @@ import {
 	composerPlaceholder,
 	elsewhereFooterNote,
 	elsewherePlaceholder,
+	elsewhereTilePill,
 	footerLines,
 	formatTokens,
+	isWriting,
 	roleBadge,
 	workingLabel,
 } from "../public/app/session/pane_format.js";
@@ -99,5 +101,24 @@ describe("session pane text", () => {
 		expect(roleBadge("viewer", "live", true, { state: "done" })).toEqual({ text: "finished", kind: "elsewhere" });
 		expect(roleBadge("viewer", "live", true, { state: "something new" })).toEqual({ text: "elsewhere", kind: "elsewhere" });
 		expect(roleBadge("viewer", "reconnecting", true, { state: "running" })).toEqual({ text: "reconnecting", kind: "offline" });
+	});
+
+	test("a session pi-web only shows: the badge says read-only, the tile pill whether a pi still runs it", () => {
+		expect(isWriting({ state: "running" })).toBe(true);
+		expect(isWriting({ state: "quiet" })).toBe(true);
+		expect(isWriting({ state: "stopped" })).toBe(false);
+		expect(isWriting({ state: "done" })).toBe(false);
+		expect(isWriting(null)).toBe(false);
+
+		expect(roleBadge("viewer", "live", true, { state: "running" }, true)).toEqual({ text: "read-only", kind: "elsewhere" });
+		expect(roleBadge("viewer", "live", true, { state: "done" }, true)).toEqual({ text: "read-only", kind: "elsewhere" });
+		expect(roleBadge("viewer", "gone", true, { state: "done" }, true)).toEqual({ text: "ended", kind: "offline" });
+
+		expect(elsewhereTilePill({ state: "running" }, true)).toEqual({ text: "read-only · running", kind: "working" });
+		expect(elsewhereTilePill({ state: "quiet" }, true)).toEqual({ text: "read-only · running", kind: "idle" });
+		expect(elsewhereTilePill({ state: "done" }, true)).toEqual({ text: "read-only", kind: "idle" });
+		expect(elsewhereTilePill(null, true)).toEqual({ text: "read-only", kind: "idle" });
+		expect(elsewhereTilePill({ state: "running" })).toEqual({ text: "elsewhere", kind: "working" });
+		expect(elsewhereTilePill({ state: "done" })).toEqual({ text: "finished", kind: "idle" });
 	});
 });

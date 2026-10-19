@@ -121,15 +121,28 @@ export function composerPlaceholder({ hasSession, compacting, isController, stre
 
 const ELSEWHERE_PILL = { running: "elsewhere", quiet: "quiet", stopped: "stopped", done: "finished", hosted: "viewer" };
 
-/** @param {string} role @param {string} connection @param {boolean} hasSession @param {any} [follow] a followed session's state */
-export function roleBadge(role, connection, hasSession, follow = null) {
+/** Another pi still runs the followed session (its writer works, or went quiet): Esc stops it. @param {any} follow */
+export const isWriting = (follow) => follow?.state === "running" || follow?.state === "quiet";
+
+/**
+ * @param {string} role @param {string} connection @param {boolean} hasSession @param {any} [follow] a followed session's state
+ * @param {boolean} [readOnly] the followed session opens read-only (a sub, its folder gone)
+ */
+export function roleBadge(role, connection, hasSession, follow = null, readOnly = false) {
 	const offline = hasSession && (connection === "reconnecting" || connection === "gone");
 	if (offline) return { text: connection === "gone" ? "ended" : "reconnecting", kind: "offline" };
+	if (readOnly) return { text: "read-only", kind: "elsewhere" };
 	if (follow) return { text: ELSEWHERE_PILL[follow.state] ?? "elsewhere", kind: "elsewhere" };
 	return { text: role, kind: role };
 }
 
-/** A canvas tile following a session another pi writes: the same words as the role badge, glowing while that pi works. @param {any} follow */
-export function elsewhereTilePill(follow) {
-	return { text: ELSEWHERE_PILL[follow?.state] ?? "elsewhere", kind: follow?.state === "running" ? "working" : "idle" };
+/**
+ * A canvas tile following a session another pi writes: the same words as the role badge, glowing while that pi works.
+ * A read-only one says so, and that a pi still runs it (its footer, which would say, is cut in tiles).
+ * @param {any} follow @param {boolean} [readOnly]
+ */
+export function elsewhereTilePill(follow, readOnly = false) {
+	const kind = follow?.state === "running" ? "working" : "idle";
+	if (readOnly) return { text: isWriting(follow) ? "read-only · running" : "read-only", kind };
+	return { text: ELSEWHERE_PILL[follow?.state] ?? "elsewhere", kind };
 }

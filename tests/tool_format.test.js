@@ -34,6 +34,11 @@ describe("tool format", () => {
 		expect(toolOutputText("msg_send", sent, { partial: true })).toBe("sent · waiting for a reply…");
 		const replied = { content: text("Sent …\nworker replied (0mgqk3x3a-ffffff):\nok, pushed"), details: { message, reply: { id: "0mgqk3x3a-ffffff", from: WORKER, text: "ok, pushed" }, outcome: "message" } };
 		expect(toolOutputText("msg_send", replied)).toBe("↩ worker: ok, pushed");
+		// a sub that ended before replying: its report comes back instead, finished or stopped, or its death
+		const exit = (fields) => ({ content: text("Sent …"), details: { message, reply: { id: "0mgqk3x3b-eeeeee", from: WORKER, text: "half done", ...fields }, outcome: "message" } });
+		expect(toolOutputText("msg_send", exit({ kind: "ended" }))).toBe("↩ worker (finished): half done");
+		expect(toolOutputText("msg_send", exit({ kind: "ended", stopped: true }))).toBe("↩ worker (stopped): half done");
+		expect(toolOutputText("msg_send", exit({ kind: "died" }))).toBe("↩ worker (died): half done");
 		expect(toolOutputText("msg_send", { content: text("No reply"), details: { message, outcome: "timeout" } })).toBe("no reply");
 		expect(toolOutputText("msg_send", { content: text("Stopped"), details: { message, outcome: "aborted" } })).toBe("stopped waiting, no reply");
 		const fanOut = [
@@ -59,6 +64,11 @@ describe("tool format", () => {
 		expect(toolCallToText("msg_wait", {})).toBe("msg_wait ← anyone");
 		const got = { content: text("<msg …>"), details: { from: WORKER.id, message: { from: WORKER, text: "all green", kind: "ended" }, outcome: "message" } };
 		expect(toolOutputText("msg_wait", got)).toBe("worker (finished): all green");
+		// msg_wait is gone from msg, but old sessions still hold its calls, and an ended it got may say stopped
+		const stopped = { ...got, details: { ...got.details, message: { ...got.details.message, stopped: true } } };
+		expect(toolOutputText("msg_wait", stopped)).toBe("worker (stopped): all green");
+		const byUser = { ...got, details: { ...got.details, message: { from: WORKER, text: "stop", byUser: true } } };
+		expect(toolOutputText("msg_wait", byUser)).toBe("worker (you): stop");
 		expect(toolOutputText("msg_wait", { content: text("No message from anyone within 300s."), details: { outcome: "timeout" } })).toBe("no message");
 		expect(toolOutputText("msg_wait", { content: text("Waiting up to 300s…"), details: {} }, { partial: true })).toBe("Waiting up to 300s…");
 

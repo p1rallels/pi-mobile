@@ -139,6 +139,9 @@ function span(className, text) {
 
 const MSG_KIND_CLASSES = new Set(["ended", "died"]);
 
+/** The class a msg card and its tag take: its kind (ended, died), or stopped for an ended sub that was cut short. @param {import("./custom_messages.js").MsgView} view */
+const msgKindClass = (view) => (view.stopped ? "stopped" : MSG_KIND_CLASSES.has(view.kind) ? view.kind : "");
+
 /**
  * @param {{ msgsEl: HTMLElement, queuedEl: HTMLElement | null, pillEl?: HTMLElement | null, onTrim?: (oldestEntryId: string) => void, onOpenSession?: ((session: SessionRef) => void) | null }} options
  * `onTrim` hears about entries a windowed view dropped from its top, so "earlier messages" can fetch them again.
@@ -594,8 +597,9 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 	/** @param {import("./custom_messages.js").MsgView} view */
 	function appendMsgMessage(view) {
 		const card = document.createElement("div");
+		const kindClass = msgKindClass(view);
 		card.className = "msg-card";
-		if (MSG_KIND_CLASSES.has(view.kind)) card.classList.add(view.kind);
+		if (kindClass) card.classList.add(kindClass);
 		if (view.byUser) card.classList.add("by-user");
 
 		const head = document.createElement("div");
@@ -603,7 +607,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		head.appendChild(span("msg-icon", "\u2709 "));
 		if (view.byUser) head.appendChild(span("msg-you", "you, via "));
 		head.appendChild(senderLink(view.sender));
-		if (view.kindLabel) head.appendChild(span(`msg-tag${MSG_KIND_CLASSES.has(view.kind) ? ` ${view.kind}` : ""}`, view.kindLabel));
+		if (view.kindLabel) head.appendChild(span(`msg-tag${kindClass ? ` ${kindClass}` : ""}`, view.kindLabel));
 		if (view.replyTo) head.appendChild(span("msg-re", `re ${view.replyTo}`));
 
 		const body = document.createElement("div");

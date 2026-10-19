@@ -326,6 +326,7 @@
     .si-elsewhere { color: #81a2be; }
     .si-elsewhere.quiet { color: #f0c674; }
     .si-elsewhere.stopped { color: #808080; }
+    .si-readonly { color: #81a2be; }
     .section-title {
       margin: 10px 8px 5px;
       color: #505050;
@@ -607,6 +608,7 @@
     }
     .msg-card.by-user { border-left-color: #8abeb7; }
     .msg-card.ended { border-left-color: #b5bd68; }
+    .msg-card.stopped { border-left-color: #f0c674; }
     .msg-card.died { border-left-color: #cc6666; }
     .msg-head { color: #808080; margin-bottom: 4px; overflow-wrap: anywhere; }
     .msg-icon { color: #81a2be; }
@@ -630,6 +632,7 @@
       font-size: 12px;
     }
     .msg-tag.ended { background: #2c3320; color: #b5bd68; }
+    .msg-tag.stopped { background: #3a3424; color: #f0c674; }
     .msg-tag.died { background: #3c2828; color: #cc6666; }
     .msg-re { margin-left: 8px; color: #666666; font-size: 12px; }
     .msg-body { color: #d4d4d4; }
@@ -653,6 +656,17 @@
     }
     .queued-kind.follow-up { color: #b5bd68; }
     .queued-hint { color: #666666; }
+
+    /* ── Read-only: a session pi-web only shows (a sub, its folder gone) has no composer, take over or release ── */
+    .read-only-note {
+      flex-shrink: 0;
+      padding: 6px 16px;
+      border-top: 1px solid #2a2a32;
+      color: #81a2be;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .read-only-note[hidden], .editor-wrap[hidden], .top-btn[hidden], .keybtn[hidden] { display: none; }
 
     /* ── Editor (input area) ─────────────────────────────────── */
     .editor-wrap { flex-shrink: 0; }

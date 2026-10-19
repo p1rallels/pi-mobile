@@ -78,7 +78,7 @@ async function deliver(root: string, sessionId: string, id: string): Promise<voi
 	await mkdir(join(box, "tmp"), { recursive: true });
 	await mkdir(join(box, "new"), { recursive: true });
 	const tmp = join(box, "tmp", `.${id}.json.${String(process.pid)}.abcd1234.tmp`);
-	await writeFile(tmp, `${JSON.stringify({ v: 1, id, ts: Date.now(), from: { id: "child-1", name: "scout" }, to: sessionId, text: "done", delivery: "steer", kind: "ended" })}\n`);
+	await writeFile(tmp, `${JSON.stringify({ v: 1, id, ts: Date.now(), from: { id: "child-1", name: "scout" }, to: sessionId, text: "done", kind: "ended" })}\n`);
 	await rename(tmp, join(box, "new", `${id}.json`));
 }
 

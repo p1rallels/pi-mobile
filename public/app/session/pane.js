@@ -1,7 +1,8 @@
 // One session pane: transcript, queued messages, working line, composer, footer and the per-session
 // controls (role, model, thinking, take over, abort, release, the lineage line), with its own controller,
 // extension ui and menus. The phone shell runs one pane on the static markup in index.html; the canvas runs one per
-// tile on markup from pane_dom.js. Everything the pane touches comes in through `refs`.
+// tile on markup from pane_dom.js. Everything the pane touches comes in through `refs`. A session pi-web only shows
+// (a sub, its folder gone; see read_only.js) has no composer, take over or release, and Esc only while a pi runs it.
 import { isPhoneLike } from "../core/device.js";
 import { createExtensionUi } from "../ui/extension_ui.js";
 import { createMenu } from "../ui/menu.js";
@@ -9,8 +10,9 @@ import { isQuitCommand } from "./commands.js";
 import { createSessionController } from "./controller.js";
 import { lineageDetails } from "./lineage.js";
 import { buildLineageMenu, createLineageLine } from "./lineage_line.js";
-import { composerPlaceholder, elsewherePlaceholder, footerLines, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
+import { composerPlaceholder, elsewherePlaceholder, footerLines, isWriting, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
 import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./project_trust.js";
+import { parentLabel, readOnlyNote } from "./read_only.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const COMPOSER_MAX_PX = 200;
@@ -22,6 +24,8 @@ const STOP_WRITER_TITLE = "Stop the pi writing this session (Esc)";
  *   jumpLatest: HTMLElement | null,
  *   queuedPanel: HTMLElement,
  *   input: HTMLTextAreaElement,
+ *   editor?: HTMLElement | null,
+ *   readOnlyNote?: HTMLElement | null,
  *   working?: HTMLElement | null,
  *   workingSpin?: HTMLElement | null,
  *   workingText?: HTMLElement | null,
@@ -51,6 +55,11 @@ const STOP_WRITER_TITLE = "Stop the pi writing this session (Esc)";
 export function autoResize(el) {
 	el.style.height = "auto";
 	el.style.height = Math.min(el.scrollHeight, COMPOSER_MAX_PX) + "px";
+}
+
+/** @param {HTMLElement | null | undefined} el @param {boolean} shown */
+function showIf(el, shown) {
+	if (el && el.hidden === shown) el.hidden = !shown;
 }
 
 /**
@@ -193,7 +202,8 @@ export function createSessionPane({
 
 	function renderRolePill() {
 		if (!refs.rolePill) return;
-		const badge = roleBadge(sessionCtrl.getRole(), sessionCtrl.getConnection(), Boolean(sessionCtrl.getActiveSessionId()), followed());
+		const readOnly = Boolean(sessionCtrl.getReadOnly());
+		const badge = roleBadge(sessionCtrl.getRole(), sessionCtrl.getConnection(), Boolean(sessionCtrl.getActiveSessionId()), followed(), readOnly);
 		refs.rolePill.textContent = badge.text;
 		refs.rolePill.classList.remove("controller", "viewer", "offline", "elsewhere");
 		refs.rolePill.classList.add(badge.kind);
@@ -279,8 +289,23 @@ export function createSessionPane({
 		renderWorking();
 	}
 
+	/**
+	 * A session pi-web only shows: the composer, take over, release and Enter go, a note says why, and Esc stays while a pi
+	 * runs it. Everything comes back for any other session.
+	 */
+	function renderReadOnly() {
+		const readOnly = sessionCtrl.getReadOnly();
+		const writing = Boolean(readOnly) && isWriting(sessionCtrl.getFollow());
+		for (const el of [refs.editor, refs.btnTakeover, refs.btnRelease, refs.kbTakeover, refs.kbRelease, refs.kbEnter]) showIf(el, !readOnly);
+		showIf(refs.btnAbort, !readOnly || writing);
+		showIf(refs.kbEsc, !readOnly || writing);
+		showIf(refs.readOnlyNote, Boolean(readOnly));
+		if (readOnly && refs.readOnlyNote) refs.readOnlyNote.textContent = readOnlyNote(readOnly, { parent: parentLabel(readOnly, sessionCtrl.getActiveState()), writing });
+	}
+
 	function renderControls() {
 		renderRolePill();
+		renderReadOnly();
 
 		if (sessionCtrl.getActiveSessionId() && sessionCtrl.getMode() === "elsewhere") {
 			renderElsewhereControls();
@@ -422,6 +447,8 @@ export function createSessionPane({
 		/** "hosted", or "elsewhere" while it follows a session another pi writes. */
 		getMode: () => sessionCtrl.getMode(),
 		getFollow: () => sessionCtrl.getFollow(),
+		/** Why the session opens read-only (a sub, its folder gone), or null. */
+		getReadOnly: () => sessionCtrl.getReadOnly(),
 		/** No session behind the pane yet: the one it had was never saved, and sending starts one (see fresh.js). */
 		isFresh: () => sessionCtrl.isFresh(),
 		/** @returns {import("./fresh.js").FreshRecord | null} */
@@ -435,8 +462,11 @@ export function createSessionPane({
 		canResumeHere: () => sessionCtrl.canResumeHere(),
 		/** @param {any} session */
 		selectSession: (session) => sessionCtrl.selectSession(session),
-		/** Follows a session another pi writes, read-only. @param {string} sessionId @param {string} path @param {any} elsewhere */
-		followElsewhere: (sessionId, path, elsewhere) => sessionCtrl.followElsewhere(sessionId, path, elsewhere),
+		/**
+		 * Follows a session another pi writes, or one the host only shows (`readOnly`), read-only.
+		 * @param {string} sessionId @param {string} path @param {any} elsewhere @param {import("./read_only.js").ReadOnly | null} [readOnly]
+		 */
+		followElsewhere: (sessionId, path, elsewhere, readOnly = null) => sessionCtrl.followElsewhere(sessionId, path, elsewhere, readOnly),
 		/** @param {string} sessionId */
 		openSessionId(sessionId) {
 			sessionCtrl.openSessionId(sessionId);

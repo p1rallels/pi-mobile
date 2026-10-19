@@ -1,10 +1,11 @@
 // What a session's header shows of msg's lineage and relay (src/msg-lineage.ts, src/relay-state.ts), as one compact
 // line of segments: "child of cc · 01a152a0", "3 children: died · mail-wakes · lineage-pill", "relay · 2 resets · loop".
-// The parent and each child are links to that session when pi-web can open it, else they say where it runs. Pure view
-// models: lineage_line.js draws them, and a tap on the line opens the same thing in full (lineageDetails).
+// The parent and each child are links to that session when pi-web can open it, else they say where it runs. A sub (every
+// child, and a parent that is one itself) opens read-only. Pure view models: lineage_line.js draws them, and a tap on
+// the line opens the same thing in full (lineageDetails).
 import { isRecord, percentLabel } from "./custom_messages.js";
 
-/** @typedef {{ id: string, label: string, state: string | null, openable: boolean, where: string | null }} Party */
+/** @typedef {{ id: string, label: string, state: string | null, openable: boolean, readOnly: boolean, where: string | null }} Party */
 /** @typedef {{ text: string, className?: string, party?: Party }} LinePart a party part is a link when it opens */
 /** @typedef {{ kind: "parent" | "children" | "relay", parts: LinePart[], title: string }} LineSegment */
 /** @typedef {{ segments: LineSegment[], key: string }} LineView */
@@ -29,8 +30,18 @@ export function partyOf(value) {
 	const id = text(value.id);
 	if (!id) return null;
 	const state = text(value.state);
-	return { id, label: text(value.label) || shortId(id), state: STATES.has(state) ? state : null, openable: value.openable === true, where: text(value.where) || null };
+	return {
+		id,
+		label: text(value.label) || shortId(id),
+		state: STATES.has(state) ? state : null,
+		openable: value.openable === true,
+		readOnly: value.readOnly === true,
+		where: text(value.where) || null,
+	};
 }
+
+/** What a click on a party does, when it opens: "opens read-only" for a sub, else "". @param {Party} party */
+const opensAs = (party) => (party.openable && party.readOnly ? "opens read-only" : "");
 
 /** The word after a child or parent that isn't live: "ended", "died", "offline"; "" when live or unknown. @param {Party} party */
 export const stateWord = (party) => (party.state && party.state !== "live" ? party.state : "");
@@ -44,7 +55,7 @@ const resets = (n) => `${n} reset${n === 1 ? "" : "s"}`;
  * @param {Party} party @param {boolean} [canOpen]
  */
 export function partyTitle(party, canOpen = party.openable) {
-	const open = canOpen ? "click to open" : party.openable ? "" : "pi-web can't open it";
+	const open = canOpen ? (party.readOnly ? "click to open read-only" : "click to open") : party.openable ? opensAs(party) : "pi-web can't open it";
 	return [`${party.label} · ${party.id}`, party.state ?? "never ran msg", party.where, open].filter(Boolean).join(" · ");
 }
 
@@ -143,7 +154,7 @@ export function lineageDetails(state) {
 	/** @param {Party} party @returns {DetailsRow} */
 	const row = (party) => ({
 		primary: [party.label, party.label === shortId(party.id) ? "" : shortId(party.id)].filter(Boolean).join(" · "),
-		secondary: [party.state ?? "never ran msg", party.where, party.openable ? "" : "pi-web can't open it"].filter(Boolean).join(" · "),
+		secondary: [party.state ?? "never ran msg", party.where, party.openable ? opensAs(party) : "pi-web can't open it"].filter(Boolean).join(" · "),
 		party,
 	});
 	/** @type {DetailsSection[]} */

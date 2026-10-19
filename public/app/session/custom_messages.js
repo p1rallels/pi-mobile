@@ -54,11 +54,24 @@ function unframeMsg(content) {
 const MSG_KIND_LABELS = { ended: "finished", died: "died" };
 
 /**
+ * How a sub's exit notice reads: "finished", "stopped" (an `ended` msg marks `stopped`: the sub went away mid-run or
+ * its last run was aborted, so its text is its last words, not a finished report), "died"; any other kind as itself.
+ * Messages from before msg said `stopped` stay finished.
+ * @param {unknown} kind @param {unknown} stopped msg's `stopped` on the message
+ */
+export function msgKindLabel(kind, stopped) {
+	const name = trimmed(kind);
+	if (name === "ended" && stopped === true) return "stopped";
+	return MSG_KIND_LABELS[/** @type {keyof typeof MSG_KIND_LABELS} */ (name)] ?? name;
+}
+
+/**
  * @typedef {{
  *   sender: { id: string, label: string, cwd: string },
  *   replyTo: string,
  *   kind: string,
  *   kindLabel: string,
+ *   stopped: boolean,
  *   byUser: boolean,
  *   text: string,
  * }} MsgView
@@ -66,7 +79,8 @@ const MSG_KIND_LABELS = { ended: "finished", died: "died" };
 
 /**
  * A msg message (customType "msg", details = msg's Message): who sent it, what it answers, how it came and the
- * text itself. The body is details.text; content is what the model reads, framing and all.
+ * text itself. The body is details.text; content is what the model reads, framing and all. `stopped`: an `ended` that
+ * says its sub was cut short. `byUser` only comes on old messages (msg's cut /msg and cli sent them), still drawn.
  * @param {any} message @returns {MsgView | null} null when there is nothing to show
  */
 export function msgView(message) {
@@ -80,7 +94,8 @@ export function msgView(message) {
 		sender: { id: trimmed(from.id), label: partyLabel(from) || "another session", cwd: trimmed(from.cwd) },
 		replyTo: trimmed(details.replyTo),
 		kind,
-		kindLabel: MSG_KIND_LABELS[/** @type {keyof typeof MSG_KIND_LABELS} */ (kind)] ?? kind,
+		kindLabel: msgKindLabel(kind, details.stopped),
+		stopped: kind === "ended" && details.stopped === true,
 		byUser: details.byUser === true,
 		text: body,
 	};

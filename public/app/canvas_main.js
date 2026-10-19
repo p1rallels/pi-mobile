@@ -8,6 +8,7 @@
 // session another pi is in the middle of (a terminal pi, a pfs sub) gets a tile that follows its file.
 // A tile whose session never got a message (so pi never wrote it) and stopped running goes fresh instead:
 // same place and composer, and the first send starts a new session in the same folder (session/fresh.js).
+// A session pi-web only shows (a sub, its folder gone; session/read_only.js) is never resumed: a click opens it read-only.
 import { createApi } from "./core/api.js";
 import { installFaceIdGuard, noTerminalLock } from "./core/faceid.js";
 import { createClientSessions, hostOrigin, isLoopbackBrowserHost, loadHostList, pageHost } from "./core/hosts.js";
@@ -22,6 +23,7 @@ import { freshRecord, neverSavedOf } from "./session/fresh.js";
 import { buildPaneDom } from "./session/pane_dom.js";
 import { createSessionPane } from "./session/pane.js";
 import { elsewhereTilePill } from "./session/pane_format.js";
+import { readOnlyOf } from "./session/read_only.js";
 import { createMenu } from "./ui/menu.js";
 
 /** Boots the canvas shell (?ui=canvas, remembered; never on phones). */
@@ -71,6 +73,7 @@ export async function bootCanvas() {
 	 *   lastVisibleAt: number,
 	 *   extTitle: string | null,
 	 *   readOnly: "none" | "loading" | "shown",
+	 *   readOnlyWhy: import("./session/read_only.js").ReadOnly | null,
 	 *   status: { id: string, working: boolean, waiting: boolean, viewers: number } | null,
 	 *   idleSuspended: boolean,
 	 *   idleSince: number,
@@ -377,7 +380,8 @@ export async function bootCanvas() {
 		const title = pick.kind === "created" ? sessionTitle({ id: sessionId, cwd: pick.cwd }) : sessionTitle(pick.session);
 		const path = pick.kind === "created" ? null : pick.session.path;
 		const forkLabel = pick.kind === "session" ? (pick.session.forkLabel ?? null) : null;
-		addSessionTile({ id: sessionId, path, title, rect, running, elsewhere, forkLabel });
+		const readOnly = pick.kind === "session" ? readOnlyOf(pick.session.readOnly) : null;
+		addSessionTile({ id: sessionId, path, title, rect, running, elsewhere, forkLabel, readOnly });
 		scheduleSave();
 		canvas.tiles.focusTile(sessionId);
 		if (!running && !elsewhere) wake(sessionId);
@@ -465,14 +469,24 @@ export async function bootCanvas() {
 		}
 	}
 
-	/** A dormant tile with a session file to resume: its pill says so, and a click on it (or the body) resumes. @param {TileEntry} entry */
+	/**
+	 * A dormant tile with a session file to resume: its pill says so, and a click on it (or the body) resumes; one pi-web
+	 * only shows (readOnlyWhy) opens read-only instead.
+	 * @param {TileEntry} entry
+	 */
 	function resumable(entry) {
 		return entry.dormant && Boolean(entry.path) && !entry.nothingToResume;
 	}
 
 	/** @param {TileEntry} entry */
+	function dormantPill(entry) {
+		if (!resumable(entry)) return { text: "not running", kind: "idle" };
+		return entry.readOnlyWhy ? { text: "read-only · click to open", kind: "dormant" } : { text: "not running · click to resume", kind: "dormant" };
+	}
+
+	/** @param {TileEntry} entry */
 	function pillFor(entry) {
-		if (entry.dormant) return resumable(entry) ? { text: "not running · click to resume", kind: "dormant" } : { text: "not running", kind: "idle" };
+		if (entry.dormant) return dormantPill(entry);
 		if (!entry.mounted || !entry.opened) return { text: "offscreen", kind: "idle" };
 		const connection = entry.pane.getConnection();
 		if (connection === "suspended" && entry.idleSuspended) {
@@ -483,7 +497,7 @@ export async function bootCanvas() {
 		if (connection === "gone") return { text: "ended", kind: "offline" };
 		if (connection === "reconnecting") return { text: "reconnecting", kind: "offline" };
 		if (entry.pane.extensionUi.isOpen()) return { text: "waiting", kind: "waiting" };
-		if (entry.pane.getMode() === "elsewhere") return elsewhereTilePill(entry.pane.getFollow());
+		if (entry.pane.getMode() === "elsewhere") return elsewhereTilePill(entry.pane.getFollow(), Boolean(entry.pane.getReadOnly()));
 		const status = entry.pane.getRunStatus();
 		if (status.kind !== "idle") return { text: status.kind, kind: "working" };
 		return { text: entry.pane.isController() || entry.pane.isFresh() ? "idle" : "viewing", kind: "idle" };
@@ -502,6 +516,7 @@ export async function bootCanvas() {
 		}
 		if (entry.pane.getMode() === "elsewhere") entry.elsewhere = entry.pane.getFollow() ?? entry.elsewhere ?? {};
 		else if (entry.elsewhere && state?.sessionId === entry.id) entry.elsewhere = null;
+		entry.readOnlyWhy = entry.pane.getReadOnly() ?? entry.readOnlyWhy;
 		// the pane found its session gone and never saved: kept on the entry, so a remount starts fresh too
 		const fresh = entry.pane.getFresh();
 		if (fresh) entry.fresh = fresh;
@@ -565,7 +580,8 @@ export async function bootCanvas() {
 			const following = !entry.dormant && pane.getMode() === "elsewhere";
 			const fresh = Boolean(entry.fresh);
 			if (entry.dormant) {
-				if (resumable(entry)) item("Resume", "attach this session so it can run here", () => wake(entry.id));
+				if (resumable(entry) && entry.readOnlyWhy) item("Open", "read-only: pi-web never runs it", () => wake(entry.id));
+				else if (resumable(entry)) item("Resume", "attach this session so it can run here", () => wake(entry.id));
 			} else if (fresh) {
 				// no session behind it yet: sending starts one
 			} else if (following) {
@@ -663,6 +679,11 @@ export async function bootCanvas() {
 			(/** @type {any} */ page) => {
 				if (!current()) return;
 				entry.readOnly = "shown";
+				const readOnly = readOnlyOf(page?.readOnly);
+				if (readOnly) {
+					entry.readOnlyWhy = readOnly;
+					renderTileChrome(entry.id);
+				}
 				// a pane that ran the session until it stopped keeps showing what it had
 				if (pane.getSessionId()) return;
 				const sessionId = typeof page?.sessionId === "string" ? page.sessionId : entry.id;
@@ -753,7 +774,7 @@ export async function bootCanvas() {
 		if (entry.dormant || !entry.mounted || entry.opened || !entry.visible) return;
 		entry.opened = true;
 		if (entry.fresh) entry.pane.openFresh(entry.fresh);
-		else if (entry.elsewhere && entry.path) entry.pane.followElsewhere(entry.id, entry.path, entry.elsewhere);
+		else if (entry.elsewhere && entry.path) entry.pane.followElsewhere(entry.id, entry.path, entry.elsewhere, entry.readOnlyWhy);
 		else entry.pane.openSessionId(entry.id);
 	}
 
@@ -800,9 +821,10 @@ export async function bootCanvas() {
 	/**
 	 * `elsewhere`: another pi is in the middle of the session, so the tile follows it instead of attaching it.
 	 * `forkLabel`: the host's name for the pfs fork the session ran in, kept for titles.
-	 * @param {{ id: string, path: string | null, title: string, rect: import("./canvas/camera.js").Rect, running: boolean, elsewhere?: any, forkLabel?: string | null }} spec
+	 * `readOnly`: why the host only shows it (a sub, its folder gone), when the list it came from said so.
+	 * @param {{ id: string, path: string | null, title: string, rect: import("./canvas/camera.js").Rect, running: boolean, elsewhere?: any, forkLabel?: string | null, readOnly?: import("./session/read_only.js").ReadOnly | null }} spec
 	 */
-	function addSessionTile({ id, path, title, rect, running, elsewhere = null, forkLabel = null }) {
+	function addSessionTile({ id, path, title, rect, running, elsewhere = null, forkLabel = null, readOnly = null }) {
 		const existing = entries.get(id);
 		if (existing) return existing;
 		const tile = canvas.tiles.addTile({ id, rect, title });
@@ -852,6 +874,7 @@ export async function bootCanvas() {
 			lastVisibleAt: tile.visible ? Date.now() : 0,
 			extTitle: null,
 			readOnly: "none",
+			readOnlyWhy: readOnly,
 			status: null,
 			idleSuspended: false,
 			idleSince: 0,
@@ -887,7 +910,8 @@ export async function bootCanvas() {
 		entry.opened = true;
 		renderTileChrome(id);
 		const { pane } = entry;
-		void pane.selectSession({ id, path: entry.path, isRunning: false }).catch((/** @type {unknown} */ error) => {
+		// one the host only shows opens read-only (the controller follows its file), never resumed
+		void pane.selectSession({ id, path: entry.path, isRunning: false, readOnly: entry.readOnlyWhy }).catch((/** @type {unknown} */ error) => {
 			// nothing was ever sent to it, so there's nothing to resume: it goes fresh, no error
 			const neverSaved = neverSavedOf(error);
 			if (neverSaved?.cwd && entry.pane === pane) {
@@ -1046,7 +1070,7 @@ export async function bootCanvas() {
 		for (const session of fresh) {
 			const rect = nextFreeSlot(canvas.tiles.rects());
 			const spec = { id: session.id, path: session.path ?? null, title: sessionTitle(session), rect, running: session.isRunning === true };
-			last = addSessionTile({ ...spec, elsewhere: elsewhereOf(session), forkLabel: session.forkLabel ?? null });
+			last = addSessionTile({ ...spec, elsewhere: elsewhereOf(session), forkLabel: session.forkLabel ?? null, readOnly: readOnlyOf(session.readOnly) });
 		}
 		if (fresh.length > 0) scheduleSave();
 		if (reveal && last) {
@@ -1084,7 +1108,7 @@ export async function bootCanvas() {
 			const title = tile.title ?? tile.sessionId.slice(0, 8);
 			const path = tile.path ?? active?.path ?? null;
 			const spec = { id: tile.sessionId, path, title, rect: tile, running: active?.isRunning === true };
-			addSessionTile({ ...spec, elsewhere: elsewhereOf(active), forkLabel: active?.forkLabel ?? null });
+			addSessionTile({ ...spec, elsewhere: elsewhereOf(active), forkLabel: active?.forkLabel ?? null, readOnly: readOnlyOf(active?.readOnly) });
 		}
 		if (terminalsHere()) await addOrphanTerminals();
 		if (layout.tiles.length === 0) await addRunningSessions();

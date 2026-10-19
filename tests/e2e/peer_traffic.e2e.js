@@ -1,4 +1,4 @@
-// msg and relay traffic in the stream: messages from other sessions (normal, finished, died, sent by you), relay's
+// msg and relay traffic in the stream: messages from other sessions (normal, finished, stopped, died, sent by you), relay's
 // notices and context resets, msg's and relay's tool calls, and the entries pi appends at turn boundaries
 // (entry_appended) drawn live and only once. One test drives the page with a fake event stream, the other reads a
 // real session file through an isolated server, on the phone and on the canvas; a sender's name opens its session.
@@ -19,9 +19,12 @@ const BASE_MS = Date.parse("2026-10-19T06:00:00.000Z");
 const text = (value) => [{ type: "text", text: value }];
 const worker = { id: WORKER, name: "worker", cwd: "/repo/.forks/2" };
 
-/** A msg message as msg's extension writes it: content framed for the model, details = the Message. */
+/**
+ * A msg message as msg's extension writes it: content framed for the model, details = the Message. Old sessions also
+ * hold `delivery` and `byUser` (msg's cut /msg, cli and follow-ups), passed in `fields` where a test draws one.
+ */
 function msgDetails(fields) {
-	return { v: 1, id: `0mgqk3x3${Math.random().toString(36).slice(2, 3)}-bbbbbb`, ts: BASE_MS, to: LEAD, delivery: "steer", ...fields };
+	return { v: 1, id: `0mgqk3x3${Math.random().toString(36).slice(2, 3)}-bbbbbb`, ts: BASE_MS, to: LEAD, ...fields };
 }
 const framed = (details) => `<msg id="${details.id}" from="${details.from.name ?? details.from.id.slice(0, 8)}" session="${details.from.id}">\n${details.text}\n</msg>\nMessage from another agent session (not your user).`;
 
@@ -64,7 +67,9 @@ function leadEntries() {
 		msgDetails({ from: worker, text: "also: the changelog needs a line", replyTo: SENT_ID }),
 		msgDetails({ from: worker, text: "done: docs rebuilt, merged to terminal", kind: "ended" }),
 		msgDetails({ from: { id: FLAKY, name: "flaky" }, text: "flaky's process vanished without ending", kind: "died" }),
-		msgDetails({ from: worker, text: "check the deploy log too", byUser: true }),
+		msgDetails({ from: worker, text: "check the deploy log too", byUser: true, delivery: "steer" }),
+		// a sub that went away mid-run, or whose last run was aborted: its last words, not a finished report
+		msgDetails({ from: worker, text: "halfway: the changelog is left", kind: "ended", stopped: true }),
 	];
 	rows.push(...peers.map((details) => custom("msg", framed(details), details)));
 	rows.push(
@@ -125,7 +130,7 @@ function transcriptOf(entries) {
 /** Everything the lead's history shows about its peers and relay, in a pane (the phone) or a tile. */
 async function expectPeerTraffic(scope) {
 	const cards = scope.locator(".msg-card");
-	await expect(cards).toHaveCount(4);
+	await expect(cards).toHaveCount(5);
 	await expect(cards.nth(0).locator(".msg-from")).toHaveText("worker");
 	await expect(cards.nth(0).locator(".msg-re")).toHaveText(`re ${SENT_ID}`);
 	await expect(cards.nth(0).locator(".msg-tag")).toHaveCount(0);
@@ -139,6 +144,10 @@ async function expectPeerTraffic(scope) {
 	await expect(cards.nth(3)).toHaveClass(/\bby-user\b/);
 	await expect(cards.nth(3).locator(".msg-head")).toHaveText("✉ you, via worker");
 	await expect(cards.nth(3).locator(".msg-body")).toHaveText("check the deploy log too");
+	await expect(cards.nth(4)).toHaveClass(/\bstopped\b/);
+	await expect(cards.nth(4)).not.toHaveClass(/\bended\b/);
+	await expect(cards.nth(4).locator(".msg-tag")).toHaveText("stopped");
+	await expect(cards.nth(4).locator(".msg-body")).toHaveText("halfway: the changelog is left");
 	await expect(scope.locator(".msg-body", { hasText: "<msg" })).toHaveCount(0);
 
 	const notes = scope.locator(".relay-note");
@@ -247,7 +256,7 @@ test.describe("with a fake event stream", () => {
 		{ type: "custom_message", id: "live0001", parentId: "e0000017", timestamp: at(30), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "one more thing: bump the version" }) },
 		{ type: "custom_message", id: "live0002", parentId: "live0001", timestamp: at(31), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "version bumped, merged", kind: "ended" }) },
 		{ type: "custom_message", id: "live0003", parentId: "live0002", timestamp: at(32), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: { id: FLAKY, name: "flaky" }, text: "gone again", kind: "died" }) },
-		{ type: "custom_message", id: "live0004", parentId: "live0003", timestamp: at(33), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "ship it after this", byUser: true }) },
+		{ type: "custom_message", id: "live0004", parentId: "live0003", timestamp: at(33), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "ship it after this", byUser: true, delivery: "steer" }) },
 		{ type: "custom_message", id: "live0005", parentId: "live0004", timestamp: at(34), customType: "relay", content: "47%: wrap up this step and relay", display: true, details: { kind: "nudge", percent: 47 } },
 		{ type: "custom_message", id: "live0006", parentId: "live0005", timestamp: at(35), customType: "relay", content: "keep going", display: true, details: { kind: "loop", goal: "ship relay" } },
 		{ type: "compaction", id: "live0007", parentId: "live0006", timestamp: at(36), summary: "relay #2 at 50%", firstKeptEntryId: "live0007", tokensBefore: 99_000, fromHook: true, details: { relay: { n: 2, percent: 50, note: "cut mid-step: run git status first" } } },
@@ -285,11 +294,11 @@ test.describe("with a fake event stream", () => {
 		await sse(page, 0, "frame", agentEvent({ type: "agent_start" }));
 		for (const entry of LIVE) await sse(page, 0, "frame", appendedFrame(entry), entry.id);
 		const cards = msgs.locator(".msg-card");
-		await expect(cards).toHaveCount(8);
-		await expect(cards.nth(4).locator(".msg-body")).toHaveText("one more thing: bump the version");
-		await expect(cards.nth(5).locator(".msg-tag")).toHaveText("finished");
-		await expect(cards.nth(6).locator(".msg-tag")).toHaveText("died");
-		await expect(cards.nth(7).locator(".msg-head")).toHaveText("✉ you, via worker");
+		await expect(cards).toHaveCount(9);
+		await expect(cards.nth(5).locator(".msg-body")).toHaveText("one more thing: bump the version");
+		await expect(cards.nth(6).locator(".msg-tag")).toHaveText("finished");
+		await expect(cards.nth(7).locator(".msg-tag")).toHaveText("died");
+		await expect(cards.nth(8).locator(".msg-head")).toHaveText("✉ you, via worker");
 		const notes = msgs.locator(".relay-note .relay-line");
 		await expect(notes).toHaveText([
 			"relay · 41% · 41%: finish the step, commit, then call relay with a note for whoever picks this up",
@@ -314,7 +323,7 @@ test.describe("with a fake event stream", () => {
 		await sse(page, 1, "open");
 		await sse(page, 1, "frame", init({ mode: "append", since: last, messages: [...again, later] }, { cursor: "live0011" }), "live0011");
 		await expect(msgs.locator(".user-msg").last()).toHaveText("after the reset");
-		await expect(msgs.locator(".msg-card")).toHaveCount(8);
+		await expect(msgs.locator(".msg-card")).toHaveCount(9);
 		await expect(msgs.locator(".relay-note")).toHaveCount(5);
 		await expect(msgs.locator(".compact-card.relay")).toHaveCount(2);
 
@@ -323,7 +332,7 @@ test.describe("with a fake event stream", () => {
 		await sse(page, 2, "open");
 		await sse(page, 2, "frame", init({ mode: "replace", messages: [...history, ...again, later], hasOlder: false }, { cursor: "live0011" }), "live0011");
 		await expect(msgs.locator(".user-msg").last()).toHaveText("after the reset");
-		await expect(msgs.locator(".msg-card")).toHaveCount(8);
+		await expect(msgs.locator(".msg-card")).toHaveCount(9);
 		await expect(msgs.locator(".relay-note")).toHaveCount(5);
 		await expect(msgs.locator(".compact-card.relay")).toHaveCount(2);
 

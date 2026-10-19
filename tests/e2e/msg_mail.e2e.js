@@ -122,7 +122,7 @@ async function deliver(root, sessionId, id) {
 	await mkdir(join(box, "tmp"), { recursive: true });
 	await mkdir(join(box, "new"), { recursive: true });
 	const tmp = join(box, "tmp", `.${id}.json.${process.pid}.abcd1234.tmp`);
-	const message = { v: 1, id, ts: Date.now(), from: { id: "01a16000-0000-7000-8000-0000000000c3", name: "scout" }, to: sessionId, text: "docs done", delivery: "steer", kind: "ended" };
+	const message = { v: 1, id, ts: Date.now(), from: { id: "01a16000-0000-7000-8000-0000000000c3", name: "scout" }, to: sessionId, text: "docs done", kind: "ended" };
 	await writeFile(tmp, `${JSON.stringify(message)}\n`);
 	await rename(tmp, join(box, "new", `${id}.json`));
 }

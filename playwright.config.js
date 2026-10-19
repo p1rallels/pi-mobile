@@ -1,9 +1,13 @@
 // @ts-check
 import { defineConfig, devices } from "@playwright/test";
 
-const PORT = Number.parseInt(process.env.PI_WEB_E2E_PORT || "4318", 10);
+// the main folder's e2e and mock ports, the live server's and caddy's: never a pfs fork's default
+const SHARED_PORTS = new Set(["4317", "4318", "4321", "8443", "2019"]);
+// a pfs fork's run has its own port block in $PORT: its e2e servers default to it, so they never meet another fork's
+const forkPort = /^\d+$/.test(process.env.PORT ?? "") && !SHARED_PORTS.has(process.env.PORT ?? "") ? Number(process.env.PORT) : null;
+const PORT = Number.parseInt(process.env.PI_WEB_E2E_PORT || String(forkPort ?? 4318), 10);
 // the mock ui (mock-ui/server.ts) for the canvas prototype and perf harness; exported to tests as MOCK_UI_URL
-const MOCK_PORT = Number.parseInt(process.env.PI_WEB_E2E_MOCK_PORT || "4321", 10);
+const MOCK_PORT = Number.parseInt(process.env.PI_WEB_E2E_MOCK_PORT || String(forkPort === null ? 4321 : forkPort + 1), 10);
 process.env.MOCK_UI_URL = `http://127.0.0.1:${MOCK_PORT}`;
 
 export default defineConfig({

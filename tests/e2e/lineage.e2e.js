@@ -2,8 +2,8 @@
 // tile's pill, read by an isolated server from its own msg store (presence records in <root>/agent/msg/sessions,
 // written the way msg writes them: a temp file renamed into place). The lead, hosted here, lists its children with how
 // each stands (an ended scout pi-web can open, a flaky one whose process died, a worker another pi runs), and relay's
-// resets and loop; a child that comes or ends changes the line without a reload; a child's link opens it, and the
-// worker's own header says whose child it is.
+// resets and loop; a child that comes or ends changes the line without a reload; a child's link opens it read-only
+// (pi-web never loads a sub), and the worker's own header says whose child it is.
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -218,24 +218,33 @@ test("the header lists the lead's children and relay, follows a child coming and
 		await writePresence(env.root, { ...worker.record, activity: "idle", endedAt: Date.now() });
 		await expect(segments).toHaveText(["3 children: flaky died · worker ended · scout ended", LEAD_RELAY], LIVE_TIMEOUT);
 
-		// the worker's link follows it (another pi still runs it), and its header says whose child it is
+		// the worker's link follows it read-only (another pi still runs it, and it's a sub), and its header says whose child it is
 		await openFromLine(page, phone, WORKER);
 		await expect(page.locator(".user-msg")).toHaveText(["build the pill"]);
-		await expect(page.locator("#role-pill")).toHaveText("elsewhere");
+		await expect(page.locator("#role-pill")).toHaveText("read-only");
+		await expect(page.locator("#read-only-note")).toHaveText("Read-only: lead manages this sub · Esc stops it");
+		await expect(page.locator("#editor-wrap")).toBeHidden();
 		await expect(segments).toHaveText(["child of lead · 01a152a0"], LIVE_TIMEOUT);
 		await expect(lineEl.locator(`a.lin-party[data-session-id="${LEAD}"]`)).toHaveText("lead");
 		// a relay reset in the worker's file bumps its count
 		await appendFile(worker.path, line({ ...relayReset(1, "built; next: tests"), id: "w0000002", parentId: "w0000001", timestamp: new Date().toISOString(), firstKeptEntryId: "w0000002" }));
 		await expect(segments).toHaveText(["child of lead · 01a152a0", "relay · 1 reset"], LIVE_TIMEOUT);
 
-		// back to the lead through the worker's line, then the scout's link resumes the scout here
+		// back to the lead through the worker's line (it hosts the lead: the composer is back), then the scout's link
 		await openFromLine(page, phone, LEAD);
 		await expect(page.locator(".assistant-block .md").last()).toHaveText("the worker is on it");
 		await expect(segments).toHaveText(["3 children: flaky died · worker ended · scout ended", LEAD_RELAY], LIVE_TIMEOUT);
+		await expect(page.locator("#editor-wrap")).toBeVisible();
+		await expect(page.locator("#read-only-note")).toBeHidden();
 		await openFromLine(page, phone, SCOUT);
 		await expect(page.locator(".assistant-block .md")).toHaveText(["three records, one stale"]);
-		// pi-web hosts it now, and a session pi-web hosts is nobody's child
-		await expect(lineEl).toBeHidden(LIVE_TIMEOUT);
+		// the scout ended: its transcript, read-only, never loaded here, so msg never rewrote its record and it's still the lead's child
+		await expect(page.locator("#role-pill")).toHaveText("read-only");
+		await expect(page.locator("#read-only-note")).toHaveText("Read-only: lead manages this sub");
+		await expect(page.locator("#editor-wrap")).toBeHidden();
+		await expect(segments).toHaveText(["child of lead · 01a152a0"], LIVE_TIMEOUT);
+		const running = await page.evaluate(async () => (await (await fetch("/api/active-sessions")).json()).sessions.filter((s) => s.isRunning).map((s) => s.id));
+		expect(running).toEqual([LEAD]);
 	} finally {
 		if (worker && worker.writer.exitCode === null && worker.writer.signalCode === null) worker.writer.kill("SIGKILL");
 		if (server) {
@@ -273,6 +282,10 @@ test("a canvas tile's pill shows them too, live, and a child's link opens it in 
 		await expect(page.locator(".cv-tile")).toHaveCount(2);
 		await expect(tile(WORKER).locator(".user-msg")).toHaveText("build the pill");
 		await expect(tile(WORKER).locator(".cv-lineage .lin-seg")).toHaveText(["child of lead · 01a152a0"], LIVE_TIMEOUT);
+		// a sub: read-only, and its pill says another pi still runs it
+		await expect(tile(WORKER).locator(".cv-pill")).toHaveText("read-only · running");
+		await expect(tile(WORKER).locator(".read-only-note")).toHaveText("Read-only: lead manages this sub · Esc stops it");
+		await expect(tile(WORKER).locator(".editor-wrap")).toBeHidden();
 		// the lead's tile is already on the canvas: its link brings it into view instead of opening another
 		await tile(WORKER).locator(`.cv-lineage a.lin-party[data-session-id="${LEAD}"]`).click();
 		await expect(page.locator(".cv-tile")).toHaveCount(2);

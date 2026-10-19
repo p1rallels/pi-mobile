@@ -34,6 +34,8 @@ export async function bootPhone() {
 		jumpLatest: document.getElementById("jump-latest"),
 		queuedPanel: document.getElementById("queued-panel"),
 		input: document.getElementById("inp"),
+		editor: document.getElementById("editor-wrap"),
+		readOnlyNote: document.getElementById("read-only-note"),
 		working: document.getElementById("working"),
 		workingSpin: document.getElementById("work-spin"),
 		workingText: document.querySelector(".work-text"),
