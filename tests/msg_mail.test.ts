@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	freeSlots,
 	isMailboxId,
+	MAX_REOPENS_PER_LOOK,
 	msgStoreRoot,
 	newestMessage,
 	newMailDir,
@@ -357,6 +358,24 @@ describe("the msg mail watch", () => {
 		second.stop();
 		expect(failing.calls).toEqual([[A, null]]);
 		expect(lines).toEqual([`[pi-web] could not reopen ${A} for msg mail: Project trust required`]);
+	});
+
+	test("a look starts a few reopens at most, and the next look the rest", async () => {
+		const root = await storeRoot();
+		const { host, detached, calls } = fakeHost();
+		const ids = Array.from({ length: MAX_REOPENS_PER_LOOK + 2 }, (_, index) => `01a1a000-0000-7000-8000-1000000000${String(index).padStart(2, "0")}`);
+		for (const id of ids) detached.set(id, ref(id));
+		const watch = watchMsgMail(host, { root, intervalMs: 60_000, log: () => {} });
+		try {
+			await watch.sweep();
+			for (const id of ids) await deliver(root, id, M1);
+			await watch.sweep();
+			expect(calls.map(([id]) => id)).toEqual(ids.slice(0, MAX_REOPENS_PER_LOOK));
+			await watch.sweep();
+			expect(calls.map(([id]) => id)).toEqual(ids);
+		} finally {
+			watch.stop();
+		}
 	});
 
 	test("looks right away, then every interval, and not after stop", async () => {

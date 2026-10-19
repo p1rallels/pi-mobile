@@ -19,6 +19,8 @@ type Env = Readonly<Record<string, string | undefined>>;
 export const PRESENCE_STALE_MS = 45_000;
 /** How often the detached sessions' inboxes are looked at: a readdir each, nothing read. */
 export const MAIL_SWEEP_MS = 3_000;
+/** Resumes one look starts at most (each loads extensions and models): after a restart with a lot of mail, the rest follow. */
+export const MAX_REOPENS_PER_LOOK = 4;
 
 /** msg's ids (src/core/paths.ts): anything else names no mailbox, and never becomes a path. */
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -266,9 +268,9 @@ function errorMessage(error: unknown): string {
 
 /**
  * Reopens sessions pi-web disposed when msg mail lands for them: one look right away (mail that came while pi-web was
- * down counts), then every intervalMs. Each look lists the detached sessions' new/ folders; only mail no reopen was made
- * for yet costs more (a stat of the session file, its presence record). Reopens are logged, and why one isn't made
- * (no room, the file changed, another process runs it, it failed) once per newest message.
+ * down counts), then every intervalMs, a few reopens a look. Each look lists the detached sessions' new/ folders; only
+ * mail no reopen was made for yet costs more (a stat of the session file, its presence record). Reopens are logged, and
+ * why one isn't made (no room, the file changed, another process runs it, it failed) once per newest message.
  */
 export function watchMsgMail(host: MailHost, options: MailWatchOptions): MailWatch {
 	const { root } = options;
@@ -349,7 +351,7 @@ export function watchMsgMail(host: MailHost, options: MailWatchOptions): MailWat
 		const room = host.sessionRoom();
 		const plan = planMailReopens({ detached, inbox: new Map([...inbox, ...evictableInbox]), reopenedFor, unchanged, presence, room, selfPid, now: now() });
 		explain(plan, room, presence);
-		for (const item of plan.reopen) start(item);
+		for (const item of plan.reopen.slice(0, MAX_REOPENS_PER_LOOK)) start(item);
 	}
 
 	function queue(): Promise<void> {

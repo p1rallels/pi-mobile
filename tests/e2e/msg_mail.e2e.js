@@ -58,24 +58,35 @@ async function startServer(root, port, env = {}) {
 		env: sandboxServerEnv(root, { PI_WEB_PORT: String(port), ...env }),
 	});
 	const lines = [];
-	let partial = "";
-	proc.stdout.on("data", (chunk) => {
-		const parts = (partial + chunk.toString()).split("\n");
-		partial = parts.pop() ?? "";
-		lines.push(...parts);
-	});
-	proc.stderr.on("data", () => {});
+	for (const stream of [proc.stdout, proc.stderr]) {
+		let partial = "";
+		stream.on("data", (chunk) => {
+			const parts = (partial + chunk.toString()).split("\n");
+			partial = parts.pop() ?? "";
+			lines.push(...parts);
+		});
+	}
 	const base = `http://127.0.0.1:${port}`;
 	const deadline = Date.now() + 10_000;
-	while (Date.now() < deadline) {
+	for (;;) {
 		try {
 			if ((await fetch(`${base}/health`)).ok) break;
 		} catch {
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			// not listening yet
 		}
+		if (Date.now() > deadline) {
+			proc.kill();
+			throw new Error(`server did not become healthy:\n${lines.join("\n")}`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	const logged = (line) =>
-		expect.poll(() => lines.includes(line), { message: `server logs "${line}"`, timeout: 15_000 }).toBe(true);
+	const logged = async (line) => {
+		try {
+			await expect.poll(() => lines.includes(line), { timeout: 15_000 }).toBe(true);
+		} catch (error) {
+			throw new Error(`the server never logged "${line}", only:\n${lines.join("\n")}`, { cause: error });
+		}
+	};
 	return { proc, base, lines, logged };
 }
 
