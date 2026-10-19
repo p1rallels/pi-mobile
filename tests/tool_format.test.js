@@ -36,6 +36,13 @@ describe("tool format", () => {
 		expect(toolOutputText("msg_send", replied)).toBe("↩ worker: ok, pushed");
 		expect(toolOutputText("msg_send", { content: text("No reply"), details: { message, outcome: "timeout" } })).toBe("no reply");
 		expect(toolOutputText("msg_send", { content: text("Stopped"), details: { message, outcome: "aborted" } })).toBe("stopped waiting, no reply");
+		const fanOut = [
+			`Sent 0mgqk3x2p-a1b2c3 to worker (${WORKER.id}): busy; it sees the message at its next step.`,
+			"Sent 0mgqk3x2p-d4e5f6 to docs (01a152d4-0000-7000-8000-00000000000d): idle; it wakes up to handle the message.",
+		].join("\n");
+		expect(toolOutputText("msg_send", { content: text(fanOut), details: { message, messages: [message, message], to: "children", recipients: [WORKER.id, "d"] } })).toBe(
+			"sent to 2\nworker: busy; it sees the message at its next step\ndocs: idle; it wakes up to handle the message",
+		);
 	});
 
 	test("keeps msg's own words when a result is an error or lacks what it needs", () => {

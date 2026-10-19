@@ -137,6 +137,11 @@ function sentWhen(text) {
 	return match ? match[1] : "";
 }
 
+/** A fan-out's `Sent <id> to <name> (<id>): <when>.` lines, as `<name>: <when>`. @param {string} text */
+function sentLines(text) {
+	return [...text.matchAll(/^Sent \S+ to (.+?) \([^)]*\): (.+?)\.?$/gm)].map((match) => `${match[1]}: ${match[2]}`);
+}
+
 /**
  * What msg's tools came back with, said short: sent (and when it lands), the reply, no reply; the message a
  * wait got; whether relay queued a reset. Null when the result isn't one of theirs or doesn't carry what this
@@ -153,6 +158,8 @@ export function peerToolOutcome(toolName, result, { isError = false, partial = f
 			if (details.outcome === "timeout") return "no reply";
 			if (details.outcome === "aborted") return "stopped waiting, no reply";
 			if (!isRecord(details.message)) return null;
+			const recipients = Array.isArray(details.recipients) ? details.recipients.length : 0;
+			if (recipients > 1) return [`sent to ${recipients}`, ...sentLines(toolResultToText(result))].join("\n");
 			if (partial) return "sent · waiting for a reply…";
 			const when = sentWhen(toolResultToText(result));
 			return when ? `sent · ${when}` : "sent";

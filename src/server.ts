@@ -6,6 +6,7 @@ import { CANVAS_LAYOUT_BODY_LIMIT, createCanvasLayoutStore } from "./canvas-layo
 import { verifyClientCertificateRequest } from "./device-auth.ts";
 import { isTypedPath, listDirectories } from "./directories.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
+import { dropInheritedSessionIdentity } from "./inherited-session.ts";
 import { FaceIdService } from "./faceid.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { parseTripwireMode } from "./tripwire.ts";
@@ -873,6 +874,7 @@ const faceIdChallengeLimiter = createRateLimiter(60_000, 12);
 const faceIdVerifyLimiter = createRateLimiter(60_000, 12);
 const terminalCreateLimiter = createRateLimiter(60_000, 12);
 
+dropInheritedSessionIdentity(process.env);
 const projectTrustMode = parseProjectTrustMode(process.env.PI_WEB_PROJECT_TRUST);
 const tripwireMode = parseTripwireMode(process.env.PI_WEB_TRIPWIRE);
 const terminalsMode = parseTerminalsMode(process.env.PI_WEB_TERMINALS);
