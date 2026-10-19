@@ -47,13 +47,20 @@ function appended(frames: SseFrame[]): Appended[] {
 	);
 }
 
+/** Every entry pi wrote under the agent dir's sessions. */
+async function savedEntries(agentDir: string): Promise<Array<Record<string, unknown>>> {
+	const files = await Array.fromAsync(new Bun.Glob("sessions/**/*.jsonl").scan({ cwd: agentDir, absolute: true }));
+	const lines = (await Promise.all(files.map((file) => Bun.file(file).text()))).flatMap((body) => body.split("\n").filter(Boolean));
+	return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 function contextPercent(event: SseEvent): number | null | undefined {
 	return event.type === "state_patch" ? event.patch.contextUsage?.percent : undefined;
 }
 
 describe("entries appended at turn boundaries", () => {
 	test("reach the page with their entry id as the frame cursor, and a reset refreshes the context meter", async () => {
-		const { runtime, sessionId, clientId, events, frames } = await startFauxSession([fauxAssistantMessage("one"), fauxAssistantMessage("two")], {
+		const { runtime, sessionId, clientId, events, frames, agentDir } = await startFauxSession([fauxAssistantMessage("one"), fauxAssistantMessage("two")], {
 			extensions: { "relay-probe.ts": RELAY_PROBE },
 		});
 		const settled = () => agentEventTypes(events).filter((type) => type === "agent_settled").length;
@@ -65,6 +72,14 @@ describe("entries appended at turn boundaries", () => {
 
 		const seen = appended(frames);
 		expect(seen.map(({ entryType }) => entryType)).toEqual(["custom_message", "compaction", "custom"]);
+		const wireReset = frames.find(({ event }) => event.type === "agent_event" && event.event.type === "entry_appended" && event.event.entry.type === "compaction");
+		expect(wireReset?.event.type === "agent_event" && wireReset.event.event.type === "entry_appended" ? wireReset.event.event.entry : null).toMatchObject({
+			summary: "fresh start: carry on",
+			details: { relay: { n: 1, percent: 45, note: "tests pass, docs left" } },
+		});
+		expect(JSON.stringify(wireReset?.event)).not.toContain("systemMessage");
+		const saved = await savedEntries(agentDir);
+		expect(saved.find((entry) => entry.type === "compaction")?.systemMessage).toBeDefined();
 		expect(seen.every(({ entryId, frameEntryId, id }) => frameEntryId === entryId && id === entryId)).toBe(true);
 		expect(afterNudge).toBe(seen[0]?.entryId);
 

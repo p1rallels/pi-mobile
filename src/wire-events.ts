@@ -29,11 +29,21 @@ function messageUsage(message: MessageUpdateEvent["message"]): WireMessageUpdate
 	return message.role === "assistant" ? message.usage : EMPTY_USAGE;
 }
 
+type EntryAppendedEvent = Extract<AgentSessionEvent, { type: "entry_appended" }>;
+
+/** A compaction entry carries the whole system prompt it was made under; the page draws the summary, not that. */
+function toWireEntryAppended(event: EntryAppendedEvent): EntryAppendedEvent {
+	if (event.entry.type !== "compaction" || event.entry.systemMessage === undefined) return event;
+	const { systemMessage: _systemMessage, ...entry } = event.entry;
+	return { ...event, entry };
+}
+
 /**
  * Mirrors pi's json/rpc wire format: streaming updates drop the cumulative `message` and
  * `partial` snapshots so traffic grows with the deltas instead of the square of the message size.
  */
 export function toWireEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
+	if (event.type === "entry_appended") return toWireEntryAppended(event);
 	if (event.type !== "message_update") return event;
 	return {
 		type: "message_update",
