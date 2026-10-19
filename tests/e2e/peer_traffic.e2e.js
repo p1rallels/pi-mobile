@@ -431,6 +431,96 @@ async function resumeLead(page, leadPath) {
 	}, leadPath);
 }
 
+/**
+ * A relay-like extension for a real session: a faux model answers, and pi's turn_end boundary appends a nudge after
+ * the first turn and, after the second, a reset (a retain-none compaction) and a child's last word. No message
+ * events come with any of them, only entry_appended.
+ */
+const BOUNDARY_EXTENSION = `
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+
+export default function (pi) {
+	const faux = fauxProvider({ provider: "e2e-faux", models: [{ id: "faux-1", name: "faux one" }] });
+	faux.setResponses(Array.from({ length: 10 }, () => fauxAssistantMessage("got it")));
+	pi.registerProvider(faux.provider);
+	pi.on("session_start", async (_event, ctx) => {
+		const model = ctx.modelRegistry.find("e2e-faux", "faux-1");
+		if (model) await pi.setModel(model);
+	});
+	let turns = 0;
+	pi.on("turn_end", () => {
+		turns += 1;
+		if (turns === 1) return { entries: [{ type: "custom_message", customType: "relay", content: "41%: finish the step", display: true, details: { kind: "nudge", percent: 41 } }] };
+		if (turns !== 2) return undefined;
+		const last = { v: 1, id: "0mgqk3x9z-dddddd", ts: 1, from: { id: "${WORKER}", name: "worker" }, to: "lead", text: "done here", kind: "ended", delivery: "steer" };
+		return {
+			entries: [
+				{ type: "compaction", summary: "fresh start", firstKeptEntryId: null, details: { relay: { n: 1, percent: 45, note: "carry on from the notes" } } },
+				{ type: "custom_message", customType: "msg", content: "<msg>done here</msg>", display: true, details: last },
+			],
+		};
+	});
+}
+`;
+
+test.describe("a real session", () => {
+	test("draws what its turn boundaries append as it happens, and the same after a reload", async ({ page }, testInfo) => {
+		const phone = testInfo.project.name.includes("iphone");
+		const root = await mkdtemp(join(await realpath(tmpdir()), "pi-web-peer-live-e2e-"));
+		const cwd = join(root, "repo");
+		await mkdir(cwd);
+		await mkdir(join(root, "agent", "extensions"), { recursive: true });
+		await writeFile(join(root, "agent", "extensions", "boundary.ts"), BOUNDARY_EXTENSION);
+		await writeFile(join(root, "agent", "auth.json"), JSON.stringify({ "e2e-faux": { type: "api_key", key: "not-a-real-key" } }));
+		const port = await freePort();
+		const base = `http://127.0.0.1:${port}`;
+		const server = await startServer(root, port);
+		const streams = [];
+		page.on("request", (request) => {
+			if (/\/api\/sessions\/[^/]+\/events/.test(request.url())) streams.push(request.url());
+		});
+		const send = async (value) => {
+			await page.locator("#inp").fill(value);
+			if (phone) await page.locator("#kb-enter").click();
+			else await page.locator("#inp").press("Enter");
+		};
+		try {
+			await page.goto(`${base}/?ui=phone`);
+			const created = await page.evaluate(async (repo) => {
+				const client = await (await fetch("/api/client", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+				const added = await fetch("/api/repos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo }) });
+				if (!added.ok) throw new Error(`repo not added: ${added.status}`);
+				const res = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: client.clientId, cwd: repo }) });
+				return res.json();
+			}, cwd);
+			await page.reload();
+			if (phone) await page.locator("#kb-menu").click();
+			await page.locator(`.si[data-session-id="${created.sessionId}"]`).click();
+			await expect(page.locator("#role-pill")).toHaveText("controller");
+			const msgs = page.locator("#msgs");
+
+			await send("first");
+			await expect(msgs.locator(".relay-note .relay-line")).toHaveText(["relay · 41% · 41%: finish the step"]);
+			await send("second");
+			await expect(msgs.locator(".compact-card.relay .compact-label")).toHaveText(["relay #1 · context reset at 45%"]);
+			await expect(msgs.locator(".msg-card .msg-body")).toHaveText(["done here"]);
+			await expect(msgs.locator(".msg-card .msg-tag")).toHaveText(["finished"]);
+			const order = () => msgs.locator(":scope > *").evaluateAll((nodes) => nodes.map((node) => node.className.split(" ")[0]));
+			expect(await order()).toEqual(["user-msg", "assistant-block", "relay-note", "user-msg", "assistant-block", "compact-card", "msg-card"]);
+			expect(streams).toHaveLength(1);
+
+			await page.reload();
+			if (phone) await page.locator("#kb-menu").click();
+			await page.locator(`.si[data-session-id="${created.sessionId}"]`).click();
+			await expect(msgs.locator(".msg-card")).toHaveCount(1);
+			expect(await order()).toEqual(["user-msg", "assistant-block", "relay-note", "user-msg", "assistant-block", "compact-card", "msg-card"]);
+		} finally {
+			await stopServer(server).catch(() => {});
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
 test.describe("from a session file", () => {
 	test("the phone shows the lead's peers and relay, and the worker's name opens the worker", async ({ page }, testInfo) => {
 		const { root, leadPath, port, base } = await setup();

@@ -11,13 +11,22 @@ function messageTimestamp(message) {
 	return message && typeof message.timestamp === "number" ? message.timestamp : null;
 }
 
+/**
+ * A compaction summary without an entry id comes from a model projection, which puts it first: it moves to where
+ * its timestamp says. One with an entry id is already where its entry is (a relay reset and the note appended with
+ * it share a millisecond, so timestamps can't place it).
+ */
+function isLooseCompaction(message) {
+	return Boolean(message && typeof message === "object" && message.role === "compactionSummary" && typeof message.entryId !== "string");
+}
+
 export function orderMessagesForDisplay(messages) {
 	if (!Array.isArray(messages)) return [];
 	const indexed = messages.map((message, index) => ({ message, index }));
-	const compactions = indexed.filter(({ message }) => message && typeof message === "object" && message.role === "compactionSummary");
+	const compactions = indexed.filter(({ message }) => isLooseCompaction(message));
 	if (compactions.length === 0) return messages;
 
-	const ordered = indexed.filter(({ message }) => !message || typeof message !== "object" || message.role !== "compactionSummary").map(({ message }) => message);
+	const ordered = indexed.filter(({ message }) => !isLooseCompaction(message)).map(({ message }) => message);
 	for (const { message } of compactions.sort((a, b) => a.index - b.index)) {
 		const ts = messageTimestamp(message);
 		const insertAt =
