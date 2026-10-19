@@ -538,16 +538,27 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		return el;
 	}
 
+	/** msg's and relay's own drawing, or null to fall back to the generic notice (whatever shape they arrive in). */
+	function appendKnownCustomMessage(message) {
+		try {
+			if (message.customType === "msg") {
+				const view = msgView(message);
+				return view ? appendMsgMessage(view) : null;
+			}
+			if (message.customType === "relay") {
+				const view = relayView(message);
+				return view ? appendRelayNotice(view) : null;
+			}
+		} catch (error) {
+			console.error(`Couldn't draw a ${String(message.customType)} message`, error);
+		}
+		return null;
+	}
+
 	/** Extension messages: msg's as messages from another session, relay's as one-line notices, others as a notice. */
 	function appendCustomMessage(message) {
-		if (message.customType === "msg") {
-			const view = msgView(message);
-			if (view) return appendMsgMessage(view);
-		}
-		if (message.customType === "relay") {
-			const view = relayView(message);
-			if (view) return appendRelayNotice(view);
-		}
+		const known = appendKnownCustomMessage(message);
+		if (known) return known;
 		const text = extractTextContent(message.content);
 		if (!text) return null;
 		const type = typeof message.customType === "string" && message.customType ? `[${message.customType}] ` : "";

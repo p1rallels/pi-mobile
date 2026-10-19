@@ -67,7 +67,7 @@ export function msgView(message) {
 	if (!isRecord(message)) return null;
 	const details = isRecord(message.details) ? message.details : {};
 	const from = isRecord(details.from) ? details.from : {};
-	const body = typeof details.text === "string" ? details.text : unframeMsg(extractTextContent(message.content));
+	const body = trimmed(details.text) ? details.text : unframeMsg(extractTextContent(message.content));
 	if (!body.trim()) return null;
 	const kind = trimmed(details.kind);
 	return {

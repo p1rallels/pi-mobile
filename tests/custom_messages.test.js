@@ -38,6 +38,7 @@ describe("msg messages", () => {
 		expect(msgView(msg({ text: "orphan" }))?.sender).toEqual({ id: "", label: "another session", cwd: "" });
 		expect(msgView(msg({ from: "worker", text: 42, byUser: "yes" }, "<msg id=\"x\">\nfrom the frame\n</msg>\nhint"))).toMatchObject({ text: "from the frame", byUser: false });
 		expect(msgView({ role: "custom", customType: "msg", content: "plain words", display: true })?.text).toBe("plain words");
+		expect(msgView(msg({ from: FROM, text: " " }, "<msg id=\"x\">\nsaid in the frame\n</msg>"))?.text).toBe("said in the frame");
 		expect(msgView({ role: "custom", customType: "msg", content: [], display: true, details: {} })).toBeNull();
 		expect(msgView(null)).toBeNull();
 	});
