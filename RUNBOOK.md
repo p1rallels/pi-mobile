@@ -71,6 +71,8 @@ The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-
 
 On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime.
 
+Sessions pi-web disposed (idle, at the cap, at a restart) also come back by themselves when msg mail lands for them. Every 3 seconds pi-web lists `inbox/<id>/new/` for each of them in msg's store (`$PI_MSG_DIR`, else `$PI_CODING_AGENT_DIR/msg`, else `~/.pi/agent/msg`; startup prints the path), starting with mail that came while it was down, and resumes at most 4 per look with no viewer; msg in the session then takes the mail. pi-web only reads the store. At the cap a reopen only takes the slot of an idle unwatched session without mail of its own, otherwise the mail waits. The log has `[pi-web] reopened <id> for msg mail`, `[pi-web] disposed idle session <id> to make room for msg mail`, and once per newest message why one wasn't reopened: `not reopening … its file changed`, `… pid N runs it`, `no room to reopen …`, `could not reopen …`. The same mail reopens a session once per server run.
+
 `GET /health` reports the pi SDK version, uptime, memory, running/busy/viewer counts, and the tripwire and project trust modes.
 
 ### Toggles
