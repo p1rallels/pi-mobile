@@ -245,10 +245,15 @@ test.describe("with a fake event stream", () => {
 	const at = (seconds) => new Date(BASE_MS + seconds * 1000).toISOString();
 	const LIVE = [
 		{ type: "custom_message", id: "live0001", parentId: "e0000017", timestamp: at(30), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "one more thing: bump the version" }) },
-		{ type: "custom_message", id: "live0002", parentId: "live0001", timestamp: at(31), customType: "relay", content: "47%: wrap up this step and relay", display: true, details: { kind: "nudge", percent: 47 } },
-		{ type: "compaction", id: "live0003", parentId: "live0002", timestamp: at(32), summary: "relay #2 at 50%", firstKeptEntryId: "live0003", tokensBefore: 99_000, fromHook: true, details: { relay: { n: 2, percent: 50, note: "cut mid-step: run git status first" } } },
-		{ type: "custom", id: "live0004", parentId: "live0003", timestamp: at(33), customType: "relay-state", data: { n: 2 } },
-		{ type: "custom_message", id: "live0005", parentId: "live0004", timestamp: at(34), customType: "relay", content: "hidden", display: false, details: { kind: "nudge" } },
+		{ type: "custom_message", id: "live0002", parentId: "live0001", timestamp: at(31), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "version bumped, merged", kind: "ended" }) },
+		{ type: "custom_message", id: "live0003", parentId: "live0002", timestamp: at(32), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: { id: FLAKY, name: "flaky" }, text: "gone again", kind: "died" }) },
+		{ type: "custom_message", id: "live0004", parentId: "live0003", timestamp: at(33), customType: "msg", content: "<msg>…</msg>", display: true, details: msgDetails({ from: worker, text: "ship it after this", byUser: true }) },
+		{ type: "custom_message", id: "live0005", parentId: "live0004", timestamp: at(34), customType: "relay", content: "47%: wrap up this step and relay", display: true, details: { kind: "nudge", percent: 47 } },
+		{ type: "custom_message", id: "live0006", parentId: "live0005", timestamp: at(35), customType: "relay", content: "keep going", display: true, details: { kind: "loop", goal: "ship relay" } },
+		{ type: "compaction", id: "live0007", parentId: "live0006", timestamp: at(36), summary: "relay #2 at 50%", firstKeptEntryId: "live0007", tokensBefore: 99_000, fromHook: true, details: { relay: { n: 2, percent: 50, note: "cut mid-step: run git status first" } } },
+		{ type: "custom_message", id: "live0008", parentId: "live0007", timestamp: at(37), customType: "relay", content: "context reset by relay #2 at 50%\n\nrecent conversation:\n…", display: true, details: { kind: "reset", n: 2, percent: 50, note: "cut mid-step: run git status first" } },
+		{ type: "custom", id: "live0009", parentId: "live0008", timestamp: at(38), customType: "relay-state", data: { n: 2 } },
+		{ type: "custom_message", id: "live0010", parentId: "live0009", timestamp: at(39), customType: "relay", content: "hidden", display: false, details: { kind: "nudge" } },
 	];
 
 	test("draws msg and relay traffic, appended entries live and once, and a sender opens its session", async ({ page }, testInfo) => {
@@ -279,40 +284,51 @@ test.describe("with a fake event stream", () => {
 		// pi's turn boundaries: entries with no message events, drawn as they land; state and hidden ones draw nothing
 		await sse(page, 0, "frame", agentEvent({ type: "agent_start" }));
 		for (const entry of LIVE) await sse(page, 0, "frame", appendedFrame(entry), entry.id);
-		await expect(msgs.locator(".msg-card")).toHaveCount(5);
-		await expect(msgs.locator(".msg-card").last().locator(".msg-body")).toHaveText("one more thing: bump the version");
-		await expect(msgs.locator(".relay-note")).toHaveCount(3);
-		await expect(msgs.locator(".relay-note").last().locator(".relay-line")).toHaveText("relay · 47% · 47%: wrap up this step and relay");
-		await expect(msgs.locator(".compact-card.relay")).toHaveCount(2);
-		await expect(msgs.locator(".compact-card.relay").last().locator(".compact-label")).toHaveText("relay #2 · context reset at 50%");
-		await expect(msgs.locator(".compact-card.relay").last().locator(".compact-summary")).toHaveText("cut mid-step: run git status first (tap to expand)");
+		const cards = msgs.locator(".msg-card");
+		await expect(cards).toHaveCount(8);
+		await expect(cards.nth(4).locator(".msg-body")).toHaveText("one more thing: bump the version");
+		await expect(cards.nth(5).locator(".msg-tag")).toHaveText("finished");
+		await expect(cards.nth(6).locator(".msg-tag")).toHaveText("died");
+		await expect(cards.nth(7).locator(".msg-head")).toHaveText("✉ you, via worker");
+		const notes = msgs.locator(".relay-note .relay-line");
+		await expect(notes).toHaveText([
+			"relay · 41% · 41%: finish the step, commit, then call relay with a note for whoever picks this up",
+			`relay #1 · reset at 45% · ${RESET_NOTE}`,
+			"relay · 47% · 47%: wrap up this step and relay",
+			"relay · loop · ship relay",
+			"relay #2 · reset at 50% · cut mid-step: run git status first",
+		]);
+		const resets = msgs.locator(".compact-card.relay");
+		await expect(resets).toHaveCount(2);
+		await expect(resets.last().locator(".compact-label")).toHaveText("relay #2 · context reset at 50%");
+		await expect(resets.last().locator(".compact-summary")).toHaveText("cut mid-step: run git status first (tap to expand)");
 		await expect(msgs.locator("text=hidden")).toHaveCount(0);
-		await expect(msgs.locator(":scope > *").last()).toHaveClass(/compact-card relay/);
+		await expect(msgs.locator(":scope > *").last()).toHaveClass(/relay-note/);
 		await shoot(page, testInfo, "peer-traffic-live");
 
 		// a resync that brings the same entries again (an older cursor) draws only what's new
 		await sse(page, 0, "fail");
-		await expect.poll(() => page.evaluate(() => new URL(window.__sse[1]?.url ?? "http://x/").searchParams.get("since"))).toBe("live0005");
+		await expect.poll(() => page.evaluate(() => new URL(window.__sse[1]?.url ?? "http://x/").searchParams.get("since"))).toBe("live0010");
 		const again = transcriptOf(LIVE);
-		const later = { role: "user", content: text("after the reset"), timestamp: BASE_MS + 40_000, entryId: "live0006" };
+		const later = { role: "user", content: text("after the reset"), timestamp: BASE_MS + 40_000, entryId: "live0011" };
 		await sse(page, 1, "open");
-		await sse(page, 1, "frame", init({ mode: "append", since: last, messages: [...again, later] }, { cursor: "live0006" }), "live0006");
+		await sse(page, 1, "frame", init({ mode: "append", since: last, messages: [...again, later] }, { cursor: "live0011" }), "live0011");
 		await expect(msgs.locator(".user-msg").last()).toHaveText("after the reset");
-		await expect(msgs.locator(".msg-card")).toHaveCount(5);
-		await expect(msgs.locator(".relay-note")).toHaveCount(3);
+		await expect(msgs.locator(".msg-card")).toHaveCount(8);
+		await expect(msgs.locator(".relay-note")).toHaveCount(5);
 		await expect(msgs.locator(".compact-card.relay")).toHaveCount(2);
 
 		// and a full redraw shows each once too
 		await sse(page, 1, "fail");
 		await sse(page, 2, "open");
-		await sse(page, 2, "frame", init({ mode: "replace", messages: [...history, ...again, later], hasOlder: false }, { cursor: "live0006" }), "live0006");
+		await sse(page, 2, "frame", init({ mode: "replace", messages: [...history, ...again, later], hasOlder: false }, { cursor: "live0011" }), "live0011");
 		await expect(msgs.locator(".user-msg").last()).toHaveText("after the reset");
-		await expect(msgs.locator(".msg-card")).toHaveCount(5);
-		await expect(msgs.locator(".relay-note")).toHaveCount(3);
+		await expect(msgs.locator(".msg-card")).toHaveCount(8);
+		await expect(msgs.locator(".relay-note")).toHaveCount(5);
 		await expect(msgs.locator(".compact-card.relay")).toHaveCount(2);
 
 		// a sender this host doesn't know says so; a known one opens like a sidebar pick (here: running, so it attaches)
-		await msgs.locator(".msg-card.died .msg-from").click();
+		await msgs.locator(".msg-card.died .msg-from").first().click();
 		await expect(msgs.locator(".notice-text.error").last()).toHaveText(`flaky (${FLAKY}) isn't a session on this host.`);
 		await msgs.locator(".msg-card").last().locator(".msg-from").click();
 		await expect.poll(() => page.evaluate(() => window.__sse.at(-1)?.url ?? "")).toContain(`/api/sessions/${WORKER}/events`);
