@@ -39,13 +39,13 @@ export const stateWord = (party) => (party.state && party.state !== "live" ? par
 const resets = (n) => `${n} reset${n === 1 ? "" : "s"}`;
 
 /**
- * Hover text for a party: who it is, how it stands, where it runs, and whether a click opens it.
- * @param {Party} party
+ * Hover text for a party: who it is, how it stands, where it runs, and whether a click opens it (`canOpen`: there's a
+ * link to click, which takes a pane that opens sessions).
+ * @param {Party} party @param {boolean} [canOpen]
  */
-export function partyTitle(party) {
-	return [`${party.label} · ${party.id}`, party.state ?? "never ran msg", party.where, party.openable ? "click to open" : "pi-web can't open it"]
-		.filter(Boolean)
-		.join(" · ");
+export function partyTitle(party, canOpen = party.openable) {
+	const open = canOpen ? "click to open" : party.openable ? "" : "pi-web can't open it";
+	return [`${party.label} · ${party.id}`, party.state ?? "never ran msg", party.where, open].filter(Boolean).join(" · ");
 }
 
 /** @param {Party} party @returns {LinePart[]} */
@@ -142,7 +142,7 @@ export function lineageDetails(state) {
 	const relay = relayOf(state?.relay);
 	/** @param {Party} party @returns {DetailsRow} */
 	const row = (party) => ({
-		primary: [party.label, party.label === shortId(party.id) ? "" : shortId(party.id), stateWord(party)].filter(Boolean).join(" · "),
+		primary: [party.label, party.label === shortId(party.id) ? "" : shortId(party.id)].filter(Boolean).join(" · "),
 		secondary: [party.state ?? "never ran msg", party.where, party.openable ? "" : "pi-web can't open it"].filter(Boolean).join(" · "),
 		party,
 	});

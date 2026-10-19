@@ -116,6 +116,49 @@
     .top-pill.offline { color: #f0c674; border-color: #3a3424; background: #2a2618; }
     .top-pill.elsewhere { color: #81a2be; border-color: #2a3240; background: #1c222c; }
 
+    /* msg's lineage and relay's state (session/lineage_line.js): one line between the logo and the controls that
+       takes only the room left and cuts each segment short, the children first; it never grows the header */
+    .lineage-line {
+      flex: 1 1 0;
+      min-width: 0;
+      align-self: stretch;
+      margin: 0 12px;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      white-space: nowrap;
+      font-size: 11.5px;
+      color: #808080;
+      cursor: pointer;
+      user-select: none;
+    }
+    .lineage-line[hidden] { display: none; }
+    .lineage-line .lin-seg { line-height: 40px; }
+    .lin-seg { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .lin-seg + .lin-seg { margin-left: 9px; }
+    .lin-seg + .lin-seg::before {
+      content: "";
+      display: inline-block;
+      width: 1px;
+      height: 11px;
+      margin-right: 9px;
+      vertical-align: -1px;
+      background: #3a3a44;
+    }
+    /* the children give way first: beside them the parent and relay keep their width, up to a share of the line */
+    .lin-has-children > .lin-seg:not(.lin-seg-children) { flex-shrink: 0; max-width: 40%; }
+    .lin-seg-children { min-width: 5.5em; }
+    .lin-party { color: #a0a0a8; }
+    a.lin-party { color: #81a2be; text-decoration: underline; text-decoration-color: #3f5161; text-underline-offset: 3px; }
+    a.lin-party:hover { color: #a3c1da; text-decoration-color: currentColor; }
+    .lin-id, .lin-where, .lin-more { color: #5a5a64; }
+    .lin-state.is-died { color: #cc6666; }
+    .lin-state.is-offline { color: #f0c674; }
+    .lin-state.is-ended { color: #b5bd68; }
+    .lin-relay { color: #f0c674; }
+    .lin-loop { color: #de935f; }
+    .lin-nudge { color: #9a9070; }
+
 	    .top-btn {
 	      display: flex; align-items: center; gap: 6px;
 	      padding: 5px 8px;
@@ -206,6 +249,11 @@
 	    .menu-item.active { background: #1e2a20; border-color: #2a3a2a; }
 	    .menu-item .primary { color: #d4d4d4; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	    .menu-item .secondary { color: #666666; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+    .menu-item.is-static { cursor: default; }
+    .menu-item.is-static:hover { background: none; }
+    .menu-item.is-wrap .secondary { white-space: normal; overflow-wrap: anywhere; }
+    .menu-sub { margin: 0 0 4px 2px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: #5a5a64; }
+    .menu-list + .menu-sub { margin-top: 10px; }
 
 	    /* ── Layout ────────────────────────────────────────────── */
 	    .layout { display: flex; flex: 1; overflow: hidden; }
@@ -731,6 +779,9 @@
     @media (max-width: 740px) {
       .sidebar { width: 180px; }
       .top-btn span.txt { display: none; }
+      /* the lineage line takes the room "pi-web" had */
+      .app-header:has(> .lineage-line:not([hidden])) .app-logo-ver { display: none; }
+      .lineage-line { margin: 0 8px; }
     }
 
     @media (hover: none) and (pointer: coarse) and (max-width: 740px), (hover: none) and (pointer: coarse) and (max-height: 740px) {
@@ -747,6 +798,7 @@
 
       /* a msg sender is a link inside a line: a finger-sized target without moving the line */
       button.msg-from { padding: 8px 4px; margin: -8px -4px; }
+      .lineage-line a.lin-party { padding: 12px 0; }
 
       /* Prevent iOS input focus zoom + horizontal drift */
       .editor-input { font-size: 16px; }

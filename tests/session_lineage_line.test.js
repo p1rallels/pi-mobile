@@ -51,7 +51,7 @@ describe("the details a tap opens", () => {
 		expect(sections.map((section) => section.heading)).toEqual(["parent", "3 children", "relay"]);
 		expect(sections[1].rows.map((row) => [row.primary, row.secondary])).toEqual([
 			["died · 01a15313", "live · pi -p · ~/repo"],
-			["flaky · b2 · died", "died · pi -p · ~/f · pi-web can't open it"],
+			["flaky · b2", "died · pi -p · ~/f · pi-web can't open it"],
 			["+1 more", "not listed: the ones that ended longest ago go first"],
 		]);
 		expect(sections[2].rows.map((row) => row.primary)).toEqual(["2 resets of the context so far", "loop on", "nudged at 45%"]);
