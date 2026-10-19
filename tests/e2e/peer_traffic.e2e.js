@@ -318,6 +318,35 @@ test.describe("with a fake event stream", () => {
 		await expect.poll(() => page.evaluate(() => window.__sse.at(-1)?.url ?? "")).toContain(`/api/sessions/${WORKER}/events`);
 		expect(lookups).toEqual([FLAKY, WORKER]);
 	});
+
+	test("a message that wakes the session sits above the answer it gets", async ({ page }, testInfo) => {
+		await page.addInitScript(installFakeEventSource);
+		await page.route("**/api/client", (route) => route.fulfill({ json: { clientId: "fixture" } }));
+		const running = { id: LEAD, path: "/sessions/lead.jsonl", cwd: "/repo", firstMessage: "lead", created: at(0), modified: at(0), messageCount: 0, isRunning: true };
+		await page.route("**/api/active-sessions", (route) => route.fulfill({ json: { sessions: [running] } }));
+		await page.route("**/api/sessions/*/tripwire-alerts", (route) => route.fulfill({ json: { alerts: [], unreadAlerts: [], unreadCount: 0 } }));
+		await page.goto("/");
+		if (testInfo.project.name.includes("iphone")) await page.locator("#kb-menu").click();
+		await page.locator(`.si[data-session-id="${LEAD}"]`).click();
+		await sse(page, 0, "open");
+		await sse(page, 0, "frame", init({ mode: "replace", messages: [], hasOlder: false }));
+
+		// pi starts the turn first, then brings the message in (msg's triggerTurn, or a steer between turns)
+		const details = msgDetails({ from: worker, text: "are you there?" });
+		const woke = { role: "custom", customType: "msg", content: framed(details), display: true, details, timestamp: BASE_MS };
+		const answer = (value) => ({ role: "assistant", content: text(value), stopReason: "stop", usage, timestamp: BASE_MS + 1 });
+		await sse(page, 0, "frame", agentEvent({ type: "agent_start" }));
+		await sse(page, 0, "frame", agentEvent({ type: "turn_start" }));
+		await sse(page, 0, "frame", agentEvent({ type: "message_start", message: woke }));
+		await sse(page, 0, "frame", agentEvent({ type: "message_end", message: woke }, "m1"), "m1");
+		await sse(page, 0, "frame", agentEvent({ type: "message_start", message: { ...answer(""), content: [] } }));
+		await sse(page, 0, "frame", agentEvent({ type: "message_update", usage, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "yes, " } }));
+		await sse(page, 0, "frame", agentEvent({ type: "message_end", message: answer("yes, here") }, "a1"), "a1");
+
+		const order = () => page.locator("#msgs > *").evaluateAll((nodes) => nodes.map((node) => (node.classList.contains("msg-card") ? "msg" : node.textContent?.trim())));
+		await expect.poll(order).toEqual(["msg", "yes, here"]);
+		await expect(page.locator(".msg-card .msg-body")).toHaveText("are you there?");
+	});
 });
 
 function freePort() {

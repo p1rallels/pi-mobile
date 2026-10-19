@@ -525,6 +525,19 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		return typeof message.errorMessage === "string" && message.errorMessage.trim() ? `Error: ${message.errorMessage.trim()}` : "Error";
 	}
 
+	/**
+	 * pi starts a turn before the messages it brings in (a steered msg, one that wakes the session), so a message
+	 * that lands while the turn's assistant block is still empty goes above it, like a user message: the answer
+	 * streams in below what it answers.
+	 * @param {HTMLElement | null} el
+	 */
+	function aheadOfEmptyAssistant(el) {
+		const assistant = currentAssistant;
+		if (!el || !assistant || assistant.rawText !== "" || assistant.rawThinking !== "") return el;
+		if (assistant.block.parentNode === msgsEl && el.parentNode === msgsEl) msgsEl.insertBefore(el, assistant.block);
+		return el;
+	}
+
 	/** Extension messages: msg's as messages from another session, relay's as one-line notices, others as a notice. */
 	function appendCustomMessage(message) {
 		if (message.customType === "msg") {
@@ -924,7 +937,7 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 				return;
 			}
 			if (msg.role === "custom") {
-				if (msg.display !== false) confirmNode(appendCustomMessage(msg), entryId);
+				if (msg.display !== false) confirmNode(aheadOfEmptyAssistant(appendCustomMessage(msg)), entryId);
 				noteEntry(entryId);
 				return;
 			}
