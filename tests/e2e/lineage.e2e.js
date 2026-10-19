@@ -16,7 +16,7 @@ const LEAD = "01a152a0-0000-7000-8000-00000000000a";
 const SCOUT = "01a152d4-0000-7000-8000-00000000000b";
 const FLAKY = "01a152d4-0000-7000-8000-00000000000c";
 const WORKER = "01a152d4-0000-7000-8000-00000000000d";
-// above any pid macOS hands out (99998), so kill(pid, 0) says it's gone
+// above any pid macOS hands out (99998) and rarely reached on linux, so kill(pid, 0) says it's gone
 const DEAD_PID = 999_999;
 const GOAL = "ship the lineage pill";
 const LIVE_TIMEOUT = { timeout: 10_000 };
