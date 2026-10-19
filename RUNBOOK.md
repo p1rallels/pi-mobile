@@ -69,11 +69,16 @@ bun run cli -- service uninstall
 
 The agents live in `~/Library/LaunchAgents/dev.pi-web.server.plist` and `dev.pi-web.caddy.plist`, with logs in `~/.pi-web/logs/`. The server agent runs pi-web from the checkout that ran `install` and captures that shell's `PATH` (minus the `node_modules/.bin` entries `bun run` adds), because launchd starts agents with a bare `PATH` and the agent's bash tool needs your tools. Re-run `install` after moving the repo or changing `PATH`.
 
-On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime.
+On SIGTERM (launchd stop, `kill`, Ctrl+C) pi-web aborts running turns, records every live session in `~/.pi/agent/pi-web/detached-sessions.json` and exits. After the restart, open tabs re-attach those sessions on their own unless the session file changed in the meantime. Records of sessions that open read-only now (subs, and sessions whose folder is gone) are dropped at the start and at every idle sweep: `[pi-web] forgot <id> for re-attach: its folder is gone` (or `it's a sub, which pi-web only shows`).
 
-Sessions pi-web disposed (idle, at the cap, at a restart) also come back by themselves when msg mail lands for them. Every 3 seconds pi-web lists `inbox/<id>/new/` for each of them in msg's store (`$PI_MSG_DIR`, else `$PI_CODING_AGENT_DIR/msg`, else `~/.pi/agent/msg`; startup prints the path), starting with mail that came while it was down, and resumes at most 4 per look with no viewer; msg in the session then takes the mail. pi-web only reads the store. At the cap a reopen only takes the slot of an idle unwatched session without mail of its own, otherwise the mail waits. The log has `[pi-web] reopened <id> for msg mail`, `[pi-web] disposed idle session <id> to make room for msg mail`, and once per newest message why one wasn't reopened: `not reopening … its file changed`, `… pid N runs it`, `no room to reopen …`, `could not reopen …`. The same mail reopens a session once per server run.
+The idle sweep runs every minute (a quarter of `PI_WEB_IDLE_SESSION_MINUTES` when that's shorter, fractions allowed), the first one right at the start. It reads msg's presence records once (`sessions/` in msg's store: a readdir and the files that changed), then:
 
-`GET /health` reports the pi SDK version, uptime, memory, running/busy/viewer counts, and the tripwire and project trust modes.
+- disposes sessions idle that long that nobody watches and no sub counts on: `[pi-web] disposed idle session <id>`. A sub counts on its parent until it ends, or for 5 minutes past its last heartbeat when it crashed or hung, so the parent's msg gets to say it died.
+- brings back, with no viewer, detached sessions a sub counts on (after a restart, so msg in them watches their subs again), at most 4 per sweep: `[pi-web] reopened <id> for its subs`. Once per reason it says why one stays down: `not reopening <id> for its subs: its file changed since pi-web disposed it`, `… pid N runs it`, `… it opens read-only`, `no room to reopen <id> for its subs: …` (it tries again next sweep), `could not reopen <id> for its subs: …` (not again this server run).
+
+Sessions pi-web disposed (idle, at the cap, at a restart) also come back by themselves when msg mail lands for them. Every 3 seconds pi-web lists `inbox/<id>/new/` for each of them in msg's store (`$PI_MSG_DIR`, else `$PI_CODING_AGENT_DIR/msg`, else `~/.pi/agent/msg`; startup prints the path), starting with mail that came while it was down, and resumes at most 4 per look with no viewer; msg in the session then takes the mail. pi-web only reads the store. At the cap a reopen only takes the slot of an idle unwatched session without mail of its own, otherwise the mail waits. The log has `[pi-web] reopened <id> for msg mail`, `[pi-web] disposed idle session <id> to make room for msg mail`, and once per newest message why one wasn't reopened: `not reopening … its file changed`, `… pid N runs it`, `no room to reopen …`, `could not reopen …`. The same mail reopens a session once per server run. A sub or a session whose folder is gone never comes back for mail; its record is dropped: `[pi-web] not reopening <id> for msg mail: it's a sub, which pi-web only shows; forgot it for re-attach`.
+
+`GET /health` reports the pi SDK version, uptime, memory, running/busy/viewer counts, `waitingSessions` (idle, kept loaded while a sub of theirs counts; they don't count as busy, so they never hold a deploy up), and the tripwire and project trust modes.
 
 ### Toggles
 
@@ -269,7 +274,10 @@ Tune live-session limits with environment variables:
 ```bash
 PI_WEB_MAX_RUNNING_SESSIONS=24
 PI_WEB_MAX_CLIENTS_PER_SESSION=8
+PI_WEB_IDLE_SESSION_MINUTES=15     # fractions allowed: 0.05 sweeps a test server every 750ms
 ```
+
+At the cap a new session takes the slot of the least recently active idle session nobody watches, never one a sub counts on; with none, it's refused (`too_many_active_sessions`).
 
 ---
 
@@ -298,7 +306,7 @@ Run `scripts/deploy-live [commit]` from the main checkout. The commit defaults t
 - The log is `/tmp/pi-web-deploy.log`, and `--dry-run` shows what a deploy would do.
 - Deploying the commit that is already live just restarts it, so this is also the safe way to restart.
 - What's live: `git -C ../pi-web-live log -1 --oneline` and `curl -s 127.0.0.1:4317/health`.
-- After a restart, the sessions that were running come back on their own. A session nobody ever sent a message to is gone, and its tile or page starts fresh in the same folder.
+- After a restart, the sessions that were running come back on their own. A session nobody ever sent a message to is gone, and its tile or page starts fresh in the same folder. Parents whose subs still count come back right away with nobody watching (`[pi-web] reopened <id> for its subs` in the log), so their msg reports a sub that dies meanwhile.
 - A restart ends every terminal tile's shell (and whatever runs in it, ssh included); `terminals` in `/health` counts them. Their tiles open new shells in the same folders.
 - Open pages keep the old frontend until you reload them. A reload doesn't touch running sessions, which run on the host, but it drops unsent composer text.
 - Without launchd, check the commit out in the worktree yourself, or give the script a restart command in `PI_WEB_DEPLOY_RESTART`.
@@ -314,7 +322,9 @@ scripts/sandbox bun run test:e2e          # one test: scripts/sandbox bunx playw
 scripts/sandbox bun run mock              # the fake-data UI shell on :8787
 ```
 
-Dev ports are 4318 (e2e), 4319 (a manual sandbox server), 8787 (mock UI), and anything from 4320 up. 4317, 8443 and 2019 belong to the live server and Caddy.
+Dev ports are 4318 (e2e), 4321 (e2e's mock UI), 4319 (a manual sandbox server), 8787 (mock UI), and anything from 4320 up. 4317, 8443 and 2019 belong to the live server and Caddy.
+
+Playwright reuses whatever server answers on its port, another checkout's too. So in a pfs fork, whose run gets its own block of 10 ports in `$PORT` (anything but 4317, 4318, 4321, 8443 and 2019), the same commands default to that block: the state dir is `$TMPDIR/pi-web-sandbox-$PORT`, e2e runs on `$PORT` and its mock UI on `$PORT`+1. Put a manual sandbox server on `$PORT`+2 or above. `PI_WEB_SANDBOX_DIR`, `PI_WEB_E2E_PORT` and `PI_WEB_E2E_MOCK_PORT` still win when set. The main checkout (no `$PORT`) keeps the ports above.
 
 ### Rules for agents working inside pi-web
 
