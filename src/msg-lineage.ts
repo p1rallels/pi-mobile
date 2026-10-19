@@ -1,22 +1,17 @@
-// msg's lineage, read from its on-disk store: who started a session (its parent), the sessions it started (its
-// children) and how each of them stands. The store is msg's contract (~/Desktop/cc/msg-cli, README "Store" and
-// "Lineage", src/core/paths.ts and registry.ts); pi-web only ever reads it, and imports nothing from msg.
+// msg's lineage, read from its on-disk store (msg-store.ts): who started a session (its parent), the sessions it
+// started (its children) and how each of them stands (msg's README "Lineage").
 //
-//   <root>/sessions/<session id>.json   presence: name, parent, cwd, pid, mode, activity, startedAt, heartbeatAt, endedAt
-//
-// root: $PI_MSG_DIR, else $PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg. Every live session rewrites its record at
-// least every 10s, through a temp file renamed into place, and the store can hold hundreds of records: one index keeps
-// them, refreshed from a readdir and the files' mtimes, and reads only the records that changed. A feed refreshes it on
-// a timer while someone looks at a session, works out each watched session's lineage and says when one changes.
+// Every live session rewrites its presence record at least every 10s, through a temp file renamed into place, and the
+// store can hold hundreds of records: one index keeps them, refreshed from a readdir and the files' mtimes, and reads
+// only the records that changed. A feed refreshes it on a timer while someone looks at a session, works out each
+// watched session's lineage and says when one changes.
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { parsePresence, pidAlive, STALE_AFTER_MS, type PidProbe, type Presence, type PresenceMode } from "./msg-store.ts";
 import { sessionDirForCwd } from "./session-index.ts";
 import type { ApiLineage, ApiLineageParty, ApiLineageState } from "./types.ts";
 
-export const PRESENCE_VERSION = 1;
-/** A record whose heartbeat is older than this is offline, whatever it claims (msg's STALE_AFTER_MS). */
-export const STALE_AFTER_MS = 45_000;
 /** How many children the header lists; the count covers the rest. */
 export const LISTED_CHILDREN = 8;
 export const DEFAULT_LINEAGE_REFRESH_MS = 2_000;
@@ -27,30 +22,6 @@ const FORGET_AFTER_MS = 10 * 60_000;
 /** How long a session file found nowhere (a parent without a record) stays not found before the next look. */
 const NOWHERE_RETRY_MS = 60_000;
 const STAT_CONCURRENCY = 16;
-const MAX_NAME_LENGTH = 64;
-
-export type PresenceMode = "tui" | "rpc" | "json" | "print" | "web" | "cli";
-
-export interface Presence {
-	id: string;
-	name?: string;
-	/** The session whose bash started this one. */
-	parent?: string;
-	cwd: string;
-	pid: number;
-	mode: PresenceMode;
-	activity: "idle" | "busy";
-	startedAt: number;
-	heartbeatAt: number;
-	endedAt?: number;
-}
-
-export type PidProbe = (pid: number) => boolean;
-
-type Env = Readonly<Record<string, string | undefined>>;
-
-const MODES: readonly PresenceMode[] = ["tui", "rpc", "json", "print", "web", "cli"];
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** How each mode reads in a "where it runs" line. */
 const MODE_LABELS: Readonly<Record<PresenceMode, string>> = {
@@ -62,67 +33,7 @@ const MODE_LABELS: Readonly<Record<PresenceMode, string>> = {
 	cli: "msg cli",
 };
 
-export const isValidId = (id: string): boolean => ID_PATTERN.test(id) && !id.includes("..");
-
-const expandHome = (path: string, home: string): string => {
-	if (path === "~") return home;
-	return path.startsWith("~/") ? join(home, path.slice(2)) : path;
-};
-
-const nonEmpty = (value: string | undefined): string | undefined => value?.trim() || undefined;
-
-/** Where msg keeps its store: $PI_MSG_DIR, else $PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg. */
-export function msgStoreRoot(env: Env = process.env, home: string = homedir()): string {
-	const configured = nonEmpty(env.PI_MSG_DIR);
-	if (configured) return expandHome(configured, home);
-	const agentDir = nonEmpty(env.PI_CODING_AGENT_DIR);
-	return join(agentDir ? expandHome(agentDir, home) : join(home, ".pi", "agent"), "msg");
-}
-
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-const finite = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
-
-const normalizeName = (value: unknown): string | undefined => {
-	const name = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-	return name ? name.slice(0, MAX_NAME_LENGTH) : undefined;
-};
-
-/** A presence record the way msg reads one (registry.ts parsePresence), or null when it isn't one. */
-export function parsePresence(value: unknown): Presence | null {
-	if (!isRecord(value) || value.v !== PRESENCE_VERSION) return null;
-	const id = typeof value.id === "string" ? value.id : "";
-	const pid = finite(value.pid);
-	const startedAt = finite(value.startedAt);
-	const heartbeatAt = finite(value.heartbeatAt);
-	if (!isValidId(id) || pid === undefined || startedAt === undefined || heartbeatAt === undefined) return null;
-	const name = normalizeName(value.name);
-	const parent = typeof value.parent === "string" && isValidId(value.parent) && value.parent !== id ? value.parent : undefined;
-	const endedAt = finite(value.endedAt);
-	return {
-		id,
-		...(name ? { name } : {}),
-		...(parent ? { parent } : {}),
-		cwd: typeof value.cwd === "string" ? value.cwd : "",
-		pid,
-		mode: MODES.find((mode) => mode === value.mode) ?? "rpc",
-		activity: value.activity === "busy" ? "busy" : "idle",
-		startedAt,
-		heartbeatAt,
-		...(endedAt !== undefined ? { endedAt } : {}),
-	};
-}
-
-/** `kill(pid, 0)` checks the process exists without signalling it; EPERM still means it does. */
-export const pidAlive: PidProbe = (pid) => {
-	if (!Number.isInteger(pid) || pid <= 0) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return isRecord(error) && error.code === "EPERM";
-	}
-};
 
 /**
  * ended: it said so. died: its process is gone and it never ended (killed, crashed; msg tells its parent). live: a

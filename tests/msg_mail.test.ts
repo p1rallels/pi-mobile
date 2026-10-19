@@ -4,16 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	freeSlots,
-	isMailboxId,
 	MAX_REOPENS_PER_LOOK,
-	msgStoreRoot,
 	newestMessage,
-	newMailDir,
 	ownedElsewhere,
-	parsePresence,
 	planMailReopens,
-	presencePath,
-	PRESENCE_STALE_MS,
+	presenceFor,
 	waitingMail,
 	watchMsgMail,
 	type DetachedRef,
@@ -24,6 +19,7 @@ import {
 	type Room,
 	type RunningRef,
 } from "../src/msg-mail.ts";
+import { newMailDir, presencePath, STALE_AFTER_MS } from "../src/msg-store.ts";
 
 const NOW = Date.parse("2026-10-19T08:00:00.000Z");
 const SELF = 4242;
@@ -57,22 +53,7 @@ function input(fields: Partial<MailInput> & { detached: DetachedRef[] }): MailIn
 	};
 }
 
-describe("msg's store as pi-web reads it", () => {
-	test("the root is msg's: PI_MSG_DIR, else PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg", () => {
-		expect(msgStoreRoot({}, "/home/me")).toBe("/home/me/.pi/agent/msg");
-		expect(msgStoreRoot({ PI_CODING_AGENT_DIR: "/tmp/agent" }, "/home/me")).toBe("/tmp/agent/msg");
-		expect(msgStoreRoot({ PI_CODING_AGENT_DIR: " ~/agent " }, "/home/me")).toBe("/home/me/agent/msg");
-		expect(msgStoreRoot({ PI_MSG_DIR: "~/mail", PI_CODING_AGENT_DIR: "/tmp/agent" }, "/home/me")).toBe("/home/me/mail");
-		expect(msgStoreRoot({ PI_MSG_DIR: "  ", PI_CODING_AGENT_DIR: "~" }, "/home/me")).toBe("/home/me/msg");
-	});
-
-	test("inboxes and presence records sit under the root by session id, and ids msg wouldn't take name none", () => {
-		expect(newMailDir("/r", A)).toBe(`/r/inbox/${A}/new`);
-		expect(presencePath("/r", A)).toBe(`/r/sessions/${A}.json`);
-		expect(isMailboxId(A)).toBe(true);
-		for (const id of ["", "../x", "a/b", ".hidden", "a..b", "x".repeat(129)]) expect(isMailboxId(id)).toBe(false);
-	});
-
+describe("mail and presence as msg-mail reads them", () => {
 	test("the newest message is the last id in new/, with temp files and other names aside", () => {
 		expect(newestMessage(undefined)).toBeNull();
 		expect(newestMessage([])).toBeNull();
@@ -82,20 +63,20 @@ describe("msg's store as pi-web reads it", () => {
 
 	test("a presence record counts only as msg's parser takes it, and only for its own session", () => {
 		const record = { v: 1, id: A, cwd: "/repo", pid: OTHER, mode: "web", activity: "idle", startedAt: NOW - 60_000, heartbeatAt: NOW - 1_000 };
-		expect(parsePresence(record, A)).toEqual({ pid: OTHER, heartbeatAt: NOW - 1_000 });
-		expect(parsePresence({ ...record, endedAt: NOW }, A)).toEqual({ pid: OTHER, heartbeatAt: NOW - 1_000, endedAt: NOW });
-		expect(parsePresence(record, B)).toBeNull();
+		expect(presenceFor(record, A)).toMatchObject({ pid: OTHER, heartbeatAt: NOW - 1_000 });
+		expect(presenceFor({ ...record, endedAt: NOW }, A)?.endedAt).toBe(NOW);
+		expect(presenceFor(record, B)).toBeNull();
 		for (const broken of [{ ...record, v: 2 }, { ...record, heartbeatAt: "now" }, { ...record, startedAt: undefined }, { ...record, pid: null }, [record], null, "x"]) {
-			expect(parsePresence(broken, A)).toBeNull();
+			expect(presenceFor(broken, A)).toBeNull();
 		}
 	});
 
 	test("another process runs a session while its record is live there: not ended, a fresh heartbeat, a running pid that isn't this server", () => {
 		expect(ownedElsewhere(live(), SELF, NOW)).toBe(true);
-		expect(ownedElsewhere(live({ heartbeatAt: NOW - PRESENCE_STALE_MS }), SELF, NOW)).toBe(true);
+		expect(ownedElsewhere(live({ heartbeatAt: NOW - STALE_AFTER_MS }), SELF, NOW)).toBe(true);
 		expect(ownedElsewhere(undefined, SELF, NOW)).toBe(false);
 		expect(ownedElsewhere(live({ endedAt: NOW - 500 }), SELF, NOW)).toBe(false);
-		expect(ownedElsewhere(live({ heartbeatAt: NOW - PRESENCE_STALE_MS - 1 }), SELF, NOW)).toBe(false);
+		expect(ownedElsewhere(live({ heartbeatAt: NOW - STALE_AFTER_MS - 1 }), SELF, NOW)).toBe(false);
 		expect(ownedElsewhere(live({ pidAlive: false }), SELF, NOW)).toBe(false);
 		expect(ownedElsewhere(live({ pid: SELF }), SELF, NOW)).toBe(false);
 	});

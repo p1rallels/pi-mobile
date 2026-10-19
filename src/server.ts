@@ -8,7 +8,8 @@ import { isTypedPath, listDirectories } from "./directories.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { dropInheritedSessionIdentity } from "./inherited-session.ts";
 import { FaceIdService } from "./faceid.ts";
-import { msgStoreRoot, watchMsgMail } from "./msg-mail.ts";
+import { watchMsgMail } from "./msg-mail.ts";
+import { msgStoreRoot } from "./msg-store.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
@@ -880,16 +881,17 @@ const projectTrustMode = parseProjectTrustMode(process.env.PI_WEB_PROJECT_TRUST)
 const tripwireMode = parseTripwireMode(process.env.PI_WEB_TRIPWIRE);
 const terminalsMode = parseTerminalsMode(process.env.PI_WEB_TERMINALS);
 const terminals = terminalsMode === "on" ? createTerminalManager() : null;
+const msgRoot = msgStoreRoot(process.env);
 const runtime = new PiWebRuntime({
 	maxRunningSessions,
 	maxClientsPerSession,
 	idleSessionTtlMs: idleSessionMinutes * 60_000,
 	projectTrustMode,
 	tripwire: tripwireMode,
+	msgDir: msgRoot,
 });
 runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
-const msgRoot = msgStoreRoot(process.env);
 const msgMail = watchMsgMail(runtime, { root: msgRoot });
 const faceId = new FaceIdService(join(getAgentDir(), "pi-web", "faceid-credentials.json"));
 const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));

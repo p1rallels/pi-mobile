@@ -6,16 +6,13 @@ import {
 	createLineageFeed,
 	createPresenceIndex,
 	createSessionFiles,
-	msgStoreRoot,
 	orderChildren,
 	parentParty,
-	parsePresence,
 	presenceState,
-	STALE_AFTER_MS,
 	whereOf,
 	type JudgedPresence,
-	type Presence,
 } from "../src/msg-lineage.ts";
+import { STALE_AFTER_MS, type Presence } from "../src/msg-store.ts";
 import type { ApiLineage } from "../src/types.ts";
 
 const NOW = 1_792_395_160_000;
@@ -34,27 +31,7 @@ const presence = (fields: Partial<Presence> & { id: string }): Presence => ({
 	...fields,
 });
 
-describe("msg's store", () => {
-	test("lives at $PI_MSG_DIR, else $PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg", () => {
-		expect(msgStoreRoot({ PI_MSG_DIR: "/x/msg", PI_CODING_AGENT_DIR: "/agent" }, "/home/me")).toBe("/x/msg");
-		expect(msgStoreRoot({ PI_MSG_DIR: "~/m" }, "/home/me")).toBe("/home/me/m");
-		expect(msgStoreRoot({ PI_MSG_DIR: "  ", PI_CODING_AGENT_DIR: "~/agent" }, "/home/me")).toBe("/home/me/agent/msg");
-		expect(msgStoreRoot({}, "/home/me")).toBe("/home/me/.pi/agent/msg");
-	});
-
-	test("presence records read the way msg reads them", () => {
-		const raw = { v: 1, id: PILL, parent: LEAD, cwd: "/repo/.forks/2", pid: 77172, mode: "print", activity: "busy", startedAt: 1, heartbeatAt: 2, name: "  lineage\n pill " };
-		expect(parsePresence(raw)).toEqual({ id: PILL, name: "lineage pill", parent: LEAD, cwd: "/repo/.forks/2", pid: 77172, mode: "print", activity: "busy", startedAt: 1, heartbeatAt: 2 });
-		expect(parsePresence({ ...raw, endedAt: 3 })?.endedAt).toBe(3);
-		expect(parsePresence({ ...raw, mode: "spaceship", activity: "dancing" })).toMatchObject({ mode: "rpc", activity: "idle" });
-		expect(parsePresence({ ...raw, parent: PILL })?.parent).toBeUndefined();
-		expect(parsePresence({ ...raw, parent: "../escape" })?.parent).toBeUndefined();
-		expect(parsePresence({ ...raw, v: 2 })).toBeNull();
-		expect(parsePresence({ ...raw, id: "../x" })).toBeNull();
-		expect(parsePresence({ ...raw, pid: "77172" })).toBeNull();
-		expect(parsePresence([raw])).toBeNull();
-	});
-
+describe("msg's lineage", () => {
 	test("a session is live, ended, died or offline", () => {
 		const alive = (pid: number) => pid === 100;
 		expect(presenceState(presence({ id: PILL }), NOW, alive)).toBe("live");

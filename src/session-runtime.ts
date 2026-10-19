@@ -44,7 +44,8 @@ import {
 import { findGitHead, readGitBranch, watchGitBranch, type GitBranchWatch } from "./git-branch.ts";
 import type { DetachedRef, MailHost, MailReopen, Room } from "./msg-mail.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
-import { createLineageFeed, msgStoreRoot, type LineageFeed, type PidProbe } from "./msg-lineage.ts";
+import { createLineageFeed, type LineageFeed } from "./msg-lineage.ts";
+import { msgStoreRoot, type PidProbe } from "./msg-store.ts";
 import { advanceRelay, relayStateOf, relayView, type RelayFold } from "./relay-state.ts";
 import { classifyNeverSaved } from "./never-saved.ts";
 import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";

@@ -4,56 +4,15 @@
 // children. This brings such a session back, with no viewer, when mail lands in its inbox, and msg in the resumed
 // session delivers what waited and wakes it.
 //
-// pi-web only reads the store (msg's README, "Store"), and never writes, claims or moves a message:
-//   <root>/sessions/<session id>.json        presence: pid, heartbeatAt, endedAt
-//   <root>/inbox/<session id>/new/<id>.json  mail nobody claimed yet (written to tmp/, renamed in)
-// The decision (planMailReopens) is pure; watchMsgMail feeds it every few seconds and carries it out.
+// pi-web only reads the store (msg-store.ts), and never writes, claims or moves a message. The decision
+// (planMailReopens) is pure; watchMsgMail feeds it every few seconds and carries it out.
 import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { isAlive } from "./outside-writers.ts";
+import { isMsgId, newMailDir, parsePresence, pidAlive as probePid, presencePath, STALE_AFTER_MS, type Presence } from "./msg-store.ts";
 
-type Env = Readonly<Record<string, string | undefined>>;
-
-/** msg's STALE_AFTER_MS: a presence record whose heartbeat is older than this is offline, whatever it claims. */
-export const PRESENCE_STALE_MS = 45_000;
 /** How often the detached sessions' inboxes are looked at: a readdir each, nothing read. */
 export const MAIL_SWEEP_MS = 3_000;
 /** Resumes one look starts at most (each loads extensions and models): after a restart with a lot of mail, the rest follow. */
 export const MAX_REOPENS_PER_LOOK = 4;
-
-/** msg's ids (src/core/paths.ts): anything else names no mailbox, and never becomes a path. */
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-export function isMailboxId(id: string): boolean {
-	return ID_PATTERN.test(id) && !id.includes("..");
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-	const trimmed = value?.trim();
-	return trimmed ? trimmed : undefined;
-}
-
-function expandHome(path: string, home: string): string {
-	if (path === "~") return home;
-	return path.startsWith("~/") ? join(home, path.slice(2)) : path;
-}
-
-/** msg's store root: $PI_MSG_DIR, else $PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg; a leading ~ is home. */
-export function msgStoreRoot(env: Env, home = homedir()): string {
-	const configured = nonEmpty(env.PI_MSG_DIR);
-	if (configured) return expandHome(configured, home);
-	const agentDir = nonEmpty(env.PI_CODING_AGENT_DIR);
-	return join(agentDir ? expandHome(agentDir, home) : join(home, ".pi", "agent"), "msg");
-}
-
-export function newMailDir(root: string, sessionId: string): string {
-	return join(root, "inbox", sessionId, "new");
-}
-
-export function presencePath(root: string, sessionId: string): string {
-	return join(root, "sessions", `${sessionId}.json`);
-}
 
 /** The newest message in a new/ listing, as msg lists it (`<id>.json`, temp files aside); ids sort by time. */
 export function newestMessage(names: readonly string[] | undefined): string | null {
@@ -63,37 +22,21 @@ export function newestMessage(names: readonly string[] | undefined): string | nu
 	return newest === null ? null : newest.slice(0, -".json".length);
 }
 
-/** What a presence record says about the process running a session. */
-export interface Presence {
-	pid: number;
-	heartbeatAt: number;
-	endedAt?: number;
-}
-
-export interface ProbedPresence extends Presence {
+/** What a presence record says about the process running a session, and whether that pid still runs. */
+export interface ProbedPresence extends Pick<Presence, "pid" | "heartbeatAt" | "endedAt"> {
 	pidAlive: boolean;
 }
 
-function finite(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/** A presence record as msg's parsePresence accepts it, for this session; null for anything else. */
-export function parsePresence(raw: unknown, sessionId: string): Presence | null {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-	const record = raw as Record<string, unknown>;
-	if (record.v !== 1 || record.id !== sessionId) return null;
-	const pid = finite(record.pid);
-	const heartbeatAt = finite(record.heartbeatAt);
-	const endedAt = finite(record.endedAt);
-	if (pid === undefined || heartbeatAt === undefined || finite(record.startedAt) === undefined) return null;
-	return { pid, heartbeatAt, ...(endedAt !== undefined ? { endedAt } : {}) };
+/** A presence record as msg's parser takes it, and only for this session; null for anything else. */
+export function presenceFor(raw: unknown, sessionId: string): Presence | null {
+	const record = parsePresence(raw);
+	return record !== null && record.id === sessionId ? record : null;
 }
 
 /** msg's live (no endedAt, a heartbeat under 45s old, a running pid) in a process that isn't this server. */
 export function ownedElsewhere(presence: ProbedPresence | undefined, selfPid: number, now: number): boolean {
 	if (!presence || presence.endedAt !== undefined || presence.pid === selfPid) return false;
-	return now - presence.heartbeatAt <= PRESENCE_STALE_MS && presence.pidAlive;
+	return now - presence.heartbeatAt <= STALE_AFTER_MS && presence.pidAlive;
 }
 
 /** A session pi-web disposed (idle, at the cap, at a restart) and may bring back by itself: detachedByPath. */
@@ -252,14 +195,10 @@ async function listNewMail(root: string, sessionIds: readonly string[]): Promise
 
 async function readPresence(root: string, sessionId: string): Promise<Presence | null> {
 	try {
-		return parsePresence(JSON.parse(await readFile(presencePath(root, sessionId), "utf8")), sessionId);
+		return presenceFor(JSON.parse(await readFile(presencePath(root, sessionId), "utf8")), sessionId);
 	} catch {
 		return null;
 	}
-}
-
-function probePid(pid: number): boolean {
-	return Number.isInteger(pid) && pid > 0 && isAlive(pid);
 }
 
 function errorMessage(error: unknown): string {
@@ -334,7 +273,7 @@ export function watchMsgMail(host: MailHost, options: MailWatchOptions): MailWat
 
 	async function look(): Promise<void> {
 		if (stopped) return;
-		const detached = host.detachedSessions().filter((ref) => isMailboxId(ref.sessionId));
+		const detached = host.detachedSessions().filter((ref) => isMsgId(ref.sessionId));
 		const inbox = await listNewMail(root, detached.map((ref) => ref.sessionId));
 		forget(detached, inbox, host.sessionRoom());
 		const waiting = waitingMail(detached, inbox, reopenedFor);
@@ -345,7 +284,7 @@ export function watchMsgMail(host: MailHost, options: MailWatchOptions): MailWat
 		// a running session gives up its slot only with a known empty inbox, so list the ones that could when slots are short
 		const roomNow = host.sessionRoom();
 		const short = waiting.length > freeSlots(roomNow);
-		const evictable = short ? roomNow.running.filter((slot) => slot.evictable && isMailboxId(slot.sessionId)).map((slot) => slot.sessionId) : [];
+		const evictable = short ? roomNow.running.filter((slot) => slot.evictable && isMsgId(slot.sessionId)).map((slot) => slot.sessionId) : [];
 		const evictableInbox = await listNewMail(root, evictable);
 		if (stopped) return;
 		const room = host.sessionRoom();
