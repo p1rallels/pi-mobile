@@ -8,6 +8,7 @@ import { isTypedPath, listDirectories } from "./directories.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { dropInheritedSessionIdentity } from "./inherited-session.ts";
 import { FaceIdService } from "./faceid.ts";
+import { msgStoreRoot, watchMsgMail } from "./msg-mail.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
@@ -888,6 +889,8 @@ const runtime = new PiWebRuntime({
 });
 runtime.startIdleSweep();
 const restoredSessions = await runtime.loadDetachedSessions();
+const msgRoot = msgStoreRoot(process.env);
+const msgMail = watchMsgMail(runtime, { root: msgRoot });
 const faceId = new FaceIdService(join(getAgentDir(), "pi-web", "faceid-credentials.json"));
 const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));
 const revokedFaceIdTokens = new Map<string, number>();
@@ -1621,12 +1624,14 @@ console.log(`SDK extension auto-loading is enabled. Projects without a trust.jso
 console.log(`Tripwire: ${tripwireMode === "on" ? "on, critical tool calls are blocked" : "off"} (PI_WEB_TRIPWIRE).`);
 console.log(`Terminal tiles: ${terminalsMode} (PI_WEB_TERMINALS).`);
 if (restoredSessions > 0) console.log(`${String(restoredSessions)} session(s) from before the restart can re-attach.`);
+console.log(`msg mail: a session pi-web disposed comes back when mail for it lands in ${join(msgRoot, "inbox")}.`);
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	console.log(`[pi-web] ${signal}: stopping runs and saving sessions for re-attach`);
+	msgMail.stop();
 	terminals?.shutdown();
 	void server.stop();
 	try {

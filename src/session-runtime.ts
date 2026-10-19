@@ -42,6 +42,7 @@ import {
 	type PiProcess,
 } from "./outside-writers.ts";
 import { findGitHead, readGitBranch, watchGitBranch, type GitBranchWatch } from "./git-branch.ts";
+import type { DetachedRef, MailHost, MailReopen, Room } from "./msg-mail.ts";
 import { followInfo, readAppended, readSessionSnapshot } from "./session-follow.ts";
 import { classifyNeverSaved } from "./never-saved.ts";
 import { defaultScratchRoots, pickRepoSuggestions, REPO_SUGGESTION_LIMIT } from "./repo-suggestions.ts";
@@ -487,7 +488,7 @@ function serializeSessionSummary(entry: SessionSummary, isRunning: boolean, else
 	};
 }
 
-export class PiWebRuntime {
+export class PiWebRuntime implements MailHost {
 	private runningById = new Map<string, RunningSession>();
 	private runningByPath = new Map<string, string>();
 	private statusListeners = new Set<() => void>();
@@ -516,6 +517,8 @@ export class PiWebRuntime {
 	private followPollMs: number;
 	private followers = new Set<{ stop(): void }>();
 	private forkLabels: ReturnType<typeof createForkLabels>;
+	/** Set by shutdown: nothing comes back by itself (msg mail) once the server is stopping. */
+	private closing = false;
 
 	constructor(options: PiWebRuntimeOptions = {}) {
 		this.forkLabels = createForkLabels(options.listForks);
@@ -1229,7 +1232,47 @@ export class PiWebRuntime {
 		await this.resumeSession(path, clientId, { expectedSessionId: sessionId, restoredTrust: this.detachedByPath.get(path)?.projectTrusted });
 	}
 
-	private isUnchangedSinceDetach(path: string, sessionId: string): boolean {
+	/** Sessions pi-web disposed (idle, at the cap, at a restart) that it may bring back by itself, for msg mail (msg-mail.ts). */
+	detachedSessions(): DetachedRef[] {
+		return [...this.detachedByPath].map(([path, record]) => ({ sessionId: record.sessionId, path }));
+	}
+
+	/** Who holds the session slots, for msg mail's rule on making room (msg-mail.ts). */
+	sessionRoom(): Room {
+		return {
+			max: this.maxRunningSessions,
+			running: [...this.runningById.values()].map((runtime) => ({
+				sessionId: runtime.session.sessionId,
+				path: runtime.sessionFile,
+				evictable: this.isEvictable(runtime),
+				lastActivityAtMs: this.lastActivityAtMs(runtime),
+			})),
+			resuming: [...this.resumingByPath.keys()],
+		};
+	}
+
+	/**
+	 * Brings back a session pi-web disposed, with no viewer, because msg mail waits for it (msg-mail.ts): attachSession's
+	 * rule, nothing running or resuming it, and a free slot, or the one `evict` gives up when it's still idle and unwatched.
+	 * Checked and started in one synchronous step; null when it can't be reopened right now.
+	 */
+	reopenForMail(sessionId: string, path: string, evict: string | null): MailReopen | null {
+		if (this.closing || this.runningById.has(sessionId) || this.isHostedPath(path) || !this.isUnchangedSinceDetach(path, sessionId)) return null;
+		const room = this.hasRoom();
+		const candidate = evict === null ? undefined : this.runningById.get(evict);
+		const victim = !room && candidate && this.isEvictable(candidate) ? candidate : null;
+		if (!room && !victim) return null;
+		const allowed = this.assertAllowedResumePath(path);
+		const restoredTrust = this.detachedByPath.get(path)?.projectTrusted;
+		if (victim) {
+			this.rememberDetached(victim);
+			this.disposeRuntime(victim);
+		}
+		const running = this.resumeSession(allowed, null, { expectedSessionId: sessionId, restoredTrust }).then(() => undefined);
+		return { evicted: victim ? victim.session.sessionId : null, running };
+	}
+
+	isUnchangedSinceDetach(path: string, sessionId: string): boolean {
 		const detached = this.detachedByPath.get(path);
 		const current = fileFingerprint(path);
 		return Boolean(
@@ -1281,9 +1324,14 @@ export class PiWebRuntime {
 			});
 	}
 
-	/** Stops runs, records every session for re-attach after the restart, and disposes them. */
+	/** Stops runs, records every session for re-attach after the restart (resumes under way too), and disposes them. */
 	async shutdown(timeoutMs = 5_000): Promise<void> {
+		this.closing = true;
 		for (const follower of [...this.followers]) follower.stop();
+		if (this.resumingByPath.size > 0) {
+			const resumed = Promise.allSettled([...this.resumingByPath.values()]);
+			await Promise.race([resumed, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);
+		}
 		const runtimes = [...this.runningById.values()];
 		const stopped = Promise.allSettled(
 			runtimes.map(async (runtime) => {
@@ -1299,9 +1347,10 @@ export class PiWebRuntime {
 		await this.detachedWrites;
 	}
 
+	/** `clientId` null resumes with no controller: the first viewer to connect takes it. */
 	private async resumeSession(
 		path: string,
-		clientId: string,
+		clientId: string | null,
 		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; restoredTrust?: boolean } = {},
 	): Promise<RunningSession> {
 		const { expectedSessionId } = options;
@@ -1311,7 +1360,7 @@ export class PiWebRuntime {
 			if (expectedSessionId !== undefined && existing.session.sessionId !== expectedSessionId) {
 				throw new Error("session_path_mismatch");
 			}
-			this.claimControllerIfVacant(existing, clientId);
+			if (clientId !== null) this.claimControllerIfVacant(existing, clientId);
 			return existing;
 		}
 
@@ -1339,7 +1388,7 @@ export class PiWebRuntime {
 
 	private async openSessionFile(
 		path: string,
-		clientId: string,
+		clientId: string | null,
 		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; restoredTrust?: boolean },
 	): Promise<RunningSession> {
 		if (!existsSync(path)) {
@@ -1369,9 +1418,13 @@ export class PiWebRuntime {
 		return runtime.clients.size === 0 && runtime.session.isIdle;
 	}
 
+	private hasRoom(): boolean {
+		return this.runningById.size + this.resumingByPath.size < this.maxRunningSessions;
+	}
+
 	/** Frees a slot by disposing the least recently used idle session nobody is watching. */
 	private ensureCapacity(): void {
-		if (this.runningById.size + this.resumingByPath.size < this.maxRunningSessions) return;
+		if (this.hasRoom()) return;
 		const victim = [...this.runningById.values()]
 			.filter((runtime) => this.isEvictable(runtime))
 			.sort((a, b) => this.lastActivityAtMs(a) - this.lastActivityAtMs(b))[0];
@@ -1600,7 +1653,7 @@ export class PiWebRuntime {
 		ui: ExtensionUiBridge,
 		projectTrust: ApiProjectTrust,
 		cwd: string,
-		controllerClientId: string,
+		controllerClientId: string | null,
 		tripwireAllowedRoots: Set<string>,
 	): RunningSession {
 		const sessionId = session.sessionId;
