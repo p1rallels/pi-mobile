@@ -72,6 +72,10 @@ describe("a child stuck in a long call", () => {
 		// a call under a minute, which the host never sends, and one without a preview
 		expect(textOf(lineageLine(lineage(api(null), party("b2", "web", "live"))))).toEqual(["2 children: api · web"]);
 		expect(textOf(lineageLine(lineage(api({ name: "read", preview: null, minutes: 12 }))))).toEqual(["1 child: api read 12m"]);
+		// past an hour, hours and the minutes left
+		const after = (minutes) => textOf(lineageLine(lineage(api({ ...bash, minutes }))));
+		expect([after(59), after(60), after(150), after(1_441)]).toEqual([["1 child: api bash 59m"], ["1 child: api bash 1h"], ["1 child: api bash 2h 30m"], ["1 child: api bash 24h 1m"]]);
+		expect(lineageDetails(lineage(api({ ...bash, minutes: 150 })))[0].rows[0].secondary).toContain("bash: bun run e2e · 2h 30m · ");
 		for (const state of ["ended", "died", "offline"]) expect(textOf(lineageLine(lineage(api(bash, state))))).toEqual([`1 child: api ${state}`]);
 	});
 

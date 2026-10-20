@@ -64,8 +64,13 @@ export const stateWord = (party) => (party.state && party.state !== "live" ? par
 /** "2 resets", "1 reset". @param {number} n */
 const resets = (n) => `${n} reset${n === 1 ? "" : "s"}`;
 
-/** "3m": how long a call has run. @param {RunningCall} call */
-const minutesText = (call) => `${call.minutes}m`;
+/** "3m", "2h", "2h 30m": how long a call has run. @param {RunningCall} call */
+const minutesText = (call) => {
+	const hours = Math.floor(call.minutes / 60);
+	const minutes = call.minutes % 60;
+	if (hours === 0) return `${minutes}m`;
+	return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+};
 
 /** "bash: bun run e2e", msg's words for a call; just the tool when it has no preview. @param {RunningCall} call */
 const callText = (call) => (call.preview ? `${call.name}: ${call.preview}` : call.name);
