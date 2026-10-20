@@ -1,11 +1,13 @@
 // What a session's header shows of msg's lineage and relay (src/msg-lineage.ts, src/relay-state.ts), as one compact
-// line of segments: "child of cc · 01a152a0", "3 children: died · mail-wakes · lineage-pill", "relay · 2 resets · loop".
+// line of segments: "child of cc · 01a152a0", "3 children: api bash 3m · web · scout ended", "relay · 2 resets · loop".
 // The parent and each child are links to that session when pi-web can open it, else they say where it runs. A sub (every
-// child, and a parent that is one itself) opens read-only. Pure view models: lineage_line.js draws them, and a tap on
-// the line opens the same thing in full (lineageDetails).
+// child, and a parent that is one itself) opens read-only. A live child in one tool call for a minute or more says so
+// (the host counts the minutes). Pure view models: lineage_line.js draws them, and a tap on the line opens the same
+// thing in full (lineageDetails).
 import { isRecord, percentLabel } from "./custom_messages.js";
 
-/** @typedef {{ id: string, label: string, state: string | null, openable: boolean, readOnly: boolean, where: string | null }} Party */
+/** @typedef {{ name: string, preview: string | null, minutes: number }} RunningCall a live child's tool call, a minute old or more */
+/** @typedef {{ id: string, label: string, state: string | null, openable: boolean, readOnly: boolean, where: string | null, running: RunningCall | null }} Party */
 /** @typedef {{ text: string, className?: string, party?: Party }} LinePart a party part is a link when it opens */
 /** @typedef {{ kind: "parent" | "children" | "relay", parts: LinePart[], title: string }} LineSegment */
 /** @typedef {{ segments: LineSegment[], key: string }} LineView */
@@ -22,7 +24,19 @@ const count = (value) => (typeof value === "number" && Number.isFinite(value) &&
 const shortId = (id) => id.slice(0, 8);
 
 /**
- * A party as the host sent it, or null when it isn't one.
+ * A running call as the host sent it, or null when it isn't one (no name, or under a minute).
+ * @param {unknown} value @returns {RunningCall | null}
+ */
+export function runningOf(value) {
+	if (!isRecord(value)) return null;
+	const name = text(value.name);
+	const minutes = count(value.minutes);
+	if (!name || minutes === 0) return null;
+	return { name, preview: text(value.preview) || null, minutes };
+}
+
+/**
+ * A party as the host sent it, or null when it isn't one. Only a live one has a running call.
  * @param {unknown} value @returns {Party | null}
  */
 export function partyOf(value) {
@@ -37,6 +51,7 @@ export function partyOf(value) {
 		openable: value.openable === true,
 		readOnly: value.readOnly === true,
 		where: text(value.where) || null,
+		running: state === "live" ? runningOf(value.running) : null,
 	};
 }
 
@@ -49,20 +64,33 @@ export const stateWord = (party) => (party.state && party.state !== "live" ? par
 /** "2 resets", "1 reset". @param {number} n */
 const resets = (n) => `${n} reset${n === 1 ? "" : "s"}`;
 
+/** "3m": how long a call has run. @param {RunningCall} call */
+const minutesText = (call) => `${call.minutes}m`;
+
+/** "bash: bun run e2e", msg's words for a call; just the tool when it has no preview. @param {RunningCall} call */
+const callText = (call) => (call.preview ? `${call.name}: ${call.preview}` : call.name);
+
+/** A party's running call in full, for the hover and the details: "bash: bun run e2e", "3m"; none when it has none. @param {Party} party @returns {string[]} */
+const runningWords = (party) => (party.running ? [callText(party.running), minutesText(party.running)] : []);
+
 /**
- * Hover text for a party: who it is, how it stands, where it runs, and whether a click opens it (`canOpen`: there's a
- * link to click, which takes a pane that opens sessions).
+ * Hover text for a party: who it is, how it stands (and the call it's in), where it runs, and whether a click opens it
+ * (`canOpen`: there's a link to click, which takes a pane that opens sessions).
  * @param {Party} party @param {boolean} [canOpen]
  */
 export function partyTitle(party, canOpen = party.openable) {
 	const open = canOpen ? (party.readOnly ? "click to open read-only" : "click to open") : party.openable ? opensAs(party) : "pi-web can't open it";
-	return [`${party.label} · ${party.id}`, party.state ?? "never ran msg", party.where, open].filter(Boolean).join(" · ");
+	return [`${party.label} · ${party.id}`, party.state ?? "never ran msg", ...runningWords(party), party.where, open].filter(Boolean).join(" · ");
 }
 
-/** @param {Party} party @returns {LinePart[]} */
+/** A child in the line: its label, then the word for a state that isn't live, or the call a live one is in ("bash 3m"). @param {Party} party @returns {LinePart[]} */
 function partyParts(party) {
 	const word = stateWord(party);
-	return [{ text: party.label, party }, ...(word ? [{ text: ` ${word}`, className: `lin-state is-${word}` }] : [])];
+	return [
+		{ text: party.label, party },
+		...(word ? [{ text: ` ${word}`, className: `lin-state is-${word}` }] : []),
+		...(party.running ? [{ text: ` ${party.running.name} ${minutesText(party.running)}`, className: "lin-call" }] : []),
+	];
 }
 
 /** @param {Party} parent @returns {LineSegment} */
@@ -136,9 +164,29 @@ export function lineageLine(state) {
 }
 
 /**
- * @typedef {{ primary: string, secondary: string, party: Party | null, wrap?: boolean }} DetailsRow `wrap`: the secondary line wraps (a goal)
+ * @typedef {{ text: string, className?: string }} TextPart
+ * @typedef {{ primary: string, secondary: string, parts?: TextPart[], party: Party | null, wrap?: boolean }} DetailsRow
+ * `parts`: the secondary line in pieces, for a running call's row, where the command and where it runs give way and the
+ * state, the tool and the minutes don't (`secondary` is them joined); `wrap`: the secondary line wraps (a goal)
  * @typedef {{ heading: string, rows: DetailsRow[] }} DetailsSection
  */
+
+/**
+ * A party's secondary line in the details: how it stands, the call it's in and for how long ("bash: bun run e2e",
+ * "3m"), where it runs and how it opens. A running call's is in pieces: the preview (lin-preview) and the rest after the
+ * minutes (lin-tail) are the ones CSS cuts short, so the minutes stay in view on a phone.
+ * @param {Party} party @returns {TextPart[]}
+ */
+function rowParts(party) {
+	const { running } = party;
+	const state = party.state ?? "never ran msg";
+	const rest = [party.where, party.openable ? opensAs(party) : "pi-web can't open it"].filter(Boolean);
+	if (!running) return [{ text: [state, ...rest].join(" · ") }];
+	const minutes = { text: ` · ${minutesText(running)}`, className: "lin-minutes" };
+	const tail = rest.length > 0 ? [{ text: rest.map((word) => ` · ${word}`).join(""), className: "lin-tail" }] : [];
+	if (!running.preview) return [{ text: `${state} · ${running.name}` }, minutes, ...tail];
+	return [{ text: `${state} · ${running.name}: ` }, { text: running.preview, className: "lin-preview" }, minutes, ...tail];
+}
 
 /**
  * Everything the line stands for, in full, for the menu a tap on the line opens: the parent, each child listed (with
@@ -152,11 +200,15 @@ export function lineageDetails(state) {
 	const total = Math.max(count(lineage?.childCount), children.length);
 	const relay = relayOf(state?.relay);
 	/** @param {Party} party @returns {DetailsRow} */
-	const row = (party) => ({
-		primary: [party.label, party.label === shortId(party.id) ? "" : shortId(party.id)].filter(Boolean).join(" · "),
-		secondary: [party.state ?? "never ran msg", party.where, party.openable ? opensAs(party) : "pi-web can't open it"].filter(Boolean).join(" · "),
-		party,
-	});
+	const row = (party) => {
+		const parts = rowParts(party);
+		return {
+			primary: [party.label, party.label === shortId(party.id) ? "" : shortId(party.id)].filter(Boolean).join(" · "),
+			secondary: parts.map((part) => part.text).join(""),
+			parts,
+			party,
+		};
+	};
 	/** @type {DetailsSection[]} */
 	const sections = [];
 	if (parent) sections.push({ heading: "parent", rows: [row(parent)] });

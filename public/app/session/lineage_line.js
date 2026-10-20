@@ -6,6 +6,7 @@ import { lineageLine, partyTitle } from "./lineage.js";
 /** @typedef {import("./lineage.js").Party} Party */
 /** @typedef {import("./lineage.js").LinePart} LinePart */
 /** @typedef {import("./lineage.js").DetailsSection} DetailsSection */
+/** @typedef {import("./lineage.js").DetailsRow} DetailsRow */
 /** @typedef {import("./chat_view.js").SessionRef} SessionRef */
 
 /** @param {Party} party @returns {SessionRef} */
@@ -114,6 +115,15 @@ export function createLineageLine(el, { onOpen = null, onDetails = null } = {}) 
 	};
 }
 
+/** A row's secondary line: its text, or a span per piece when it comes in pieces (a running call's, lin-split). @param {Document} doc @param {DetailsRow} row */
+function secondaryNode(doc, row) {
+	const parts = row.parts ?? [];
+	if (parts.length < 2) return make(doc, "div", "secondary", row.secondary);
+	const el = make(doc, "div", "secondary lin-split");
+	el.append(...parts.map((part) => make(doc, "span", part.className ?? "", part.text)));
+	return el;
+}
+
 /**
  * The line in full, in a menu panel: a section each for the parent, the children and relay, and a row per party that
  * opens it when pi-web can.
@@ -135,7 +145,7 @@ export function buildLineageMenu(panel, sections, { onOpen = null, close }) {
 			const party = onOpen && row.party?.openable ? row.party : null;
 			const item = make(doc, "div", `menu-item${party ? "" : " is-static"}${row.wrap ? " is-wrap" : ""}`);
 			item.append(make(doc, "div", "primary", row.primary));
-			if (row.secondary) item.append(make(doc, "div", "secondary", row.secondary));
+			if (row.secondary) item.append(secondaryNode(doc, row));
 			if (party && onOpen) {
 				item.dataset.sessionId = party.id;
 				item.title = `open ${party.label}`;

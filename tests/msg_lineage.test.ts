@@ -3,16 +3,18 @@ import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	childParty,
 	createLineageFeed,
 	createPresenceIndex,
 	createSessionFiles,
 	orderChildren,
 	parentParty,
 	presenceState,
+	RUNNING_CALL_SHOWN_AFTER_MS,
 	whereOf,
 	type JudgedPresence,
 } from "../src/msg-lineage.ts";
-import { STALE_AFTER_MS, type Presence } from "../src/msg-store.ts";
+import { STALE_AFTER_MS, type Presence, type PresenceCall } from "../src/msg-store.ts";
 import type { ApiLineage } from "../src/types.ts";
 
 const NOW = 1_792_395_160_000;
@@ -68,11 +70,39 @@ describe("msg's lineage", () => {
 			openable: true,
 			readOnly: false,
 			where: "pi-web · ~/Desktop/cc",
+			running: null,
 		});
 		expect(parentParty(LEAD, presence({ id: LEAD, name: "main" }), "live", true, "/h").label).toBe("main");
-		expect(parentParty(LEAD, undefined, null, false, "/h")).toEqual({ id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null });
+		expect(parentParty(LEAD, undefined, null, false, "/h")).toEqual({ id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null, running: null });
 		// a parent that is a sub itself opens read-only too
 		expect(parentParty(LEAD, presence({ id: LEAD, parent: PILL }), "live", true, "/h").readOnly).toBe(true);
+	});
+
+	test("a live child shows the tool call it has been in for a minute, in whole minutes; a shorter call, an ended child or no call shows none", () => {
+		const call = (ranMs: number, preview?: string) => ({ id: "toolu_01", name: "bash", ...(preview === undefined ? {} : { preview }), since: NOW - ranMs });
+		const child = (state: JudgedPresence["state"], fields: Partial<Presence> = {}): JudgedPresence => ({ record: presence({ id: PILL, name: "api", ...fields }), state });
+		const running = (judged: JudgedPresence) => childParty(judged, false, "/h", NOW).running;
+
+		expect(childParty(child("live", { call: call(3 * 60_000 + 59_000, "bun run e2e") }), true, "/h", NOW)).toEqual({
+			id: PILL,
+			label: "api",
+			state: "live",
+			openable: true,
+			readOnly: true,
+			where: "pi -p · /repo",
+			running: { name: "bash", preview: "bun run e2e", minutes: 3 },
+		});
+		expect(running(child("live", { call: call(RUNNING_CALL_SHOWN_AFTER_MS) }))).toEqual({ name: "bash", preview: null, minutes: 1 });
+		expect(running(child("live", { call: call(150 * 60_000, "sleep 9999") }))?.minutes).toBe(150);
+		// under a minute: nothing, so short calls never flicker by; a start ahead of the clock is no time at all
+		expect(running(child("live", { call: call(RUNNING_CALL_SHOWN_AFTER_MS - 1, "bun test") }))).toBeNull();
+		expect(running(child("live", { call: call(10_000) }))).toBeNull();
+		expect(running(child("live", { call: call(-5 * 60_000) }))).toBeNull();
+		expect(running(child("live"))).toBeNull();
+		// a child that isn't live says so instead, whatever call its record still names
+		for (const state of ["ended", "died", "offline"] as const) expect(running(child(state, { call: call(5 * 60_000, "bun run e2e") }))).toBeNull();
+		// and a parent never shows one
+		expect(parentParty(LEAD, presence({ id: LEAD, call: call(5 * 60_000, "pfs run --bg") }), "live", true, "/h").running).toBeNull();
 	});
 });
 
@@ -141,6 +171,39 @@ describe("the presence index", () => {
 		await index.refresh();
 		expect(index.record(MAIL)?.name).toBe("renamed");
 	});
+
+	test("rereads a record msg rewrote: its heartbeat keeps the call, a new oldest call replaces it, a settled run drops it", async () => {
+		const store = join(root, "msg");
+		let now = NOW;
+		const index = createPresenceIndex(store, () => now);
+		const record = presence({ id: PILL, parent: LEAD, name: "api", heartbeatAt: now });
+		await writeRecord(store, record);
+		await index.refresh();
+		expect(index.record(PILL)?.call).toBeUndefined();
+
+		const call = { id: "toolu_01", name: "bash", preview: "bun run e2e", since: now };
+		await writeRecord(store, { ...record, call });
+		await index.refresh();
+		expect(index.record(PILL)?.call).toEqual(call);
+		expect(index.childrenOf(LEAD).map((child) => child.call)).toEqual([call]);
+
+		// every heartbeat rewrites the record, the call unchanged, well inside the 30s between full scans
+		for (let beat = 1; beat <= 2; beat += 1) {
+			now += 10_000;
+			await writeRecord(store, { ...record, heartbeatAt: now, call });
+			await index.refresh();
+			expect(index.record(PILL)).toMatchObject({ heartbeatAt: now, call });
+		}
+
+		const next = { id: "toolu_02", name: "read", since: now };
+		await writeRecord(store, { ...record, heartbeatAt: now, call: next });
+		await index.refresh();
+		expect(index.record(PILL)?.call).toEqual(next);
+
+		await writeRecord(store, { ...record, heartbeatAt: now, activity: "idle" });
+		await index.refresh();
+		expect(index.record(PILL)).not.toHaveProperty("call");
+	});
 });
 
 describe("session files", () => {
@@ -193,8 +256,8 @@ describe("the lineage feed", () => {
 		expect(first).toEqual({
 			parent: null,
 			children: [
-				{ id: DIED, label: "died", state: "live", openable: true, readOnly: true, where: "pi -p · ~/msg-cli" },
-				{ id: MAIL, label: "mail-wakes", state: "died", openable: false, readOnly: true, where: "pi -p · ~/f1" },
+				{ id: DIED, label: "died", state: "live", openable: true, readOnly: true, where: "pi -p · ~/msg-cli", running: null },
+				{ id: MAIL, label: "mail-wakes", state: "died", openable: false, readOnly: true, where: "pi -p · ~/f1", running: null },
 			],
 			childCount: 2,
 		});
@@ -222,7 +285,7 @@ describe("the lineage feed", () => {
 		watched.add(PILL);
 		await feed.refresh();
 		expect(feed.current(PILL)).toEqual({
-			parent: { id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null },
+			parent: { id: LEAD, label: "01a152a0", state: null, openable: false, readOnly: false, where: null, running: null },
 			children: [],
 			childCount: 0,
 		});
@@ -243,6 +306,63 @@ describe("the lineage feed", () => {
 		advance(STALE_AFTER_MS + 1);
 		await feed.refresh();
 		expect(feed.current(PILL)?.parent?.state).toBe("offline");
+		feed.stop();
+	});
+
+	test("a child's call shows once it has run a minute and changes the lineage once a minute; short calls, the parent and an ended child never show one", async () => {
+		const { store, changes, watched, feed, now, advance } = await setup(new Set([100]), new Set([LEAD]));
+		let call: PresenceCall = { id: "toolu_01", name: "bash", preview: "bun run e2e", since: now() };
+		// msg heartbeats the record every 10s, through the same rename
+		const child = () => writeRecord(store, presence({ id: PILL, parent: LEAD, name: "api", pid: 100, heartbeatAt: now(), call }));
+		const running = () => feed.current(LEAD)?.children[0]?.running;
+		const wait = async (ms: number) => {
+			for (let left = ms; left > 0; left -= 10_000) {
+				advance(Math.min(left, 10_000));
+				await child();
+				await feed.refresh();
+			}
+		};
+		await writeRecord(store, presence({ id: LEAD, mode: "web", pid: 100, heartbeatAt: now() + 10 * 60_000, call: { id: "toolu_00", name: "bash", since: now() - 10 * 60_000 } }));
+		await child();
+		watched.add(LEAD);
+		watched.add(PILL);
+		await feed.refresh();
+		expect(running()).toBeNull();
+		const pushes = () => changes.filter(([id]) => id === LEAD).length;
+		expect(pushes()).toBe(1);
+
+		await wait(59_000);
+		expect(running()).toBeNull();
+		expect(pushes()).toBe(1);
+		await wait(1_000);
+		expect(running()).toEqual({ name: "bash", preview: "bun run e2e", minutes: 1 });
+		expect(feed.current(LEAD)?.children[0]?.state).toBe("live");
+		expect(pushes()).toBe(2);
+		await wait(59_000);
+		expect(running()?.minutes).toBe(1);
+		expect(pushes()).toBe(2);
+		await wait(1_000);
+		expect(running()?.minutes).toBe(2);
+		expect(pushes()).toBe(3);
+		// the child's own header: its parent's call, a minute old or not, never shows
+		expect(feed.current(PILL)?.parent).toMatchObject({ id: LEAD, state: "live", running: null });
+
+		// that call returned and a new one started: the new one shows only once it has run a minute too
+		call = { id: "toolu_02", name: "bash", preview: "bun test", since: now() };
+		await child();
+		await feed.refresh();
+		expect(running()).toBeNull();
+		expect(pushes()).toBe(4);
+		await wait(30_000);
+		expect(pushes()).toBe(4);
+
+		await wait(60_000);
+		expect(running()).toEqual({ name: "bash", preview: "bun test", minutes: 1 });
+		// it ends: msg drops the call, and the child says ended
+		advance(1_000);
+		await writeRecord(store, presence({ id: PILL, parent: LEAD, name: "api", pid: 100, heartbeatAt: now(), activity: "idle", endedAt: now() }));
+		await feed.refresh();
+		expect(feed.current(LEAD)?.children[0]).toMatchObject({ state: "ended", running: null });
 		feed.stop();
 	});
 

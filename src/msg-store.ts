@@ -3,7 +3,7 @@
 // ever reads it and imports nothing from msg; msg-mail.ts (reopening for mail) and msg-lineage.ts (the header's
 // lineage) both read it through here.
 //
-//   <root>/sessions/<session id>.json        presence: name, parent, cwd, pid, mode, activity, startedAt, heartbeatAt, endedAt
+//   <root>/sessions/<session id>.json        presence: name, parent, cwd, pid, mode, activity, startedAt, heartbeatAt, endedAt, call
 //   <root>/inbox/<session id>/new/<id>.json  mail nobody claimed yet (written to tmp/, renamed in)
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -14,10 +14,21 @@ export const PRESENCE_VERSION = 1;
 /** msg's STALE_AFTER_MS: a presence record whose heartbeat is older than this is offline, whatever it claims. */
 export const STALE_AFTER_MS = 45_000;
 const MAX_NAME_LENGTH = 64;
+/** msg's MAX_PREVIEW_LENGTH: the longest preview of a tool call's arguments a record carries. */
+const MAX_PREVIEW_LENGTH = 120;
 
 export type PresenceMode = "tui" | "rpc" | "json" | "print" | "web" | "cli";
 
 const MODES: readonly PresenceMode[] = ["tui", "rpc", "json", "print", "web", "cli"];
+
+/** A tool call a session runs (msg's Call): pi's tool call id, the tool's name, one line of its arguments, and when it started (epoch ms). */
+export interface PresenceCall {
+	id: string;
+	name: string;
+	/** bash's command, else the arguments as JSON, on one line of at most 120 characters */
+	preview?: string;
+	since: number;
+}
 
 export interface Presence {
 	id: string;
@@ -31,6 +42,8 @@ export interface Presence {
 	startedAt: number;
 	heartbeatAt: number;
 	endedAt?: number;
+	/** Its oldest running tool call that can stall it (not msg_send, not a nested call), while its run lasts; older msgs never write one. */
+	call?: PresenceCall;
 }
 
 export type PidProbe = (pid: number) => boolean;
@@ -56,6 +69,24 @@ const normalizeName = (value: unknown): string | undefined => {
 	return name ? name.slice(0, MAX_NAME_LENGTH) : undefined;
 };
 
+/** Text as one line, at most MAX_PREVIEW_LENGTH characters (msg's clipPreview). */
+const clipPreview = (text: string): string => {
+	const line = text.replace(/\s+/g, " ").trim();
+	const chars = [...line];
+	return chars.length <= MAX_PREVIEW_LENGTH ? line : `${chars.slice(0, MAX_PREVIEW_LENGTH - 1).join("").trimEnd()}…`;
+};
+
+/** A record's running call the way msg reads one (message.ts parseCall): an id, a name and a start, all required. Junk is no call. */
+export function parseCall(value: unknown): PresenceCall | undefined {
+	if (!isRecord(value)) return undefined;
+	const id = typeof value.id === "string" ? value.id : "";
+	const name = normalizeName(value.name);
+	const since = finite(value.since);
+	if (!id || !name || since === undefined) return undefined;
+	const preview = typeof value.preview === "string" ? clipPreview(value.preview) : "";
+	return { id, name, ...(preview ? { preview } : {}), since };
+}
+
 /** Where msg keeps its store: $PI_MSG_DIR, else $PI_CODING_AGENT_DIR/msg, else ~/.pi/agent/msg; a leading ~ is home. */
 export function msgStoreRoot(env: Env = process.env, home: string = homedir()): string {
 	const configured = nonEmpty(env.PI_MSG_DIR);
@@ -79,6 +110,7 @@ export function parsePresence(value: unknown): Presence | null {
 	const name = normalizeName(value.name);
 	const parent = typeof value.parent === "string" && isMsgId(value.parent) && value.parent !== id ? value.parent : undefined;
 	const endedAt = finite(value.endedAt);
+	const call = parseCall(value.call);
 	return {
 		id,
 		...(name ? { name } : {}),
@@ -90,6 +122,7 @@ export function parsePresence(value: unknown): Presence | null {
 		startedAt,
 		heartbeatAt,
 		...(endedAt !== undefined ? { endedAt } : {}),
+		...(call ? { call } : {}),
 	};
 }
 

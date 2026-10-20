@@ -1,22 +1,27 @@
 // msg's lineage, read from its on-disk store (msg-store.ts): who started a session (its parent), the sessions it
-// started (its children) and how each of them stands (msg's README "Lineage").
+// started (its children) and how each of them stands (msg's README "Lineage"), a live child's tool call included once
+// it has run a minute, in whole minutes worked out here, so a sub stuck in a long command shows apart from one that's
+// thinking.
 //
 // Every live session rewrites its presence record at least every 10s, through a temp file renamed into place, and the
 // store can hold hundreds of records: one index keeps them, refreshed from a readdir and the files' mtimes, and reads
 // only the records that changed. The runtime keeps one for everything that reads presence (this feed, the idle sweep's
 // waiting rule, which sessions open read-only: msg-subs.ts). A feed refreshes it on a timer while someone looks at a
-// session, works out each watched session's lineage and says when one changes.
+// session, works out each watched session's lineage and says when one changes (a running call's minutes: once a minute).
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parsePresence, pidAlive, STALE_AFTER_MS, type PidProbe, type Presence, type PresenceMode } from "./msg-store.ts";
 import { isSub } from "./msg-subs.ts";
 import { sessionDirForCwd } from "./session-index.ts";
-import type { ApiLineage, ApiLineageParty, ApiLineageState } from "./types.ts";
+import type { ApiLineage, ApiLineageCall, ApiLineageParty, ApiLineageState } from "./types.ts";
 
 /** How many children the header lists; the count covers the rest. */
 export const LISTED_CHILDREN = 8;
 export const DEFAULT_LINEAGE_REFRESH_MS = 2_000;
+/** A child's running call shows once it has run this long, so short calls never flicker by; it counts in whole minutes. */
+export const RUNNING_CALL_SHOWN_AFTER_MS = 60_000;
+const MINUTE_MS = 60_000;
 /** Records change by rename, which the folder's mtime shows; a full look at every file's mtime this often anyway. */
 const FULL_SCAN_MS = 30_000;
 /** A session nobody watched for this long is forgotten. */
@@ -72,15 +77,49 @@ export const whereOf = (record: Presence, home: string): string => [MODE_LABELS[
 
 const shortId = (id: string): string => id.slice(0, 8);
 
-/** A child as the header lists it: its name, else the first 8 characters of its id (msg's partyLabel). Every child is a sub, so it opens read-only. */
-export function childParty({ record, state }: JudgedPresence, openable: boolean, home: string): ApiLineageParty {
-	return { id: record.id, label: record.name ?? shortId(record.id), state, openable, readOnly: true, where: whereOf(record, home) };
+/**
+ * The tool call a live child has been in for at least RUNNING_CALL_SHOWN_AFTER_MS, with the whole minutes it has run
+ * by `now`; null for a shorter call, no call, or a child that isn't live (an ended one says so instead).
+ */
+export function runningCall(record: Presence, state: ApiLineageState, now: number): ApiLineageCall | null {
+	const { call } = record;
+	if (state !== "live" || call === undefined) return null;
+	const ranMs = now - call.since;
+	if (ranMs < RUNNING_CALL_SHOWN_AFTER_MS) return null;
+	return { name: call.name, preview: call.preview ?? null, minutes: Math.floor(ranMs / MINUTE_MS) };
 }
 
-/** The parent: its name, else its folder, else the first 8 characters of its id; `record` is missing when it never ran msg. */
+/**
+ * A child as the header lists it: its name, else the first 8 characters of its id (msg's partyLabel), and the call it's
+ * stuck in, if any, as of `now`. Every child is a sub, so it opens read-only.
+ */
+export function childParty({ record, state }: JudgedPresence, openable: boolean, home: string, now: number): ApiLineageParty {
+	return {
+		id: record.id,
+		label: record.name ?? shortId(record.id),
+		state,
+		openable,
+		readOnly: true,
+		where: whereOf(record, home),
+		running: runningCall(record, state, now),
+	};
+}
+
+/**
+ * The parent: its name, else its folder, else the first 8 characters of its id; `record` is missing when it never ran
+ * msg. Only children show a running call, never a parent.
+ */
 export function parentParty(id: string, record: Presence | undefined, state: ApiLineageState | null, openable: boolean, home: string): ApiLineageParty {
 	const folder = record?.cwd ? basename(record.cwd) : "";
-	return { id, label: record?.name ?? (folder || shortId(id)), state, openable, readOnly: isSub(record), where: record ? whereOf(record, home) : null };
+	return {
+		id,
+		label: record?.name ?? (folder || shortId(id)),
+		state,
+		openable,
+		readOnly: isSub(record),
+		where: record ? whereOf(record, home) : null,
+		running: null,
+	};
 }
 
 async function mapLimited<T, R>(items: readonly T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
@@ -311,7 +350,7 @@ export function createLineageFeed(options: LineageFeedOptions) {
 		const listed = await Promise.all(
 			orderChildren(children)
 				.slice(0, LISTED_CHILDREN)
-				.map(async (child) => childParty(child, await openable(child.record.id, child.record), home)),
+				.map(async (child) => childParty(child, await openable(child.record.id, child.record), home, now)),
 		);
 		return { parent, children: listed, childCount: children.length };
 	}

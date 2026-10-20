@@ -82,8 +82,10 @@ describe("a hosted session's header", () => {
 		const store = join(agentDir, "msg");
 		// pi-web hosts it, so it has no parent, whatever an old record of it says
 		await writePresence(store, { id: sessionId, mode: "web", parent: LEAD });
-		await writePresence(store, { id: SCOUT, parent: sessionId, name: "scout", cwd: join(agentDir, "scout"), startedAt: Date.now() - 5_000 });
-		await writePresence(store, { id: FLAKY, parent: sessionId, name: "flaky", pid: 200, startedAt: Date.now() - 4_000 });
+		// the scout has been in one bash call for 3.5 minutes; flaky died in one
+		const call = { id: "toolu_01", name: "bash", preview: "bun run e2e", since: Date.now() - 210_000 };
+		await writePresence(store, { id: SCOUT, parent: sessionId, name: "scout", cwd: join(agentDir, "scout"), startedAt: Date.now() - 300_000, call });
+		await writePresence(store, { id: FLAKY, parent: sessionId, name: "flaky", pid: 200, startedAt: Date.now() - 4_000, call: { ...call, id: "toolu_02" } });
 		const scoutDir = sessionDirForCwd(join(agentDir, "sessions"), join(agentDir, "scout"));
 		await mkdir(scoutDir, { recursive: true });
 		await writeFile(join(scoutDir, `2026-10-19T06-00-00-000Z_${SCOUT}.jsonl`), "{}\n");
@@ -96,8 +98,16 @@ describe("a hosted session's header", () => {
 		expect(first).toEqual({
 			parent: null,
 			children: [
-				{ id: SCOUT, label: "scout", state: "live", openable: true, readOnly: true, where: `pi -p · ${tildify(join(agentDir, "scout"), homedir())}` },
-				{ id: FLAKY, label: "flaky", state: "died", openable: false, readOnly: true, where: "pi -p · /repo" },
+				{
+					id: SCOUT,
+					label: "scout",
+					state: "live",
+					openable: true,
+					readOnly: true,
+					where: `pi -p · ${tildify(join(agentDir, "scout"), homedir())}`,
+					running: { name: "bash", preview: "bun run e2e", minutes: 3 },
+				},
+				{ id: FLAKY, label: "flaky", state: "died", openable: false, readOnly: true, where: "pi -p · /repo", running: null },
 			],
 			childCount: 2,
 		});
@@ -169,14 +179,14 @@ describe("a session another pi writes", () => {
 		const parentFirst = described().find((event) => event.session.lineage?.parent);
 		expect(parentFirst?.messages).toEqual([]);
 		expect(parentFirst?.session.lineage).toEqual({
-			parent: { id: LEAD, label: "main", state: "live", openable: false, readOnly: false, where: "pi-web · /Users/me/Desktop/cc" },
+			parent: { id: LEAD, label: "main", state: "live", openable: false, readOnly: false, where: "pi-web · /Users/me/Desktop/cc", running: null },
 			children: [],
 			childCount: 0,
 		});
 
 		await writePresence(store, { id: FLAKY, parent: WORKER, name: "sub", pid: 999 });
 		await waitFor(() => described().some((event) => event.session.lineage?.childCount === 1));
-		expect(described().at(-1)?.session.lineage?.children).toEqual([{ id: FLAKY, label: "sub", state: "died", openable: false, readOnly: true, where: "pi -p · /repo" }]);
+		expect(described().at(-1)?.session.lineage?.children).toEqual([{ id: FLAKY, label: "sub", state: "died", openable: false, readOnly: true, where: "pi -p · /repo", running: null }]);
 		stop();
 	});
 });

@@ -3,7 +3,8 @@
 // written the way msg writes them: a temp file renamed into place). The lead, hosted here, lists its children with how
 // each stands (an ended scout pi-web can open, a flaky one whose process died, a worker another pi runs), and relay's
 // resets and loop; a child that comes or ends changes the line without a reload; a child's link opens it read-only
-// (pi-web never loads a sub), and the worker's own header says whose child it is.
+// (pi-web never loads a sub), and the worker's own header says whose child it is. A live child in one tool call for a
+// minute or more says so (the tool and its minutes in the line, the command in the details); a shorter call shows nothing.
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -16,6 +17,10 @@ const LEAD = "01a152a0-0000-7000-8000-00000000000a";
 const SCOUT = "01a152d4-0000-7000-8000-00000000000b";
 const FLAKY = "01a152d4-0000-7000-8000-00000000000c";
 const WORKER = "01a152d4-0000-7000-8000-00000000000d";
+const API = "01a152d4-0000-7000-8000-00000000000e";
+const WEB = "01a152d4-0000-7000-8000-00000000000f";
+// what msg's preview of a long bash call looks like: the command, one line, under its 120 characters
+const E2E_COMMAND = "bun run test:e2e -- tests/e2e/lineage.e2e.js --project=webkit-iphone --reporter=line --retries=0";
 // above any pid macOS hands out (99998) and rarely reached on linux, so kill(pid, 0) says it's gone
 const DEAD_PID = 999_999;
 const GOAL = "ship the lineage pill";
@@ -24,6 +29,7 @@ const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 const text = (value) => [{ type: "text", text: value }];
 const line = (value) => `${JSON.stringify(value)}\n`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Entries in pi's file format, chained root to leaf, `at` ms apart from `start`. */
 function chain(rows, start) {
@@ -247,6 +253,68 @@ test("the header lists the lead's children and relay, follows a child coming and
 		expect(running).toEqual([LEAD]);
 	} finally {
 		if (worker && worker.writer.exitCode === null && worker.writer.signalCode === null) worker.writer.kill("SIGKILL");
+		if (server) {
+			server.kill("SIGTERM");
+			await exited(server);
+		}
+		await rm(env.root, { recursive: true, force: true });
+	}
+});
+
+test("a child in one tool call for a minute shows the tool and its minutes in the line, the command in the details; under a minute, nothing", async ({ page }, testInfo) => {
+	const phone = testInfo.project.name.includes("iphone");
+	const env = await setup();
+	const now = Date.now();
+	// both live (this process, heartbeats ahead of the clock): api has been in one bash call for just over 3 minutes, web in one for 10s
+	const live = (id, name, fork, startedAt, call) =>
+		presence(id, { name, parent: LEAD, cwd: join(env.root, "repo", ".forks", String(fork)), pid: process.pid, activity: "busy", startedAt, call });
+	const api = live(API, "api", 4, now - 240_000, { id: "toolu_api", name: "bash", preview: E2E_COMMAND, since: now - 185_000 });
+	await writePresence(env.root, api);
+	await writePresence(env.root, live(WEB, "web", 5, now - 20_000, { id: "toolu_web", name: "bash", preview: "bun test", since: now - 10_000 }));
+	let server = null;
+	try {
+		server = await startServer(env.root, env.port);
+		await page.goto(`${env.base}/?ui=phone`);
+		await resumeLead(page, env.leadPath);
+		await page.reload();
+		if (phone) await page.locator("#kb-menu").click();
+		await page.locator(`.si[data-session-id="${LEAD}"]`).click();
+
+		const lineEl = page.locator("#lineage-line");
+		const segments = lineEl.locator(".lin-seg");
+		await expect(segments).toHaveText(["4 children: api bash 3m · flaky died · web · scout ended", LEAD_RELAY], LIVE_TIMEOUT);
+		await expect(lineEl.locator(".lin-call")).toHaveText(["bash 3m"]);
+		const where = (fork) => `pi -p · .*/repo/\\.forks/${fork}`;
+		await expect(lineEl.locator("span.lin-party").first()).toHaveAttribute(
+			"title",
+			new RegExp(`^api · ${API} · live · bash: ${escapeRegExp(E2E_COMMAND)} · 3m · ${where(4)} · pi-web can't open it$`),
+		);
+		expect((await page.locator(".app-header").boundingBox())?.height).toBe(40);
+
+		// the details: the command and its minutes in api's row, nothing more in web's
+		await segments.nth(1).click();
+		const menu = page.locator("#menu-panel");
+		await expect(menu.locator(".menu-item .primary")).toHaveText(["api · 01a152d4", "flaky · 01a152d4", "web · 01a152d4", "scout · 01a152d4", "1 reset of the context so far", "loop on"]);
+		const secondary = menu.locator(".menu-item .secondary");
+		await expect(secondary.nth(0)).toHaveText(new RegExp(`^live · bash: ${escapeRegExp(E2E_COMMAND)} · 3m · ${where(4)} · pi-web can't open it$`));
+		await expect(secondary.nth(2)).toHaveText(new RegExp(`^live · ${where(5)} · pi-web can't open it$`));
+		// the row holds the whole command, which CSS cuts short; the minutes after it stay whole and in view
+		const row = secondary.nth(0);
+		await expect(row.locator(".lin-preview")).toHaveText(E2E_COMMAND);
+		await expect(row.locator(".lin-minutes")).toHaveText("· 3m");
+		expect(await row.locator(".lin-preview").evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+		const minutesInView = await row.locator(".lin-minutes").evaluate((el) => el.scrollWidth <= el.clientWidth && el.getBoundingClientRect().right <= (el.parentElement?.getBoundingClientRect().right ?? 0));
+		expect(minutesInView).toBe(true);
+		await shoot(page, testInfo, "lineage-running-call");
+		await menu.locator(".menu-mini").click();
+		await expect(page.locator("#menu-overlay")).not.toHaveClass(/\bopen\b/);
+
+		// its run settles: msg rewrites the record without the call, and the line follows
+		const { call: _settled, ...idle } = api;
+		await writePresence(env.root, { ...idle, activity: "idle" });
+		await expect(segments).toHaveText(["4 children: api · flaky died · web · scout ended", LEAD_RELAY], LIVE_TIMEOUT);
+		await expect(lineEl.locator(".lin-call")).toHaveCount(0);
+	} finally {
 		if (server) {
 			server.kill("SIGTERM");
 			await exited(server);

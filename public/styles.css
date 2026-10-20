@@ -151,7 +151,7 @@
     .lin-party { color: #a0a0a8; }
     a.lin-party { color: #81a2be; text-decoration: underline; text-decoration-color: #3f5161; text-underline-offset: 3px; }
     a.lin-party:hover { color: #a3c1da; text-decoration-color: currentColor; }
-    .lin-id, .lin-where, .lin-more { color: #5a5a64; }
+    .lin-id, .lin-where, .lin-more, .lin-call { color: #5a5a64; }
     .lin-state.is-died { color: #cc6666; }
     .lin-state.is-offline { color: #f0c674; }
     .lin-state.is-ended { color: #b5bd68; }
@@ -252,6 +252,10 @@
     .menu-item.is-static { cursor: default; }
     .menu-item.is-static:hover { background: none; }
     .menu-item.is-wrap .secondary { white-space: normal; overflow-wrap: anywhere; }
+    /* a running call's row: its command and where it runs give way, the state, the tool and the minutes don't */
+    .menu-item .secondary.lin-split { display: flex; }
+    .lin-split > span { flex: none; white-space: pre; }
+    .lin-split > .lin-preview, .lin-split > .lin-tail { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .menu-sub { margin: 0 0 4px 2px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: #5a5a64; }
     .menu-list + .menu-sub { margin-top: 10px; }
 

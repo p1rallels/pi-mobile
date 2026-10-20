@@ -254,6 +254,16 @@ export interface ApiQueuedMessages {
  */
 export type ApiLineageState = "live" | "ended" | "died" | "offline";
 
+/** The tool call a live child has been in for a minute or more (msg's presence `call`), as the header shows it. */
+export interface ApiLineageCall {
+	/** the tool's name, like "bash" */
+	name: string;
+	/** one line of its arguments (bash's command, else JSON), at most 120 characters; null when it has none */
+	preview: string | null;
+	/** whole minutes it has run, worked out on the host: at least 1 */
+	minutes: number;
+}
+
 /** The parent or a child of a session, as the header shows it (see msg-lineage.ts). */
 export interface ApiLineageParty {
 	id: string;
@@ -266,6 +276,8 @@ export interface ApiLineageParty {
 	readOnly: boolean;
 	/** how and where it runs, like "pi -p · ~/repo/.forks/3"; null without a presence record */
 	where: string | null;
+	/** the tool call a live child has run for a minute or more; null for anything shorter, a child that isn't live, and every parent */
+	running: ApiLineageCall | null;
 }
 
 /** Who started a session and whom it started, from msg's store. */

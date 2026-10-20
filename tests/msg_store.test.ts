@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isMsgId, msgStoreRoot, newMailDir, parsePresence, presencePath } from "../src/msg-store.ts";
+import { isMsgId, msgStoreRoot, newMailDir, parseCall, parsePresence, presencePath } from "../src/msg-store.ts";
 
 const LEAD = "01a152a0-f00d-72aa-a896-d904c458282b";
 const PILL = "01a15313-9e4e-72d8-9b42-450d6296524e";
@@ -30,6 +30,30 @@ describe("msg's store as pi-web reads it", () => {
 		expect(parsePresence({ ...raw, parent: "../escape" })?.parent).toBeUndefined();
 		for (const broken of [{ ...raw, v: 2 }, { ...raw, id: "../x" }, { ...raw, pid: "77172" }, { ...raw, pid: null }, { ...raw, heartbeatAt: "now" }, { ...raw, startedAt: undefined }, [raw], null, "x"]) {
 			expect(parsePresence(broken)).toBeNull();
+		}
+	});
+
+	test("a record's running call reads the way msg reads one: an id, a name and a start, the preview one line of 120 characters", () => {
+		const raw = { v: 1, id: PILL, parent: LEAD, cwd: "/repo/.forks/2", pid: 77172, mode: "print", activity: "busy", startedAt: 1, heartbeatAt: 2 };
+		const call = { id: "toolu_01", name: "bash", preview: "bun run e2e", since: 1_000 };
+		expect(parsePresence({ ...raw, call })?.call).toEqual(call);
+		expect(parseCall({ id: "toolu_02", name: "read", since: 5 })).toEqual({ id: "toolu_02", name: "read", since: 5 });
+		// records from before msg wrote calls, and a run that settled, have none
+		expect(parsePresence(raw)).not.toHaveProperty("call");
+		expect(parseCall({ ...call, preview: "  sleep\n\t 600  " })?.preview).toBe("sleep 600");
+		expect(parseCall({ ...call, preview: " \n " })).toEqual({ id: "toolu_01", name: "bash", since: 1_000 });
+		expect(parseCall({ ...call, preview: 42 })).not.toHaveProperty("preview");
+		const long = parseCall({ ...call, preview: `echo ${"x".repeat(200)}` })?.preview ?? "";
+		expect([...long]).toHaveLength(120);
+		expect(long.endsWith("\u2026")).toBe(true);
+		expect(parseCall({ ...call, name: "  mcp\n tool " })?.name).toBe("mcp tool");
+		// junk is no call, and the record still reads
+		const junk = [{ ...call, id: "" }, { ...call, id: 7 }, { ...call, name: "" }, { ...call, name: "  " }, { ...call, name: null }, { ...call, since: "1000" }, { ...call, since: Number.NaN }, { id: "toolu_01", name: "bash" }, [call], "bash", null];
+		for (const broken of junk) {
+			expect(parseCall(broken)).toBeUndefined();
+			const record = parsePresence({ ...raw, call: broken });
+			expect(record?.id).toBe(PILL);
+			expect(record).not.toHaveProperty("call");
 		}
 	});
 });
