@@ -199,8 +199,9 @@ export interface StopOptions {
 }
 
 /**
- * SIGTERM, then SIGKILL after a grace period. A pi that leads its process group (pfs runs every bg command
- * in its own group, shells do the same for jobs) is stopped with its group, so the tool it was running goes too.
+ * SIGTERM, then SIGKILL after a grace period, to pi's process group when it leads one (pfs runs every bg command
+ * in its own group, shells do the same for jobs). A command pi's bash tool runs sits in a group of its own, out of
+ * reach: pi's SIGTERM handler kills it, so a pi that only goes on the SIGKILL leaves that command running.
  */
 export async function stopProcess(proc: PiProcess, options: StopOptions = {}): Promise<"stopped" | "killed" | "alive"> {
 	const signal = options.signal ?? ((target, name) => process.kill(target, name));

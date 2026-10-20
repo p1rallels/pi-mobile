@@ -610,6 +610,7 @@
     .msg-card.ended { border-left-color: #b5bd68; }
     .msg-card.stopped { border-left-color: #f0c674; }
     .msg-card.died { border-left-color: #cc6666; }
+    .msg-card.stalled { border-left-color: #de935f; }
     .msg-head { color: #808080; margin-bottom: 4px; overflow-wrap: anywhere; }
     .msg-icon { color: #81a2be; }
     .msg-you { color: #8abeb7; }
@@ -634,6 +635,7 @@
     .msg-tag.ended { background: #2c3320; color: #b5bd68; }
     .msg-tag.stopped { background: #3a3424; color: #f0c674; }
     .msg-tag.died { background: #3c2828; color: #cc6666; }
+    .msg-tag.stalled { background: #3c2e24; color: #de935f; }
     .msg-re { margin-left: 8px; color: #666666; font-size: 12px; }
     .msg-body { color: #d4d4d4; }
 

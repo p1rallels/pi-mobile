@@ -137,9 +137,9 @@ function span(className, text) {
 	return el;
 }
 
-const MSG_KIND_CLASSES = new Set(["ended", "died"]);
+const MSG_KIND_CLASSES = new Set(["ended", "died", "stalled"]);
 
-/** The class a msg card and its tag take: its kind (ended, died), or stopped for an ended sub that was cut short. @param {import("./custom_messages.js").MsgView} view */
+/** The class a msg card and its tag take: its kind (ended, died, stalled), or stopped for an ended sub that was cut short. @param {import("./custom_messages.js").MsgView} view */
 const msgKindClass = (view) => (view.stopped ? "stopped" : MSG_KIND_CLASSES.has(view.kind) ? view.kind : "");
 
 /**
