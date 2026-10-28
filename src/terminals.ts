@@ -196,7 +196,9 @@ export function createTerminalManager(options: TerminalManagerOptions = {}) {
 	const now = options.now ?? Date.now;
 	const maxTerminals = options.maxTerminals ?? MAX_TERMINALS;
 	let shell = options.shell ?? null;
-	const baseEnv = options.env ?? process.env;
+	// the server's env as it started: sessions run in this process, so whatever an extension writes into process.env later
+	// (op_load's secrets) would otherwise reach every shell opened after it
+	const baseEnv = options.env ?? { ...process.env };
 	const terminals = new Map<string, LiveTerminal>();
 	/** Why recently ended shells ended, oldest first. */
 	const endedReasons = new Map<string, TerminalEndReason>();
