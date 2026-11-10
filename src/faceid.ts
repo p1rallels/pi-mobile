@@ -16,7 +16,7 @@ import {
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 
-type ChallengeKind = "register" | "authenticate";
+export type ChallengeKind = "register" | "authenticate";
 
 interface StoredCredential {
 	id: string;
@@ -32,11 +32,21 @@ interface FaceIdStore {
 	rpCredentials: Record<string, StoredCredential[]>;
 }
 
-interface ChallengeRecord {
-	id: string;
-	kind: ChallengeKind;
+/** Who asked for a challenge: the browser (its client id) and, in secure mode, its mTLS device fingerprint (else null). */
+export interface ChallengeAsker {
+	clientId: string;
+	device: string | null;
+}
+
+/** What a challenge is bound to: verify takes it only for the same RP and origin, from the same browser and device. */
+export interface ChallengeBinding extends ChallengeAsker {
 	rpId: string;
 	origin: string;
+}
+
+interface ChallengeRecord extends ChallengeBinding {
+	id: string;
+	kind: ChallengeKind;
 	expectedChallenge: string;
 	expiresAt: number;
 	/** the requester key that asked for it (see requester-key.ts) */
@@ -53,9 +63,27 @@ const MAX_PENDING_CHALLENGES = 256;
 /** a requester past this drops its own oldest pending challenge, so no one requester fills the shared store */
 export const MAX_PENDING_CHALLENGES_PER_REQUESTER = 8;
 
+const BINDING_FIELDS = ["rpId", "origin", "clientId", "device"] as const satisfies readonly (keyof ChallengeBinding)[];
+
+/** The first field a presented ceremony differs from its challenge in, or null when it's the same RP, origin, browser and device. */
+export function bindingMismatch(issued: ChallengeBinding, presented: ChallengeBinding): keyof ChallengeBinding | null {
+	return BINDING_FIELDS.find((field) => issued[field] !== presented[field]) ?? null;
+}
+
+/**
+ * Why a ceremony can't run against an RP that holds this many credentials, or null. Registration is first use only (no path
+ * adds a passkey to an enrolled RP), so it's asked when a challenge is issued and again when one is verified.
+ */
+export function ceremonyRefusal(kind: ChallengeKind, credentialCount: number): "faceid_not_enrolled" | "faceid_already_enrolled" | null {
+	if (kind === "authenticate") return credentialCount === 0 ? "faceid_not_enrolled" : null;
+	return credentialCount > 0 ? "faceid_already_enrolled" : null;
+}
+
 export class FaceIdService {
 	private storePath: string;
 	private challenges = new Map<string, ChallengeRecord>();
+	/** the last verify in line: each one reads, checks and writes the store after the one before it is done */
+	private verifying: Promise<unknown> = Promise.resolve();
 
 	constructor(storePath = join(homedir(), ".pi", "agent", "pi-web", "faceid-credentials.json")) {
 		this.storePath = storePath;
@@ -120,6 +148,7 @@ export class FaceIdService {
 		rpId: string,
 		origin: string,
 		requester: string,
+		asker: ChallengeAsker,
 	): Promise<{
 		challengeId: string;
 		kind: ChallengeKind;
@@ -130,13 +159,9 @@ export class FaceIdService {
 			throw new Error("too_many_pending_faceid_challenges");
 		}
 		const credentials = await this.listCredentialsForRp(rpId);
-
-		if (kind === "authenticate" && credentials.length === 0) {
-			throw new Error("faceid_not_enrolled");
-		}
-		if (kind === "register" && credentials.length > 0) {
-			throw new Error("faceid_already_enrolled");
-		}
+		const refusal = ceremonyRefusal(kind, credentials.length);
+		if (refusal) throw new Error(refusal);
+		const { clientId, device } = asker;
 
 		const challengeId = isoBase64URL.fromBuffer(randomBytes(24));
 		const expiresAt = Date.now() + CHALLENGE_TTL_MS;
@@ -159,7 +184,7 @@ export class FaceIdService {
 				})),
 			});
 
-			this.remember({ id: challengeId, kind, rpId, origin, expectedChallenge: options.challenge, expiresAt, requester });
+			this.remember({ id: challengeId, kind, rpId, origin, clientId, device, expectedChallenge: options.challenge, expiresAt, requester });
 			return { challengeId, kind, options };
 		}
 
@@ -173,7 +198,7 @@ export class FaceIdService {
 			})),
 		});
 
-		this.remember({ id: challengeId, kind, rpId, origin, expectedChallenge: options.challenge, expiresAt, requester });
+		this.remember({ id: challengeId, kind, rpId, origin, clientId, device, expectedChallenge: options.challenge, expiresAt, requester });
 		return { challengeId, kind, options };
 	}
 
@@ -187,11 +212,17 @@ export class FaceIdService {
 		return challenge;
 	}
 
-	async verify(challengeId: string, credentialPayload: unknown): Promise<VerifyOutcome> {
+	/** Takes a challenge (once: a refused one is gone too) and verifies the ceremony, if it's presented for what it was issued for. */
+	async verify(challengeId: string, credentialPayload: unknown, presented: ChallengeBinding): Promise<VerifyOutcome> {
 		const challenge = this.resolveChallenge(challengeId);
-		return challenge.kind === "register"
-			? this.verifyRegistration(challenge, credentialPayload)
-			: this.verifyAuthentication(challenge, credentialPayload);
+		if (bindingMismatch(challenge, presented)) throw new Error("challenge_mismatch");
+		const run = () =>
+			challenge.kind === "register"
+				? this.verifyRegistration(challenge, credentialPayload)
+				: this.verifyAuthentication(challenge, credentialPayload);
+		const outcome = this.verifying.then(run);
+		this.verifying = outcome.catch(() => undefined);
+		return outcome;
 	}
 
 	private async verifyRegistration(challenge: ChallengeRecord, credentialPayload: unknown): Promise<VerifyOutcome> {
@@ -213,6 +244,8 @@ export class FaceIdService {
 		const credential = verification.registrationInfo.credential;
 		const store = await this.readStore();
 		const existing = Array.isArray(store.rpCredentials[challenge.rpId]) ? store.rpCredentials[challenge.rpId]! : [];
+		const refusal = ceremonyRefusal("register", existing.length);
+		if (refusal) throw new Error(refusal);
 		if (existing.some((entry) => entry.id === credential.id)) {
 			throw new Error("credential_already_registered");
 		}
