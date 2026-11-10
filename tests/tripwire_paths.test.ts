@@ -160,11 +160,12 @@ describe("tripwire path spellings", () => {
 		const fixture = await makeFixture();
 		const service = makeService(fixture);
 		const skill = join(fixture.agentDir, "skills", "demo", "SKILL.md");
-		expect(inspect(service, fixture, "write", { path: skill, content: "# demo" })).toEqual([]);
+		expect(inspect(service, fixture, "write", { path: skill, content: "# demo" })).toEqual([["persistence", "logged"]]);
 		expect(inspect(service, fixture, "read", { path: `@${skill}` })).toEqual([]);
-		expect(inspect(service, fixture, "write", { path: join(fixture.agentDir, "settings.json"), content: "{}" })).toEqual([]);
+		expect(inspect(service, fixture, "write", { path: join(fixture.agentDir, "settings.json"), content: "{}" })).toEqual([["persistence", "logged"]]);
+		expect(inspect(service, fixture, "write", { path: join(fixture.agentDir, "notes.md"), content: "" })).toEqual([]);
 		expect(inspect(service, fixture, "ls", { path: join(fixture.agentDir, "sessions") })).toEqual([]);
-		expect(inspect(service, fixture, "bash", { command: `ls ${join(fixture.agentDir, "skills")}` })).toEqual([]);
+		expect(inspect(service, fixture, "bash", { command: `ls ${join(fixture.agentDir, "skills")}` })).toEqual([["persistence", "logged"]]);
 	});
 
 	test("ordinary project paths raise nothing, however they're spelled", async () => {

@@ -29,6 +29,8 @@ describe("tripwire guard", () => {
 		expect(text).toContain("Blocked by the pi-web tripwire");
 		expect(session.faux.getPendingResponseCount()).toBe(1);
 
+		// the alert is stored unawaited: let the write land before the agent dir goes
+		await runtime.getTripwireAlerts(sessionId, clientId);
 		await runtime.release(sessionId, { clientId });
 	});
 
