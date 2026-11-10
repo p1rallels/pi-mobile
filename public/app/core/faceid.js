@@ -54,6 +54,15 @@ export function isCheckFresh(verifiedAt, freshMs, now) {
 	return age >= 0 && age < freshMs;
 }
 
+/**
+ * Whether going away locks the terminals. Out of sight always does, prompt or not; out of focus doesn't while our
+ * own prompt is up (its sheet takes focus) or a dialog run through `holdFocus` is.
+ * @param {{ how: "blur" | "hidden", prompting: boolean, holdingFocus: boolean }} away
+ */
+export function awayLocksTerminals({ how, prompting, holdingFocus }) {
+	return how === "hidden" || !(prompting || holdingFocus);
+}
+
 function prefersTouch() {
 	return typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
 }
@@ -78,11 +87,12 @@ function postTerminalLock() {
 /**
  * Terminals lock apart from the page, since a shell (ssh to prod in it, say) wants more than the page's window.
  * - They lock whenever the page goes away: out of sight (another tab, the app switcher, a locked screen) or out of
- *   focus (another app or window). Neither our own prompt, which takes focus while it's up, nor a dialog run through
- *   `holdFocus` counts. Locked, a terminal drops its screen and its socket, and the host refuses this browser its
- *   shells until the next check.
+ *   focus (another app or window). Losing focus to our own prompt, which takes it while it's up, or to a dialog run
+ *   through `holdFocus` doesn't count; going out of sight while a prompt is up does. Locked, a terminal drops its
+ *   screen and its socket, and the host refuses this browser its shells until the next check.
  * - Only a check passed in this page since unlocks them: one asked for with `unlock` (a click on a locked terminal,
- *   opening one), or the page's own when it asks. A check another tab passed doesn't count.
+ *   opening one, keep open), or the page's own when it asks. A check another tab passed doesn't count, and neither
+ *   does one whose prompt was up while the page went out of sight.
  * - Phones ask by themselves on the way back when a locked terminal is on screen (`wantsUnlock`); laptops wait for a
  *   click, since the passkey sheet blocks every Chrome tab. After a prompt that didn't go through, phones wait too.
  * @typedef {{ onLock: () => void, onUnlock: () => void, wantsUnlock: () => boolean }} TerminalLockWatcher
@@ -117,7 +127,8 @@ export const noTerminalLock = Object.freeze({
  *   needs nothing from you), but only with focus, since browsers refuse WebAuthn otherwise.
  * - A locked page swallows keys, so nothing underneath (esc aborts a run) acts while it's locked.
  * - After a failed or cancelled prompt it waits for "Try again" instead of prompting on every return.
- * - Touch devices cover the page while they're away, so the app switcher shows the card, not the session.
+ * - Touch devices cover the page while they're away, so the app switcher shows the card, not the session. Not while
+ *   a prompt is up: nothing would lift the cover when it's cancelled after the page is back.
  * - Terminals have a lock of their own (`terminals`, see TerminalLock). The page and its terminals share one prompt,
  *   and one check is good for both.
  */
@@ -144,6 +155,8 @@ export function installFaceIdGuard({
 	let focusBeforeLock = null;
 	/** The one Face ID / Touch ID prompt up at a time; the page and its terminals both join it. @type {Promise<void> | null} */
 	let prompting = null;
+	/** The page went out of sight while that prompt was up: its check doesn't unlock the terminals. */
+	let promptWentAway = false;
 	let terminalsLocked = true;
 	/** A terminal prompt that didn't go through: phones stop asking on their own until one does. */
 	let terminalPromptFailed = false;
@@ -246,7 +259,9 @@ export function installFaceIdGuard({
 
 	/** Asks for Face ID / Touch ID (enrolling this browser the first time). Asking while a prompt is up joins that one. */
 	function prompt(knownStatus = null) {
-		prompting ??= runPrompt(knownStatus).finally(() => {
+		if (prompting) return prompting;
+		promptWentAway = false;
+		prompting = runPrompt(knownStatus).finally(() => {
 			prompting = null;
 		});
 		return prompting;
@@ -278,7 +293,10 @@ export function installFaceIdGuard({
 		failed = false;
 		if (locked) unlock();
 		else announceUnlocked();
-		if (document.visibilityState === "hidden") return;
+		if (promptWentAway || document.visibilityState === "hidden") {
+			keepTerminalsLocked();
+			return;
+		}
 		terminalPromptFailed = false;
 		terminalsLocked = false;
 		for (const watcher of [...terminalWatchers]) watcher.onUnlock();
@@ -333,10 +351,20 @@ export function installFaceIdGuard({
 		for (const watcher of [...terminalWatchers]) watcher.onLock();
 	}
 
+	/** A check the terminals don't count: they stay locked, and the host, which may have it on file after their lock, hears it again. */
+	function keepTerminalsLocked() {
+		if (!terminalsLocked) {
+			lockTerminals();
+			return;
+		}
+		terminalLockSent = sendTerminalLock();
+	}
+
 	/** @param {"blur" | "hidden"} how */
 	function terminalsAway(how) {
-		if (prompting) return;
-		if (how === "blur" && (holding > 0 || performance.now() < heldUntil)) return;
+		const holdingFocus = holding > 0 || performance.now() < heldUntil;
+		if (!awayLocksTerminals({ how, prompting: prompting !== null, holdingFocus })) return;
+		if (prompting) promptWentAway = true;
 		lockTerminals();
 	}
 
