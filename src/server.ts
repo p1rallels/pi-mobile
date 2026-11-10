@@ -11,6 +11,19 @@ import { dropInheritedSessionIdentity } from "./inherited-session.ts";
 import { FaceIdService } from "./faceid.ts";
 import { watchMsgMail } from "./msg-mail.ts";
 import { msgStoreRoot } from "./msg-store.ts";
+import {
+	browserStreams,
+	FAILED_RECHECK,
+	recheckVerdict,
+	STREAM_SWEEP_MS,
+	terminalCloseFrame,
+	withoutStream,
+	withStream,
+	type AdmittedStream,
+	type BrowserCloseReason,
+	type OpenStreamKind,
+	type OpenStreams,
+} from "./open-streams.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
@@ -98,6 +111,8 @@ interface TerminalSocketData {
 	checkedAt: number | null;
 	cols: string | null;
 	rows: string | null;
+	/** What let it in, and those checks again: the sweep closes it once they fail. */
+	admitted: AdmittedStream;
 }
 
 const CLIENT_COOKIE = "pi_web_client";
@@ -539,10 +554,13 @@ function serveStatic(path: string, contentType?: string): Response {
 	return new Response(file, { status: 200, headers });
 }
 
-function createSseStream(signal: AbortSignal) {
+/** `signal` ends when the browser goes away or the host takes the stream's access back; route cleanups hang off it. */
+function createSseStream(requestSignal: AbortSignal, admitted: AdmittedStream) {
 	const encoder = new TextEncoder();
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	let keepAlive: ReturnType<typeof setInterval> | null = null;
+	const revoked = new AbortController();
+	const signal = AbortSignal.any([requestSignal, revoked.signal]);
 
 	const stream = new ReadableStream<Uint8Array>({
 		start(c) {
@@ -554,6 +572,7 @@ function createSseStream(signal: AbortSignal) {
 			}, SSE_PING_INTERVAL_MS);
 		},
 		cancel() {
+			openStreams = withoutStream(openStreams, stream);
 			controller = null;
 			if (keepAlive) clearInterval(keepAlive);
 			keepAlive = null;
@@ -561,6 +580,7 @@ function createSseStream(signal: AbortSignal) {
 	});
 
 	const close = () => {
+		openStreams = withoutStream(openStreams, stream);
 		if (!controller) return;
 		try {
 			controller.close();
@@ -577,7 +597,9 @@ function createSseStream(signal: AbortSignal) {
 		controller.enqueue(encoder.encode(sseEventFrame(event, id)));
 	};
 
-	signal.addEventListener("abort", close, { once: true });
+	openStreams = withStream(openStreams, stream, { ...admitted, close: () => revoked.abort() });
+	if (signal.aborted) close();
+	else signal.addEventListener("abort", close, { once: true });
 
 	const headers = new Headers({
 		"content-type": "text/event-stream; charset=utf-8",
@@ -591,7 +613,7 @@ function createSseStream(signal: AbortSignal) {
 		headers,
 	});
 
-	return { response, send, close };
+	return { response, send, close, signal };
 }
 
 async function requireJsonBody(req: Request, maxBytes = DEFAULT_JSON_BODY_LIMIT): Promise<Record<string, unknown>> {
@@ -771,9 +793,46 @@ function lockTerminals(clientId: string): void {
 		if (now - at > FACEID_TTL_MS) terminalLocks.delete(id);
 	}
 	terminalLocks.set(clientId, now);
-	for (const socket of [...terminalSockets]) {
-		if (socket.data.clientId === clientId) socket.close(4401, "locked");
-	}
+	closeBrowserStreams(clientId, "terminals_locked");
+}
+
+/** A logout ends every connection its browser has open, a terminal lock that browser's terminal sockets. */
+function closeBrowserStreams(clientId: string | undefined, reason: BrowserCloseReason): void {
+	if (!clientId) return;
+	for (const stream of browserStreams(openStreams, clientId, reason)) stream.close(reason);
+}
+
+/**
+ * What let a stream or socket in (its browser, its device, the Face ID token it rode on), and the request's checks made
+ * again for the sweep, with the functions the request path uses: so whatever they stop accepting, open streams lose too.
+ */
+function admitStream(req: Request, url: URL, peerAddress: string | undefined, kind: OpenStreamKind): AdmittedStream {
+	const client = resolveClientCookie(req);
+	const faceIdToken = resolveBrowserFaceIdCheck(req, url, client) ? (resolveFaceIdCookie(req)?.jti ?? null) : null;
+	return {
+		admission: { kind, clientId: client?.clientId ?? null, device: requestDevices.get(req) ?? null, faceIdToken },
+		recheck: async () => ({
+			deviceAllowed:
+				!secureMode || (await verifyClientCertificateRequest(req, peerAddress, { registryPath: deviceRegistryPath, headerName: clientCertHeader })).ok,
+			faceIdAccepted: resolveBrowserFaceIdCheck(req, url, resolveClientCookie(req)) !== null,
+		}),
+	};
+}
+
+/** Checks every open stream and socket again the way a new request would be checked, and closes the ones that fail. */
+async function sweepOpenStreams(): Promise<void> {
+	const failures: unknown[] = [];
+	await Promise.all(
+		[...openStreams.values()].map(async (stream) => {
+			const recheck = await stream.recheck().catch((error: unknown) => {
+				failures.push(error);
+				return FAILED_RECHECK;
+			});
+			const reason = recheckVerdict(stream.admission, recheck);
+			if (reason) stream.close(reason);
+		}),
+	);
+	if (failures.length > 0) console.error(`[pi-web] closed ${String(failures.length)} open stream(s) whose access couldn't be checked:`, failures[0]);
 }
 
 function ensureFaceIdAuth(req: Request, url: URL): Response | null {
@@ -932,7 +991,16 @@ const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolve
 const revokedFaceIdTokens = new Map<string, number>();
 /** When each browser (client id) last locked its terminals; a shell needs a Face ID check made after that. */
 const terminalLocks = new Map<string, number>();
-const terminalSockets = new Set<Bun.ServerWebSocket<TerminalSocketData>>();
+/** Every open SSE stream and terminal socket, keyed by the stream or the socket. */
+let openStreams: OpenStreams<object> = new Map();
+let sweepingStreams = false;
+setInterval(() => {
+	if (sweepingStreams) return;
+	sweepingStreams = true;
+	void sweepOpenStreams().finally(() => {
+		sweepingStreams = false;
+	});
+}, STREAM_SWEEP_MS).unref();
 
 const publicDir = join(import.meta.dir, "..", "public");
 const publicRoot = resolve(publicDir) + sep;
@@ -1046,6 +1114,7 @@ async function handleTerminalRoute(
 			checkedAt: resolveBrowserFaceIdCheck(req, url, client)?.verifiedAt ?? null,
 			cols: url.searchParams.get("cols"),
 			rows: url.searchParams.get("rows"),
+			admitted: admitStream(req, url, server.requestIP(req)?.address, "terminal"),
 		};
 		return server.upgrade(req, { data }) ? undefined : errorResponse("Websocket upgrade failed", 400);
 	}
@@ -1137,6 +1206,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 
 		if (req.method === "POST" && url.pathname === "/api/faceid/logout") {
 			revokeFaceIdCookie(req);
+			closeBrowserStreams(resolveClientCookie(req)?.clientId, "logged_out");
 			return ok({ "set-cookie": clearCookie(FACEID_COOKIE, secure) });
 		}
 
@@ -1205,7 +1275,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 
 		// one stream for the whole canvas: which sessions run, work or wait, so idle tiles can let go of theirs
 		if (req.method === "GET" && url.pathname === "/api/canvas/status") {
-			const stream = createSseStream(req.signal);
+			const stream = createSseStream(req.signal, admitStream(req, url, directAddress, "canvas_status"));
 			let timer: ReturnType<typeof setTimeout> | null = null;
 			const send = () => {
 				timer = null;
@@ -1214,7 +1284,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 			const unsubscribe = runtime.onStatusChange(() => {
 				timer ??= setTimeout(send, CANVAS_STATUS_THROTTLE_MS);
 			});
-			req.signal.addEventListener(
+			stream.signal.addEventListener(
 				"abort",
 				() => {
 					unsubscribe();
@@ -1427,7 +1497,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 			if (!resolveClientCookie(req)) return errorResponse("Missing browser session. Reload the page.", 401);
 			const path = url.searchParams.get("path")?.trim();
 			if (!path) return errorResponse("Missing session path", 400);
-			const stream = createSseStream(req.signal);
+			const stream = createSseStream(req.signal, admitStream(req, url, directAddress, "follow"));
 			const follower: FollowClient = { send: stream.send, close: stream.close };
 			const since = resolveResumeCursor(req.headers.get("last-event-id"), url.searchParams.get("since"));
 			const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
@@ -1435,10 +1505,10 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				const { init, cursor, stop } = await runtime.followSession(sessionId, path, follower, since, {
 					limit: Number.isFinite(limitParam) ? limitParam : undefined,
 				});
-				if (req.signal.aborted) {
+				if (stream.signal.aborted) {
 					stop();
 				} else {
-					req.signal.addEventListener("abort", stop, { once: true });
+					stream.signal.addEventListener("abort", stop, { once: true });
 				}
 				stream.send(init, cursor);
 			} catch (error) {
@@ -1489,7 +1559,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 			const client = resolveClientCookie(req);
 			if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
 
-			const stream = createSseStream(req.signal);
+			const stream = createSseStream(req.signal, admitStream(req, url, directAddress, "events"));
 			const clientSession: SessionClient = {
 				connectionId: randomUUID(),
 				clientId: client.clientId,
@@ -1511,7 +1581,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				return errorResponse("Session not running", 404);
 			}
 
-			req.signal.addEventListener(
+			stream.signal.addEventListener(
 				"abort",
 				() => {
 					runtime.removeClient(sessionId, clientSession.connectionId);
@@ -1628,16 +1698,24 @@ const server = Bun.serve({
 				ws.close(4404, "terminal not running");
 				return;
 			}
-			terminalSockets.add(ws);
+			openStreams = withStream(openStreams, ws, {
+				...ws.data.admitted,
+				close: (reason) => {
+					// out of the registry first: no input reaches the shell while the close goes out
+					openStreams = withoutStream(openStreams, ws);
+					const frame = terminalCloseFrame(reason);
+					ws.close(frame.code, frame.reason);
+				},
+			});
 		},
 		message(ws, message) {
-			if (typeof message === "string") terminals?.handleMessage(ws.data.terminalId, message);
+			if (typeof message === "string" && openStreams.has(ws)) terminals?.handleMessage(ws.data.terminalId, message);
 		},
 		drain(ws) {
 			terminals?.drain(ws.data.terminalId, ws);
 		},
 		close(ws) {
-			terminalSockets.delete(ws);
+			openStreams = withoutStream(openStreams, ws);
 			terminals?.detach(ws.data.terminalId, ws);
 		},
 	},
