@@ -213,7 +213,7 @@ export function createTerminalTile(options) {
 				if (!halted()) reconnectLater();
 			},
 			onCopied: (text) => flash(`copied ${lineCount(text)}`),
-			onCopyFailed: () => flash("copy failed: click the page, then pbcopy again", "error"),
+			onCopyFailed: () => flash("couldn't copy: the browser refused, try the copy bar again", "error"),
 		});
 		if (options.isFocused() && !halted()) screen.focus();
 		return screen;

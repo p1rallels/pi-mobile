@@ -272,10 +272,13 @@ Tripwires run in the server-side session runtime, not in the browser attachment.
 Current behavior:
 
 - repo-external reads/searches and runaway patterns log persistent alerts
-- repo-external writes/edits, host secret access, persistence attempts, destructive bash patterns, and suspicious upload or download-and-exec commands trigger a persistent critical alert and request an abort
+- repo-external writes/edits through the file tools, host secret access, persistence attempts, destructive bash patterns, and suspicious upload or download-and-exec commands trigger a persistent critical alert and request an abort
 - file tools are checked at the path they will really touch, the way pi's tools resolve it: a leading `@`, `file://` URLs, `~`, symlinks (a write through a symlink that leaves the repo is a repo escape) and case on macOS
+- allowed roots are the session's folder, the saved repos and the agent dir. the server's own checkout isn't one: a session in another repo writing into the live worktree is a repo escape
 - the agent dir stays open to the agent except pi-web's own state in it (`<agent dir>/pi-web/`: the Face ID credentials, the tripwire state, saved repos) and `<agent dir>/auth.json`, which count as secrets
-- the bash check is string matching only: it can't follow symlinks or variables in a command
+- changing what the next session runs or reads into its prompt is logged, not blocked, as `persistence`: `models.json` (an `!` API key runs a command), `settings.json`, `mcp.json`, `trust.json`, `AGENTS.md` / `CLAUDE.md` / `SYSTEM.md` / `APPEND_SYSTEM.md`, and `extensions/`, `skills/`, `prompts/`, `npm/`, `git/`, `bin/`. file tools that read them stay quiet; a bash command that names one logs too, except `skills/` and `prompts/` (skills run their scripts by path)
+- custom and MCP tools are checked on `path`, `from`, `to`, `oldPath`, `newPath`, `targetPath`, `file_path`, `filePath`, `old_path`, `new_path`, `target_path`, `source`, `destination` and `paths`; a path under any other name goes unchecked
+- the bash check is string matching only, so it's a tripwire, not a wall: it can't follow symlinks, variables, scripts or `eval`, and it doesn't check where bash writes (no repo-escape check for bash at all). enforcing it would mean running agent commands in a sandbox (macOS `sandbox-exec`), which pi-web doesn't do
 - reconnecting browsers fetch unread alerts immediately after reattaching to a session
 
 ---

@@ -78,7 +78,7 @@ Check: the five folders are in `<workspace>`.
 mkdir -p ~/.pi/agent/skills/pfs && cp <workspace>/pfs/skills/pfs/SKILL.md ~/.pi/agent/skills/pfs/
 ```
 
-Check: `pfs --version` and `lookup --version` answer, from a new terminal too, and `command -v pfs` is in `~/.cargo/bin`. Forks live in `~/.pfs/forks/<repo>/<n>`; pfs's README has the rest.
+Check: `pfs --version` and `lookup --version` answer, from a new terminal too, `command -v pfs` is in `~/.cargo/bin`, and `pfs ls --help | grep -- --names` finds the flag (pi-web names forks with it; an older pfs gets fork numbers only). Forks live in `~/.pfs/forks/<repo>/<n>`; pfs's README has the rest.
 
 ## 4. msg and relay
 
