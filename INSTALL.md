@@ -22,7 +22,7 @@ phone, laptop -> Tailscale -> Caddy (mTLS, :8443) -> pi-web (127.0.0.1:4317) -> 
 |---|---|---|
 | pi-web | this repo: the web UI, and the server that runs pi sessions on the host | https://github.com/p1rallels/pi-mobile |
 | msg | pi extension: `msg_send` and `msg_list`, mail between a session and the subs it starts | https://github.com/p1rallels/msg |
-| relay | pi extension: context nudges and resets in place (`relay` tool, `/relay`) | https://github.com/p1rallels/relay-loop |
+| relay | pi extension: context nudges and resets in place (`relay` tool, `/relay`) | https://github.com/p1rallels/relay |
 | pfs | CLI: instant forks of a repo for agents working in parallel, plus a pi skill | https://github.com/p1rallels/pfs |
 | lookup | CLI: searches past pi sessions; relay builds its catch-up with it | https://github.com/p1rallels/lookup |
 
@@ -61,7 +61,7 @@ pi-web reads the same `~/.pi/agent` setup as the `pi` CLI (the packages in `sett
 cd <workspace>
 git clone https://github.com/p1rallels/pi-mobile pi-web
 git clone https://github.com/p1rallels/msg
-git clone https://github.com/p1rallels/relay-loop
+git clone https://github.com/p1rallels/relay
 git clone https://github.com/p1rallels/pfs
 git clone https://github.com/p1rallels/lookup
 ```
@@ -84,7 +84,7 @@ Check: `pfs --version` and `lookup --version` answer, from a new terminal too, a
 
 ```sh
 pi install <workspace>/msg
-pi install <workspace>/relay-loop
+pi install <workspace>/relay
 ```
 
 Check: both are under `packages` in `~/.pi/agent/settings.json`, and a new `pi` session has the `msg_list`, `msg_send` and `relay` tools (ask it to call `msg_list`: it lists itself). Sessions that were open before get them once they restart.
