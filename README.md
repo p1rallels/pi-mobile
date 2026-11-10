@@ -113,7 +113,7 @@ Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intent
   - How pi-web tells: pi writes a whole entry when each message ends, so a last message that is a prompt, a tool call or a tool result means mid-turn. Its writer is a `pi` process (as `ps` lists it) working in the session's folder that started before the last write.
   - Opening one follows its file read-only as entries arrive. pi-web won't load a second copy while it runs.
   - **Esc** stops that `pi` (with its process group when it leads one, as pfs runs do); then typing or **Take over** continues the session here, unless it's a sub or its folder is gone (above): those stay read-only. The view also unlocks on its own when the turn closes, when the writer is gone (a killed `pi` writes no closing message, so its turn reads open forever), or after 30 minutes without a write.
-  - Sessions that ran in a pfs fork are named `repo · fork n-name`: pfs keeps forks in `~/.pfs/forks/<repo>/<n>` (`$PFS_HOME` or pfs's config can move them; pi-web finds them by the `.main` pfs writes next to them), and in `<repo>/.forks/<n>` before pfs 0.4.
+  - Sessions that ran in a pfs fork are named `repo · fork n-name`: pfs keeps forks in `~/.pfs/forks/<repo>/<n>` (`$PFS_HOME` or pfs's config can move them, and pi-web resolves that root the way pfs does). A `.main` counts only under that root, and the name comes from `pfs ls --names` (no git in any fork) only when the repo it names points back at the folder. Forks from before pfs 0.4, `<repo>/.forks/<n>`, show the number only. git and pfs are found on PATH's absolute entries (plus `~/.cargo/bin` for pfs).
 
 Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI. pi-web only notices the CLI mid-turn: a `pi` idle at its prompt can't be told apart from a closed one.
 
@@ -146,6 +146,9 @@ On the canvas, a new tile's session step also offers **+ new terminal**: your lo
 - Browser responses ship with a strict CSP and related security headers.
 - The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS`, `PI_WEB_MAX_CLIENTS_PER_SESSION` and `PI_WEB_CLIENT_SESSIONS_PER_MINUTE` (browser session handshakes per requester, default 20) if needed.
 - Rate limits key on what a client can't pick: the verified device in secure mode, else the last `X-Forwarded-For` entry (the one the trusted proxy added), else the TCP peer. `Cf-Connecting-Ip` is ignored, and the generated Caddyfile strips it. One requester holds at most 8 pending Face ID challenges; past that it drops its own oldest.
+- Logout is per browser and saved: it ends every Face ID check that browser passed and closes its open streams and shells at once, across restarts. Open connections are rechecked every 5 seconds against the device registry and the Face ID session, and closed when either says no.
+- A Face ID challenge verifies only for the host, origin, browser and device that asked for it; enrollment is first use, checked again at verify.
+- In `ask` trust mode, re-attaching a session brings back only a "this session only" answer or a denial: a project that had nothing to approve asks once something appears.
 - A request whose path has an empty segment (`//api/...`) gets a 400 before any check. Bun runs with development off, so an uncaught error is a plain 500 for the client, and its cause goes to the server's log as `[pi-web] request failed:`.
 - Commands pi-web prints for you to paste (the CLI resume line after Release, `host discover`'s `pi-web host add` lines) single-quote every value with `shellQuote`. Never build one with `JSON.stringify`: double quotes still run `$(...)`, backticks and `$VAR`.
 

@@ -185,6 +185,8 @@ Revoke a lost or retired device:
 bun run cli -- device revoke iphone
 ```
 
+A revoked or removed device loses its open streams and shells within 5 seconds, with no restart: pi-web rechecks every open connection against the registry and the Face ID session every 5 seconds. A terminal closed that way gets close code 4403 (device no longer allowed); 4401 means it needs a Face ID check.
+
 Each device should have its own certificate. Do not share one `.p12` across phones/laptops.
 
 ---
@@ -198,6 +200,10 @@ Remote unlock has three windows:
 - an unlock session for read access (4 hours, `PI_WEB_FACEID_SESSION_MINUTES`)
 - prompts, aborts, settings and take over need a check within the last 60 minutes (`PI_WEB_FACEID_COMMAND_MINUTES`)
 - starting sessions, adding repos and releasing need a check within the last 15 minutes (`PI_WEB_FACEID_FRESH_MINUTES`)
+
+- A challenge verifies only for the host, origin, browser and (in secure mode) device that asked for it, and any attempt uses it up. `/api/faceid/challenge` needs the browser session cookie the page gets first from `/api/client`.
+- Enrollment is first use per RP, checked again at verify, so a challenge issued before the first enrollment can't add a passkey after it.
+- Logout (`POST /api/faceid/logout`) is per browser: every check that browser passed until then stops counting, its open streams and shells close at once, and it holds across restarts. The cutoffs live in `~/.pi-web/faceid-logouts.json`. If the server refuses to start over that file, repair it, or delete it together with `cookie-key`, which signs every browser out. Lowering `PI_WEB_FACEID_SESSION_MINUTES` also cuts sessions that are already open short.
 
 The page locks when it loads, and again when you come back to it (tab, window or app) once the last check is older than the shortest of those windows, 15 minutes by default. Inside that window, switching away and back or reloading doesn't lock it, and other tabs on the same browser count the same check. A locked page swallows keystrokes, so nothing underneath acts until it's unlocked.
 
@@ -267,6 +273,9 @@ Current behavior:
 
 - repo-external reads/searches and runaway patterns log persistent alerts
 - repo-external writes/edits, host secret access, persistence attempts, destructive bash patterns, and suspicious upload or download-and-exec commands trigger a persistent critical alert and request an abort
+- file tools are checked at the path they will really touch, the way pi's tools resolve it: a leading `@`, `file://` URLs, `~`, symlinks (a write through a symlink that leaves the repo is a repo escape) and case on macOS
+- the agent dir stays open to the agent except pi-web's own state in it (`<agent dir>/pi-web/`: the Face ID credentials, the tripwire state, saved repos) and `<agent dir>/auth.json`, which count as secrets
+- the bash check is string matching only: it can't follow symlinks or variables in a command
 - reconnecting browsers fetch unread alerts immediately after reattaching to a session
 
 ---
