@@ -5,7 +5,7 @@ import type { SessionFolder } from "./session-index.ts";
 
 /**
  * Folders pi has been used in that aren't saved repos, for the canvas launcher to offer. Scratch folders don't count: temp
- * dirs (test runs leave hundreds) and pi-web's own test folders wherever TMPDIR points. pfs forks (<repo>/.forks/<n>) do:
+ * dirs (test runs leave hundreds) and pi-web's own test folders wherever TMPDIR points. pfs forks (~/.pfs/forks/<repo>/<n>) do:
  * they're removed when done with, so the ones still there are in use.
  */
 

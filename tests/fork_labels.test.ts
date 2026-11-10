@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createForkLabels, forkLabel, parseForkNames, parseForkPath } from "../src/fork-labels.ts";
@@ -17,6 +17,14 @@ describe("fork labels", () => {
 		expect(parseForkPath("/w/pfs-demo/.forks/8-x")).toBeNull();
 		expect(parseForkPath("/w/pfs-demo/.forks")).toBeNull();
 		expect(parseForkPath("/w/pfs-demo")).toBeNull();
+	});
+
+	test("finds a fork wherever pfs keeps them, by the .main pfs writes next to it", () => {
+		const mainOf = (dir: string) => (dir === "/h/.pfs/forks/pfs-demo" ? "/w/pfs-demo" : null);
+		expect(parseForkPath("/h/.pfs/forks/pfs-demo/8", mainOf)).toEqual({ root: "/w/pfs-demo", number: 8 });
+		expect(parseForkPath("/h/.pfs/forks/pfs-demo/12/src/3", mainOf)).toEqual({ root: "/w/pfs-demo", number: 12 });
+		expect(parseForkPath("/h/.pfs/forks/pfs-demo", mainOf)).toBeNull();
+		expect(parseForkPath("/h/notes/2024/3", mainOf)).toBeNull();
 	});
 
 	test("names forks from pfs ls --json and falls back to the number", () => {
@@ -51,5 +59,26 @@ describe("fork labels", () => {
 
 		const failing = createForkLabels(async () => null);
 		expect(await failing.label(join(root, ".forks", "3"))).toBe(`${root.split("/").at(-1)} · fork 3`);
+	});
+
+	test("asks pfs in the repo a forks folder's .main names, once while the names are fresh", async () => {
+		const home = await mkdtemp(join(await realpath(tmpdir()), "pi-web-forks-"));
+		tempDirs.push(home);
+		const repo = join(home, "code", "pfs-demo");
+		const forks = join(home, ".pfs", "forks", "pfs-demo");
+		await mkdir(join(repo, ".git", "pfs"), { recursive: true });
+		await mkdir(join(forks, "3"), { recursive: true });
+		await writeFile(join(forks, ".main"), `${repo}\n`);
+		const asked: string[] = [];
+		const labels = createForkLabels(async (root) => {
+			asked.push(root);
+			return '{"id":3,"label":"3-wait"}\n';
+		});
+
+		expect(await labels.label(join(forks, "3"))).toBe("pfs-demo · fork 3-wait");
+		expect(await labels.label(join(forks, "3", "src"))).toBe("pfs-demo · fork 3-wait");
+		expect(await labels.label(join(forks, "4"))).toBe("pfs-demo · fork 4");
+		expect(await labels.label(join(home, "code", "2024"))).toBeUndefined();
+		expect(asked).toEqual([repo]);
 	});
 });

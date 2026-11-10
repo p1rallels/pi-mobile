@@ -113,7 +113,7 @@ Token auth has been removed. `PI_WEB_TOKEN`, `--token`, and `?token=` are intent
   - How pi-web tells: pi writes a whole entry when each message ends, so a last message that is a prompt, a tool call or a tool result means mid-turn. Its writer is a `pi` process (as `ps` lists it) working in the session's folder that started before the last write.
   - Opening one follows its file read-only as entries arrive. pi-web won't load a second copy while it runs.
   - **Esc** stops that `pi` (with its process group when it leads one, as pfs runs do); then typing or **Take over** continues the session here, unless it's a sub or its folder is gone (above): those stay read-only. The view also unlocks on its own when the turn closes, when the writer is gone (a killed `pi` writes no closing message, so its turn reads open forever), or after 30 minutes without a write.
-  - Sessions that ran in a pfs fork (`<repo>/.forks/<n>`) are named `repo · fork n-name`.
+  - Sessions that ran in a pfs fork are named `repo · fork n-name`: pfs keeps forks in `~/.pfs/forks/<repo>/<n>` (`$PFS_HOME` or pfs's config can move them; pi-web finds them by the `.main` pfs writes next to them), and in `<repo>/.forks/<n>` before pfs 0.4.
 
 Do not open the same session in `pi-web` and the native `pi` CLI simultaneously. Use Release in the web UI before resuming in the CLI. pi-web only notices the CLI mid-turn: a `pi` idle at its prompt can't be told apart from a closed one.
 

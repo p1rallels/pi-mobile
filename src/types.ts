@@ -34,7 +34,7 @@ export interface ApiRepoSuggestion {
 	/** The newest session file's last write. */
 	modified: string;
 	sessions: number;
-	/** "repo · fork 8-hooks" for a pfs fork (<repo>/.forks/<n>). */
+	/** "repo · fork 8-hooks" for a pfs fork (~/.pfs/forks/<repo>/<n>, see fork-labels.ts). */
 	forkLabel?: string;
 }
 
@@ -117,7 +117,7 @@ export interface ApiSessionSummary {
 	isRunning: boolean;
 	/** Set when pi-web isn't hosting the session and its last message left the turn open. */
 	elsewhere?: ApiElsewhere;
-	/** "repo · fork 8-hooks" when the session ran in a pfs fork (<repo>/.forks/<n>). */
+	/** "repo · fork 8-hooks" when the session ran in a pfs fork (~/.pfs/forks/<repo>/<n>, see fork-labels.ts). */
 	forkLabel?: string;
 	/** Set when pi-web only shows the session, never loads it: a sub, or its folder is gone. */
 	readOnly?: ApiReadOnly;
@@ -274,7 +274,7 @@ export interface ApiLineageParty {
 	openable: boolean;
 	/** it opens read-only: a sub (every child is one), never loaded here */
 	readOnly: boolean;
-	/** how and where it runs, like "pi -p · ~/repo/.forks/3"; null without a presence record */
+	/** how and where it runs, like "pi -p · ~/.pfs/forks/repo/3"; null without a presence record */
 	where: string | null;
 	/** the tool call a live child has run for a minute or more; null for anything shorter, a child that isn't live, and every parent */
 	running: ApiLineageCall | null;

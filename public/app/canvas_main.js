@@ -106,11 +106,12 @@ export async function bootCanvas() {
 	const repoName = (cwd) => (cwd ? (cwd.split("/").filter(Boolean).at(-1) ?? cwd) : null);
 
 	/**
-	 * pfs keeps a repo's forks in <repo>/.forks/<n>: "repo · fork n" when the host sent no fork label (which names the fork).
+	 * A pfs fork's folder, ~/.pfs/forks/<repo>/<n> (<repo>/.forks/<n> before pfs 0.4): "repo · fork n" when the host sent
+	 * no fork label, which names the fork wherever pfs keeps them.
 	 * @param {string | null | undefined} cwd
 	 */
 	const forkPlace = (cwd) => {
-		const match = cwd ? /^(.+)\/\.forks\/(\d+)(?:\/|$)/.exec(cwd) : null;
+		const match = cwd ? (/\/\.pfs\/forks\/([^/]+)\/(\d+)(?:\/|$)/.exec(cwd) ?? /^(.+)\/\.forks\/(\d+)(?:\/|$)/.exec(cwd)) : null;
 		return match ? `${repoName(match[1])} · fork ${match[2]}` : null;
 	};
 

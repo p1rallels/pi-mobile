@@ -72,7 +72,7 @@ export function orderChildren(children: readonly JudgedPresence[]): JudgedPresen
 
 export const tildify = (path: string, home: string): string => (home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path);
 
-/** "pi -p · ~/repo/.forks/3": how and where a session runs, for one pi-web can't open. */
+/** "pi -p · ~/.pfs/forks/repo/3": how and where a session runs, for one pi-web can't open. */
 export const whereOf = (record: Presence, home: string): string => [MODE_LABELS[record.mode], tildify(record.cwd, home)].filter(Boolean).join(" · ");
 
 const shortId = (id: string): string => id.slice(0, 8);
