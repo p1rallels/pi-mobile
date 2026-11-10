@@ -18,7 +18,7 @@ import {
 	type ServiceLayout,
 } from "./launchd.ts";
 import { hasDoctorErrors, runDoctor, type DoctorCheck } from "./doctor.ts";
-import { loadHostRegistry, removeHost, upsertHost, type HostRecord } from "./host-registry.ts";
+import { hostAddCommand, loadHostRegistry, removeHost, upsertHost, type HostRecord } from "./host-registry.ts";
 import { refreshModelCatalogs } from "./model-catalog.ts";
 import { createSecureConfig, defaultPiWebConfig, ensurePiWebDirs, loadPiWebConfig, resolvePiWebPaths, savePiWebConfig, type PiWebConfig } from "./security-config.ts";
 
@@ -310,7 +310,7 @@ async function commandHostDiscover(args: ParsedArgs): Promise<void> {
 			});
 			console.log(`added ${node.id}\t${node.online ? "online" : "offline"}\t${url}`);
 		} else {
-			console.log(`pi-web host add ${node.id} ${url} --label ${JSON.stringify(node.label)} --tailscale-name ${JSON.stringify(node.label)}${node.ip ? ` --tailscale-ip ${JSON.stringify(node.ip)}` : ""} # ${node.online ? "online" : "offline"}`);
+			console.log(hostAddCommand({ id: node.id, url, label: node.label, ip: node.ip, online: node.online }));
 		}
 	}
 }

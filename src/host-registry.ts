@@ -1,4 +1,5 @@
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
+import { shellQuote } from "./shell-quote.ts";
 
 export interface HostRecord {
 	id: string;
@@ -121,4 +122,17 @@ export async function removeHost(path: string, rawId: string): Promise<HostRecor
 	if (!host) throw new Error(`host_not_found: ${id}`);
 	await saveHostRegistry(path, { version: 1, hosts: registry.hosts.filter((entry) => entry.id !== id) });
 	return host;
+}
+
+export interface DiscoveredHost {
+	id: string;
+	url: string;
+	label: string;
+	ip: string | undefined;
+	online: boolean;
+}
+
+export function hostAddCommand(host: DiscoveredHost): string {
+	const words = ["pi-web", "host", "add", host.id, host.url, "--label", host.label, "--tailscale-name", host.label, ...(host.ip ? ["--tailscale-ip", host.ip] : [])];
+	return `${words.map(shellQuote).join(" ")} # ${host.online ? "online" : "offline"}`;
 }
