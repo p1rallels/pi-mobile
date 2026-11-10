@@ -18,6 +18,7 @@ import { createLauncher } from "./canvas/launcher.js";
 import { nextFreeSlot, rectCenteredAt } from "./canvas/layout.js";
 import { createLayoutStore, loadCamera, saveCamera } from "./canvas/layout_store.js";
 import { renameKey } from "./canvas/tiles.js";
+import { repoName, sessionTitle } from "./canvas/session_title.js";
 import { findSession } from "./session/find_session.js";
 import { freshRecord, neverSavedOf } from "./session/fresh.js";
 import { buildPaneDom } from "./session/pane_dom.js";
@@ -101,25 +102,6 @@ export async function bootCanvas() {
 	 * @param {any} session
 	 */
 	const followable = (session) => !session?.isRunning && (session?.elsewhere?.state === "running" || session?.elsewhere?.state === "quiet");
-
-	/** @param {string | null | undefined} cwd */
-	const repoName = (cwd) => (cwd ? (cwd.split("/").filter(Boolean).at(-1) ?? cwd) : null);
-
-	/**
-	 * A pfs fork's folder, ~/.pfs/forks/<repo>/<n> (<repo>/.forks/<n> before pfs 0.4): "repo · fork n" when the host sent
-	 * no fork label, which names the fork wherever pfs keeps them.
-	 * @param {string | null | undefined} cwd
-	 */
-	const forkPlace = (cwd) => {
-		const match = cwd ? (/\/\.pfs\/forks\/([^/]+)\/(\d+)(?:\/|$)/.exec(cwd) ?? /^(.+)\/\.forks\/(\d+)(?:\/|$)/.exec(cwd)) : null;
-		return match ? `${repoName(match[1])} · fork ${match[2]}` : null;
-	};
-
-	/** @param {{ id: string, cwd?: string, name?: string, firstMessage?: string, forkLabel?: string | null }} session */
-	function sessionTitle(session) {
-		const label = session.name?.trim() || session.firstMessage?.trim().split("\n")[0]?.slice(0, 80) || session.id.slice(0, 8);
-		return [session.forkLabel || forkPlace(session.cwd) || repoName(session.cwd), label].filter(Boolean).join(" · ");
-	}
 
 	document.documentElement.classList.add("cv-page");
 	for (const el of document.querySelectorAll("body > .app-header, body > .layout")) el.remove();
