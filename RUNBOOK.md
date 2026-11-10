@@ -243,6 +243,8 @@ PI_WEB_ALLOW_DIRECT_TAILSCALE=1 PI_WEB_PUBLIC_ORIGIN=https://your-machine.ts.net
 
 Raw IPs may fail WebAuthn. Prefer a real hostname such as a Tailscale MagicDNS name.
 
+Don't add `PI_WEB_TRUST_PROXY=1` to a direct binding. It tells pi-web that a proxy which sets or appends `X-Forwarded-For` fronts it, so a client connecting directly could pick its own rate-limit key.
+
 ---
 
 ## Cloudflare / public domains
@@ -250,6 +252,8 @@ Raw IPs may fail WebAuthn. Prefer a real hostname such as a Tailscale MagicDNS n
 Do not expose pi-web directly to the public internet.
 
 If you need Cloudflare or a public domain, put a hardened front door in front of localhost-bound pi-web and require mTLS or equivalent device authentication before traffic reaches pi-web. Also ensure the origin cannot be bypassed.
+
+pi-web ignores `Cf-Connecting-Ip`. Behind the trusted proxy it keys rate limits on the last `X-Forwarded-For` entry, so the front door has to set or append that header itself.
 
 For this project, the preferred path is still Tailscale + Caddy mTLS.
 
@@ -347,3 +351,5 @@ bun run cli -- doctor
 ```
 
 Doctor checks config presence, Caddy, mTLS files, Tailscale, key permissions, tracked secret-looking files, active device registrations, and expired/soon-expiring device certificates.
+
+A plain "Internal server error" (500) means a request threw. The cause is in the server's log in `~/.pi-web/logs/`, on a line starting `[pi-web] request failed:`. A "Bad request" (400) for a path with `//` in it is on purpose: the app never builds one.

@@ -144,7 +144,10 @@ On the canvas, a new tile's session step also offers **+ new terminal**: your lo
 - Non-loopback control actions require recent WebAuthn verification: within 60 minutes for prompts, aborts and take over (`PI_WEB_FACEID_COMMAND_MINUTES`), within 15 minutes for new sessions, repo changes and release (`PI_WEB_FACEID_FRESH_MINUTES`), inside a 4 hour Face ID session (`PI_WEB_FACEID_SESSION_MINUTES`). The page locks again when you come back to it after the shortest of those windows, not on every tab or app switch; on a laptop it waits for Unlock instead of popping the passkey sheet, which would block every Chrome tab. Terminals lock on every switch (see [Terminal tiles](#terminal-tiles)).
 - Browser and Face ID sessions are HMAC-signed cookies keyed by `~/.pi-web/cookie-key` and, in secure mode, bound to the device certificate that received them. Restarts keep devices signed in; deleting the key signs every device out.
 - Browser responses ship with a strict CSP and related security headers.
-- The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS`, `PI_WEB_MAX_CLIENTS_PER_SESSION` and `PI_WEB_CLIENT_SESSIONS_PER_MINUTE` (browser session handshakes per client IP, default 20) if needed.
+- The server enforces request-size, rate, and live-session caps. Tune with `PI_WEB_MAX_RUNNING_SESSIONS`, `PI_WEB_MAX_CLIENTS_PER_SESSION` and `PI_WEB_CLIENT_SESSIONS_PER_MINUTE` (browser session handshakes per requester, default 20) if needed.
+- Rate limits key on what a client can't pick: the verified device in secure mode, else the last `X-Forwarded-For` entry (the one the trusted proxy added), else the TCP peer. `Cf-Connecting-Ip` is ignored, and the generated Caddyfile strips it. One requester holds at most 8 pending Face ID challenges; past that it drops its own oldest.
+- A request whose path has an empty segment (`//api/...`) gets a 400 before any check. Bun runs with development off, so an uncaught error is a plain 500 for the client, and its cause goes to the server's log as `[pi-web] request failed:`.
+- Commands pi-web prints for you to paste (the CLI resume line after Release, `host discover`'s `pi-web host add` lines) single-quote every value with `shellQuote`. Never build one with `JSON.stringify`: double quotes still run `$(...)`, backticks and `$VAR`.
 
 ## Credits
 
