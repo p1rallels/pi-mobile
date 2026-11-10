@@ -39,6 +39,8 @@ interface ChallengeRecord {
 	origin: string;
 	expectedChallenge: string;
 	expiresAt: number;
+	/** the requester key that asked for it (see requester-key.ts) */
+	requester: string;
 }
 
 interface VerifyOutcome {
@@ -48,6 +50,8 @@ interface VerifyOutcome {
 
 const CHALLENGE_TTL_MS = 90_000;
 const MAX_PENDING_CHALLENGES = 256;
+/** a requester past this drops its own oldest pending challenge, so no one requester fills the shared store */
+export const MAX_PENDING_CHALLENGES_PER_REQUESTER = 8;
 
 export class FaceIdService {
 	private storePath: string;
@@ -88,6 +92,15 @@ export class FaceIdService {
 		}
 	}
 
+	/** Stores a challenge, first dropping its requester's oldest pending ones (a Map iterates in insertion order) past the per-requester cap. */
+	private remember(record: ChallengeRecord): void {
+		const own = [...this.challenges.values()].filter((challenge) => challenge.requester === record.requester);
+		for (const stale of own.slice(0, Math.max(0, own.length - MAX_PENDING_CHALLENGES_PER_REQUESTER + 1))) {
+			this.challenges.delete(stale.id);
+		}
+		this.challenges.set(record.id, record);
+	}
+
 	private async listCredentialsForRp(rpId: string): Promise<StoredCredential[]> {
 		const store = await this.readStore();
 		const credentials = store.rpCredentials[rpId];
@@ -106,6 +119,7 @@ export class FaceIdService {
 		kind: ChallengeKind,
 		rpId: string,
 		origin: string,
+		requester: string,
 	): Promise<{
 		challengeId: string;
 		kind: ChallengeKind;
@@ -145,15 +159,7 @@ export class FaceIdService {
 				})),
 			});
 
-			const record: ChallengeRecord = {
-				id: challengeId,
-				kind,
-				rpId,
-				origin,
-				expectedChallenge: options.challenge,
-				expiresAt,
-			};
-			this.challenges.set(challengeId, record);
+			this.remember({ id: challengeId, kind, rpId, origin, expectedChallenge: options.challenge, expiresAt, requester });
 			return { challengeId, kind, options };
 		}
 
@@ -167,15 +173,7 @@ export class FaceIdService {
 			})),
 		});
 
-		const record: ChallengeRecord = {
-			id: challengeId,
-			kind,
-			rpId,
-			origin,
-			expectedChallenge: options.challenge,
-			expiresAt,
-		};
-		this.challenges.set(challengeId, record);
+		this.remember({ id: challengeId, kind, rpId, origin, expectedChallenge: options.challenge, expiresAt, requester });
 		return { challengeId, kind, options };
 	}
 
