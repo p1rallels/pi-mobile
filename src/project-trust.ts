@@ -40,6 +40,8 @@ type TrustStore = Pick<ProjectTrustStore, "get" | "setMany">;
 
 const CHOICES: readonly ApiProjectTrustChoice[] = ["trust", "trust_parent", "trust_session", "distrust", "distrust_session"];
 
+const SOURCES: readonly ApiProjectTrustSource[] = ["no_resources", "saved", "setting", "session", "restored"];
+
 export class ProjectTrustRequiredError extends Error {
 	constructor(readonly prompt: ApiProjectTrustPrompt) {
 		super("project_trust_required");
@@ -61,6 +63,36 @@ function parentPath(cwd: string): string | undefined {
 
 export function isProjectTrustChoice(value: unknown): value is ApiProjectTrustChoice {
 	return typeof value === "string" && CHOICES.some((choice) => choice === value);
+}
+
+function isProjectTrustSource(value: unknown): value is ApiProjectTrustSource {
+	return typeof value === "string" && SOURCES.some((source) => source === value);
+}
+
+/**
+ * The decision a detached session's record (detached-sessions.json) says it ran with. Older records kept only
+ * `projectTrusted`, which can't tell "approved" from "nothing needed approving": their denials carry over, their
+ * approvals don't.
+ */
+export function detachedProjectTrust(record: { projectTrust?: unknown; projectTrusted?: unknown }): ApiProjectTrust | undefined {
+	const { projectTrust, projectTrusted } = record;
+	if (projectTrust === undefined) return projectTrusted === false ? { trusted: false, gated: true, source: "restored" } : undefined;
+	if (!projectTrust || typeof projectTrust !== "object") return undefined;
+	const { trusted, gated, source } = projectTrust as Record<string, unknown>;
+	if (typeof trusted !== "boolean" || typeof gated !== "boolean" || !isProjectTrustSource(source)) return undefined;
+	return { trusted, gated, source };
+}
+
+/**
+ * What a re-attach brings back when the folder would ask now: the session's own answer ("this session only", or one an
+ * earlier re-attach brought back), and any denial. Never an approval nobody gave: "no resources" approved nothing, and
+ * a saved decision or a setting that no longer applies is no answer either.
+ */
+export function restoredProjectTrust(detached: ApiProjectTrust | undefined): ApiProjectTrust | undefined {
+	if (!detached?.gated) return undefined;
+	const answeredHere = detached.source === "session" || detached.source === "restored";
+	if (detached.trusted && !answeredHere) return undefined;
+	return { trusted: detached.trusted, gated: true, source: "restored" };
 }
 
 /** The cli's trust prompt options, including its "this session only" variants. */

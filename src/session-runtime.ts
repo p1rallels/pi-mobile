@@ -24,9 +24,11 @@ import { EMPTY_LIVE_SNAPSHOT, reduceLiveSnapshot, type LiveSnapshot } from "./li
 import {
 	applyProjectTrustChoice,
 	DEFAULT_PROJECT_TRUST_MODE,
+	detachedProjectTrust,
 	ProjectTrustRequiredError,
 	projectTrustPrompt,
 	resolveProjectTrust,
+	restoredProjectTrust,
 	type ApiProjectTrust,
 	type ApiProjectTrustChoice,
 	type ProjectTrustMode,
@@ -208,8 +210,8 @@ interface DetachedSession {
 	size: number;
 	mtimeMs: number;
 	detachedAtMs: number;
-	/** The trust decision the session ran with, so an unanswered "ask" never comes back on re-attach. */
-	projectTrusted?: boolean;
+	/** The trust decision the session ran with: what a re-attach may bring back of it is restoredProjectTrust's call. */
+	projectTrust?: ApiProjectTrust;
 	/** The folder it ran in, so a session whose folder is gone is forgotten (it opens read-only); read from the file for older records. */
 	cwd?: string;
 }
@@ -221,8 +223,9 @@ function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
 	if (!Array.isArray(raw)) return [];
 	return raw.flatMap((record): Array<[string, DetachedSession]> => {
 		if (!record || typeof record !== "object") return [];
-		const { path, sessionId, size, mtimeMs, detachedAtMs, projectTrusted, cwd } = record as Record<string, unknown>;
+		const { path, sessionId, size, mtimeMs, detachedAtMs, cwd } = record as Record<string, unknown>;
 		if (typeof path !== "string" || typeof sessionId !== "string" || typeof size !== "number" || typeof mtimeMs !== "number") return [];
+		const projectTrust = detachedProjectTrust(record);
 		return [
 			[
 				path,
@@ -231,7 +234,7 @@ function parseDetachedRecords(raw: unknown): Array<[string, DetachedSession]> {
 					size,
 					mtimeMs,
 					detachedAtMs: typeof detachedAtMs === "number" ? detachedAtMs : Date.now(),
-					...(typeof projectTrusted === "boolean" ? { projectTrusted } : {}),
+					...(projectTrust ? { projectTrust } : {}),
 					...(typeof cwd === "string" && cwd ? { cwd } : {}),
 				},
 			],
@@ -704,13 +707,14 @@ export class PiWebRuntime implements MailHost {
 	}
 
 	/**
-	 * trust.json first, then PI_WEB_PROJECT_TRUST. A re-attach reuses the decision the session ran with
+	 * trust.json first, then PI_WEB_PROJECT_TRUST. A re-attach reuses the session's own answer (restoredProjectTrust)
 	 * instead of asking again; "ask" without an answer is reported so the page can prompt and retry.
 	 */
-	private decideProjectTrust(cwd: string, choice?: ApiProjectTrustChoice, restored?: boolean): ApiProjectTrust {
+	private decideProjectTrust(cwd: string, choice?: ApiProjectTrustChoice, detached?: ApiProjectTrust): ApiProjectTrust {
 		const resolved = resolveProjectTrust(cwd, this.trustStore, this.projectTrustMode);
 		if (resolved) return resolved;
-		if (restored !== undefined) return { trusted: restored, gated: true, source: "restored" };
+		const restored = restoredProjectTrust(detached);
+		if (restored) return restored;
 		if (choice) return applyProjectTrustChoice(cwd, choice, this.trustStore);
 		throw new ProjectTrustRequiredError(projectTrustPrompt(cwd));
 	}
@@ -1434,7 +1438,7 @@ export class PiWebRuntime implements MailHost {
 		if (!this.resumingByPath.has(path) && !this.isUnchangedSinceDetach(path, sessionId)) {
 			throw new Error("session_not_attachable");
 		}
-		await this.resumeSession(path, clientId, { expectedSessionId: sessionId, restoredTrust: this.detachedByPath.get(path)?.projectTrusted });
+		await this.resumeSession(path, clientId, { expectedSessionId: sessionId, detachedTrust: this.detachedByPath.get(path)?.projectTrust });
 	}
 
 	/** Sessions pi-web disposed (idle, at the cap, at a restart) that it may bring back by itself, for msg mail (msg-mail.ts) and subs waiting. */
@@ -1479,12 +1483,12 @@ export class PiWebRuntime implements MailHost {
 		const victim = !room && candidate && this.isEvictable(candidate) ? candidate : null;
 		if (!room && !victim) return null;
 		const allowed = this.assertAllowedResumePath(path);
-		const restoredTrust = this.detachedByPath.get(path)?.projectTrusted;
+		const detachedTrust = this.detachedByPath.get(path)?.projectTrust;
 		if (victim) {
 			this.rememberDetached(victim);
 			this.disposeRuntime(victim);
 		}
-		const running = this.resumeSession(allowed, null, { expectedSessionId: sessionId, restoredTrust }).then(() => undefined);
+		const running = this.resumeSession(allowed, null, { expectedSessionId: sessionId, detachedTrust }).then(() => undefined);
 		return { evicted: victim ? victim.session.sessionId : null, running };
 	}
 
@@ -1503,7 +1507,7 @@ export class PiWebRuntime implements MailHost {
 			sessionId: runtime.session.sessionId,
 			...fingerprint,
 			detachedAtMs: Date.now(),
-			projectTrusted: runtime.projectTrust.trusted,
+			projectTrust: runtime.projectTrust,
 			cwd: runtime.cwd,
 		});
 		this.persistDetached();
@@ -1595,7 +1599,7 @@ export class PiWebRuntime implements MailHost {
 	private async resumeSession(
 		path: string,
 		clientId: string | null,
-		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; restoredTrust?: boolean } = {},
+		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; detachedTrust?: ApiProjectTrust } = {},
 	): Promise<RunningSession> {
 		const { expectedSessionId } = options;
 		const existingId = this.runningByPath.get(path);
@@ -1633,7 +1637,7 @@ export class PiWebRuntime implements MailHost {
 	private async openSessionFile(
 		path: string,
 		clientId: string | null,
-		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; restoredTrust?: boolean },
+		options: { expectedSessionId?: string; choice?: ApiProjectTrustChoice; detachedTrust?: ApiProjectTrust },
 	): Promise<RunningSession> {
 		if (!existsSync(path)) {
 			throw new Error(`session file does not exist: ${path}`);
@@ -1645,7 +1649,7 @@ export class PiWebRuntime implements MailHost {
 			throw new Error("session_path_mismatch");
 		}
 		const cwd = sessionManager.getCwd();
-		const projectTrust = this.decideProjectTrust(cwd, options.choice, options.restoredTrust);
+		const projectTrust = this.decideProjectTrust(cwd, options.choice, options.detachedTrust);
 		const { session, ui } = await this.createRuntimeSession(cwd, sessionManager, projectTrust);
 		const tripwireAllowedRoots = await this.buildTripwireAllowedRoots(cwd);
 		return this.registerSession(session, ui, projectTrust, cwd, clientId, tripwireAllowedRoots);
@@ -1784,8 +1788,8 @@ export class PiWebRuntime implements MailHost {
 	private async reopenParent(ref: DetachedRef): Promise<boolean> {
 		if (this.closing || this.runningById.has(ref.sessionId) || this.isHostedPath(ref.path)) return false;
 		try {
-			const restoredTrust = this.detachedByPath.get(ref.path)?.projectTrusted;
-			await this.resumeSession(this.assertAllowedResumePath(ref.path), null, { expectedSessionId: ref.sessionId, restoredTrust });
+			const detachedTrust = this.detachedByPath.get(ref.path)?.projectTrust;
+			await this.resumeSession(this.assertAllowedResumePath(ref.path), null, { expectedSessionId: ref.sessionId, detachedTrust });
 		} catch (error) {
 			const message = errorMessage(error);
 			if (message === "too_many_active_sessions") {
