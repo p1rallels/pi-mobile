@@ -2,15 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { shellQuote as browserShellQuote } from "../public/app/core/shell_quote.js";
-import { computeCliCommand } from "../public/app/session/cli.js";
 import { hostAddCommand } from "../src/host-registry.ts";
-import { shellQuote as cliShellQuote } from "../src/shell-quote.ts";
-
-const QUOTERS = [
-	["public/app/core/shell_quote.js", browserShellQuote],
-	["src/shell-quote.ts", cliShellQuote],
-];
+import { shellQuote } from "../src/shell-quote.ts";
 
 const CASES = [
 	["", "''"],
@@ -79,22 +72,13 @@ function argvFromShell(shell, flags, stubs, line, cwd) {
 	return { argv: out.split("\0").slice(0, -1), stderr: proc.stderr.toString(), exitCode: proc.exitCode };
 }
 
-describe.each(QUOTERS)("shellQuote (%s)", (_name, shellQuote) => {
+describe("shellQuote", () => {
 	test.each(CASES)("%p → %s", (value, quoted) => {
 		expect(shellQuote(value)).toBe(quoted);
 	});
 });
 
 describe("the lines pi-web prints for a human to paste", () => {
-	test("the CLI resume command stays bare for plain paths", () => {
-		const file = "/Users/me/.pi/agent/sessions/--Users-me-code-pi-web--/2026-01-02T03-04-05-678Z_0193.jsonl";
-		expect(computeCliCommand({ cwd: "/Users/me/code/pi-web", sessionFile: file })).toBe(`cd /Users/me/code/pi-web && pi --session ${file}`);
-		expect(computeCliCommand({ cwd: "/Users/me/my code", sessionFile: "/s/it's.jsonl" })).toBe(String.raw`cd '/Users/me/my code' && pi --session '/s/it'\''s.jsonl'`);
-		expect(computeCliCommand({ cwd: "", sessionFile: "/s/a.jsonl" })).toBe("cd '' && pi --session /s/a.jsonl");
-		expect(computeCliCommand({ cwd: "/x" })).toBeNull();
-		expect(computeCliCommand(null)).toBeNull();
-	});
-
 	test("host discover's host add line stays bare for plain names", () => {
 		const host = { id: "box", url: "https://box.tail1234.ts.net:8443", label: "box", ip: "100.64.0.7", online: true };
 		expect(hostAddCommand(host)).toBe("pi-web host add box https://box.tail1234.ts.net:8443 --label box --tailscale-name box --tailscale-ip 100.64.0.7 # online");
@@ -105,23 +89,12 @@ describe("the lines pi-web prints for a human to paste", () => {
 });
 
 describe.each(SHELLS)("pasted into %s", (shell, flags) => {
-	test.each(QUOTERS)("every quoted case comes back literal (%s)", (_name, shellQuote) => {
+	test("every quoted case comes back literal", () => {
 		const scratch = scratchDir();
 		const values = [...CASES.map(([value]) => value), `${scratch}/x$(touch ${scratch}/pwned)`, `\`touch ${scratch}/pwned-tick\``];
 		const run = argvFromShell(shell, flags, ["show"], `show ${values.map(shellQuote).join(" ")}`, scratch);
 		expect(markers(scratch)).toEqual([]);
 		expect(run.argv).toEqual(["show", ...values]);
-		expect(run.exitCode).toBe(0);
-	});
-
-	test("the CLI resume command runs nothing hidden in the folder or session file name", () => {
-		const scratch = scratchDir();
-		const cwd = `${scratch}/x$(touch ${scratch}/pwned-cwd)\`touch ${scratch}/pwned-cwd-tick\` $HOME it's a!b\nc café ☕`;
-		const file = `${scratch}/s$(touch ${scratch}/pwned-file).jsonl`;
-		const line = computeCliCommand({ cwd, sessionFile: file });
-		const run = argvFromShell(shell, flags, ["cd", "pi"], line, scratch);
-		expect(markers(scratch)).toEqual([]);
-		expect(run.argv).toEqual(["cd", cwd, "pi", "--session", file]);
 		expect(run.exitCode).toBe(0);
 	});
 

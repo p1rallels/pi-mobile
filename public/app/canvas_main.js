@@ -2,8 +2,8 @@
 // pane (or a terminal, see terminal/terminal_tile.js), and the HUD holds zoom, new tile and the host switcher.
 // One tile per session; the red dot only takes a session tile off the canvas (the session keeps running,
 // release stays explicit in the ⋯ menu), while on a terminal tile it closes the shell.
-// /quit in a tile's composer stops its session like quitting pi, and the tile goes back to picking a
-// directory in the same place, the way a terminal tile is back at the shell once pi exits.
+// /quit in a tile's composer, or Release in its ⋯ menu, stops its session like quitting pi, and the tile goes back to
+// picking a directory in the same place, the way a terminal tile is back at the shell once pi exits.
 // Tiles of sessions that aren't running stay dormant (no runtime attached) until you click them; a
 // session another pi is in the middle of (a terminal pi, a pfs sub) gets a tile that follows its file.
 // A tile whose session never got a message (so pi never wrote it) and stopped running goes fresh instead:
@@ -591,7 +591,7 @@ export async function bootCanvas() {
 				if (pane.canStopWriter()) item("Stop the pi writing it", `${who}same as esc`, pane.abort);
 				if (pane.canResumeHere()) item("Continue here", "run it from this browser; typing does the same", pane.takeOver);
 			} else if (pane.isController()) {
-				item("Release", "hand the session back to the native cli", pane.release);
+				item("Release", "stop the session here, like /quit; it resumes from the list", pane.release);
 			} else {
 				item("Take over", "control this session from this browser", pane.takeOver);
 			}
@@ -744,8 +744,8 @@ export async function bootCanvas() {
 	}
 
 	/**
-	 * /quit stopped the tile's session (session/pane.js): a launcher takes its place, at the directory step, and the
-	 * tile leaves the map.
+	 * /quit or Release stopped the tile's session (session/pane.js): a launcher takes its place, at the directory step,
+	 * and the tile leaves the map.
 	 * @param {TileEntry} entry
 	 */
 	function backToLauncher(entry) {

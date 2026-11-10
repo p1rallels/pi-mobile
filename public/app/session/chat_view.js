@@ -855,29 +855,16 @@ export function createChatView({ msgsEl, queuedEl, pillEl = null, onTrim = () =>
 		noteEntry(entryId);
 	}
 
-	function renderReleased({ cliCommand }) {
+	/** The session stopped while this pane watched it: the transcript goes and one line says so. @param {string} text */
+	function renderReleased(text) {
 		clear();
 
 		const block = document.createElement("div");
 		block.className = "assistant-block";
 		const t = document.createElement("div");
 		t.className = "thinking-text";
-		t.textContent = "Released. Safe to resume in native CLI.";
+		t.textContent = text;
 		block.appendChild(t);
-
-		if (cliCommand) {
-			const cmdBox = document.createElement("div");
-			cmdBox.className = "tool-box success";
-			const title = document.createElement("div");
-			title.className = "tool-title";
-			title.textContent = "CLI resume:";
-			const out = document.createElement("div");
-			out.className = "tool-out";
-			out.textContent = cliCommand;
-			cmdBox.appendChild(title);
-			cmdBox.appendChild(out);
-			mount(cmdBox);
-		}
 
 		mount(block);
 		follower.pin();
