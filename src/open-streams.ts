@@ -1,8 +1,9 @@
 // Open SSE streams (session events, follow, canvas status) and terminal sockets, each with what let it in. Access is
 // checked when a request comes in; this is how the host takes it back from connections already open: a logout closes
 // its browser's connections, a terminal lock that browser's terminal sockets, and a sweep every STREAM_SWEEP_MS checks
-// each one again the way a new request would be checked (device still allowed, Face ID token still accepted) and
-// closes the ones that fail. The bookkeeping is pure: the server holds the map, makes the checks and does the closing.
+// each one again the way a new request would be checked (device still allowed, Face ID token still accepted, the
+// route's Face ID gate still passed) and closes the ones that fail. The bookkeeping is pure: the server holds the map,
+// makes the checks and does the closing.
 
 /**
  * Every few seconds: a lost phone's open streams and shells go within 5 s of `pi-web device revoke`, and a stream
@@ -14,7 +15,7 @@ export const STREAM_SWEEP_MS = 5_000;
 export type OpenStreamKind = "events" | "follow" | "canvas_status" | "terminal";
 
 /** Why the host ended a connection it had let in. */
-export type StreamCloseReason = "terminals_locked" | "logged_out" | "faceid_ended" | "device_not_allowed";
+export type StreamCloseReason = "terminals_locked" | "logged_out" | "faceid_ended" | "faceid_stale" | "device_not_allowed";
 
 /** What let a connection in, from the request that opened it. */
 export interface StreamAdmission {
@@ -33,10 +34,15 @@ export interface StreamRecheck {
 	deviceAllowed: boolean;
 	/** Its Face ID token still resolves: not logged out, not expired. */
 	faceIdAccepted: boolean;
+	/**
+	 * Its route's Face ID gate lets it through again: a terminal socket's browser has a check from the command window,
+	 * newer than its last terminal lock (see terminal-window.ts). The SSE routes ask for nothing past an accepted token.
+	 */
+	freshEnough: boolean;
 }
 
 /** A check that couldn't be made (the registry unreadable, say) fails, as the request would. */
-export const FAILED_RECHECK: StreamRecheck = Object.freeze({ deviceAllowed: false, faceIdAccepted: false });
+export const FAILED_RECHECK: StreamRecheck = Object.freeze({ deviceAllowed: false, faceIdAccepted: false, freshEnough: false });
 
 export interface OpenStream {
 	admission: StreamAdmission;
@@ -73,14 +79,17 @@ export function browserStreams<K>(streams: OpenStreams<K>, clientId: string, rea
 /** Why the sweep closes a connection, or null to keep it. A connection that rode on no Face ID token needs none. */
 export function recheckVerdict(admission: StreamAdmission, recheck: StreamRecheck): StreamCloseReason | null {
 	if (!recheck.deviceAllowed) return "device_not_allowed";
-	if (admission.faceIdToken !== null && !recheck.faceIdAccepted) return "faceid_ended";
+	if (admission.faceIdToken === null) return null;
+	if (!recheck.faceIdAccepted) return "faceid_ended";
+	if (!recheck.freshEnough) return "faceid_stale";
 	return null;
 }
 
 /**
  * The close frame a terminal socket gets. The page doesn't read it: any close sends the tile back over HTTP to
- * reattach, and that answer (401 Face ID or terminals locked, 403 device) puts it in its locked or failed state.
- * - 4401: a Face ID check is needed again (terminals locked, logged out, the Face ID session ran out)
+ * reattach, and that answer (401 Face ID or terminals locked, 403 device) puts it in its locked or ended state.
+ * - 4401: a Face ID check is needed again (terminals locked, logged out, the Face ID session ran out, no check from the
+ *   command window)
  * - 4403: the device is no longer allowed (revoked, expired or removed from the registry)
  */
 export function terminalCloseFrame(reason: StreamCloseReason): { code: number; reason: string } {
@@ -91,6 +100,8 @@ export function terminalCloseFrame(reason: StreamCloseReason): { code: number; r
 			return { code: 4401, reason: "logged out" };
 		case "faceid_ended":
 			return { code: 4401, reason: "face id ended" };
+		case "faceid_stale":
+			return { code: 4401, reason: "face id check too old" };
 		case "device_not_allowed":
 			return { code: 4403, reason: "device not allowed" };
 	}

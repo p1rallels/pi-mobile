@@ -41,6 +41,7 @@ import {
 	type SessionClient,
 } from "./session-runtime.ts";
 import { resolveResumeCursor, sseEventFrame, ssePingFrame, sseRetryFrame, SSE_PING_INTERVAL_MS } from "./sse.ts";
+import { newestCheck, withPassedCheck, type PassedChecks } from "./terminal-window.ts";
 import { createTerminalManager, parseTerminalsMode } from "./terminals.ts";
 import type {
 	ApiActiveSessionsResponse,
@@ -781,11 +782,17 @@ function resolveBrowserFaceIdCheck(req: Request, url: URL, client: { clientId: s
 	return session;
 }
 
+/** The newest Face ID check this browser passed on this host: the one in its cookie, or one it passed since. */
+function newestBrowserCheck(req: Request, url: URL, clientId: string, verifiedAt: number): number {
+	return newestCheck(passedChecks, { clientId, device: requestDevices.get(req) ?? null, rpId: url.hostname }, verifiedAt);
+}
+
 /**
  * Shells lock apart from the rest of the page. Opening one needs a check from the fresh window and attaching to one (its
  * info, then its socket) a check from the command window, like starting a session and typing a prompt; both also need
  * the check to be newer than the last time this browser locked its terminals, which its pages do whenever they go away.
  * Listing and closing shells need neither. The refusal says terminalLocked so the page locks its terminals, not itself.
+ * The check is the browser's newest (newestBrowserCheck), and the stream sweep holds open sockets to the same rule.
  */
 function terminalLockError(method: string, route: { id: string | null }, clientId: string, verifiedAt: number): Response | null {
 	const maxAge = method === "POST" && !route.id ? FACEID_FRESH_TTL_MS : method === "GET" && route.id ? FACEID_COMMAND_TTL_MS : null;
@@ -825,6 +832,8 @@ function admitStream(req: Request, url: URL, peerAddress: string | undefined, ki
 			deviceAllowed:
 				!secureMode || (await verifyClientCertificateRequest(req, peerAddress, { registryPath: deviceRegistryPath, headerName: clientCertHeader })).ok,
 			faceIdAccepted: resolveBrowserFaceIdCheck(req, url, resolveClientCookie(req)) !== null,
+			// the route's own gate: a terminal socket needs what an attach needs, on its browser's newest check
+			freshEnough: ensureFaceIdAuth(req, url) === null,
 		}),
 	};
 }
@@ -856,7 +865,7 @@ function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 	if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
 	const session = resolveBrowserFaceIdCheck(req, url, client);
 	if (!session) return errorResponse("Face ID verification required.", 401);
-	if (terminalRoute) return terminalLockError(req.method, terminalRoute, client.clientId, session.verifiedAt);
+	if (terminalRoute) return terminalLockError(req.method, terminalRoute, client.clientId, newestBrowserCheck(req, url, client.clientId, session.verifiedAt));
 	const freshness = faceIdFreshnessFor(req.method, url.pathname);
 	if (freshness !== null && Date.now() - session.verifiedAt > freshness) {
 		return errorResponse("Fresh Face ID verification required.", 401);
@@ -1001,6 +1010,8 @@ const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolve
 const faceIdLogouts = await openFaceIdLogouts(join(resolvePiWebPaths().home, "faceid-logouts.json"), FACEID_TTL_MS);
 /** When each browser (client id) last locked its terminals; a shell needs a Face ID check made after that. */
 const terminalLocks = new Map<string, number>();
+/** The newest Face ID check each browser passed here, which its open terminal sockets ride on past the cookie they came with. */
+let passedChecks: PassedChecks = new Map();
 /** Every open SSE stream and terminal socket, keyed by the stream or the socket. */
 let openStreams: OpenStreams<object> = new Map();
 let sweepingStreams = false;
@@ -1425,8 +1436,10 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				if (result.kind !== "authenticate") {
 					return json(result, 200);
 				}
-				// a check on this host keeps its terminals open for another fresh window
+				// a check on this host keeps its terminals open for another fresh window, and this browser's sockets on them
 				terminals?.extend(Date.now() + TERMINAL_TTL_MS);
+				const checking = { clientId: client.clientId, device: requestDevices.get(req) ?? null, rpId: url.hostname };
+				passedChecks = withPassedCheck(passedChecks, checking, Date.now(), FACEID_COMMAND_TTL_MS);
 				return createCookieResponse(result, 200, issueFaceIdCookie(req, client.clientId, url.hostname, secure));
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
