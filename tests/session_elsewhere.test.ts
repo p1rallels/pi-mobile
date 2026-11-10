@@ -164,8 +164,8 @@ describe("sessions another process is writing", () => {
 		await writeSession(agentDir, fork, "s-fork", MID_TOOL);
 		const name = repo.split("/").at(-1);
 
-		expect((await runtime.listActiveSessions()).map((session) => [session.id, session.forkLabel])).toEqual([["s-fork", `${name} · fork 2-probe`]]);
-		expect((await runtime.listSessions({ cwd: fork })).sessions[0]?.forkLabel).toBe(`${name} · fork 2-probe`);
+		expect((await runtime.listActiveSessions()).map((session) => [session.id, session.forkLabel])).toEqual([["s-fork", `${name} · fork 2`]]);
+		expect((await runtime.listSessions({ cwd: fork })).sessions[0]?.forkLabel).toBe(`${name} · fork 2`);
 		expect((await runtime.listSessions({ cwd: repo })).sessions).toEqual([]);
 	});
 

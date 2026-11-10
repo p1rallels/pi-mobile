@@ -98,7 +98,7 @@ describe("session folders", () => {
 		await runtime.addRepo(saved);
 		const suggestions = await runtime.listRepoSuggestions();
 		expect(suggestions.map((suggestion) => suggestion.cwd)).toEqual([fresh, older, fork]);
-		expect(suggestions.map((suggestion) => suggestion.forkLabel)).toEqual([undefined, undefined, "repo · fork 2-probe"]);
+		expect(suggestions.map((suggestion) => suggestion.forkLabel)).toEqual([undefined, undefined, "repo · fork 2"]);
 		expect(suggestions[0]?.sessions).toBe(2);
 		expect(Math.abs(Date.parse(suggestions[0]?.modified ?? "") - (now - 1_000))).toBeLessThan(1_000);
 		expect((await runtime.listRepoSuggestions(1)).map((suggestion) => suggestion.cwd)).toEqual([fresh]);

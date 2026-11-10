@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { executable } from "./exec-path.ts";
 
 /**
  * The git branch a session's folder is on, for the footer, read the way pi's own footer reads it: the HEAD file, found by
@@ -59,8 +60,10 @@ export function branchOfHead(content: string): string | null | undefined {
 }
 
 function gitSymbolicRef(repoDir: string): Promise<string | null> {
+	const git = executable("git");
+	if (!git) return Promise.resolve(null);
 	return new Promise((done) => {
-		execFile("git", ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: repoDir, encoding: "utf8", timeout: GIT_TIMEOUT_MS }, (error, stdout) => {
+		execFile(git, ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: repoDir, encoding: "utf8", timeout: GIT_TIMEOUT_MS }, (error, stdout) => {
 			done(error ? null : stdout.trim() || null);
 		});
 	});
