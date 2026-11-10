@@ -16,6 +16,8 @@ Web UI for the `pi` coding agent, built on the `@earendil-works/pi-coding-agent`
 
 SDK upstream: https://github.com/earendil-works/pi
 
+Setting up a host from scratch, with the tools pi-web works with and remote access from a phone and a laptop: [INSTALL.md](INSTALL.md), written for your agent to walk you through.
+
 ## Quick start: local dev
 
 ```bash
