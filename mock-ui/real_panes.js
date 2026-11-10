@@ -332,7 +332,7 @@ function createFakeApi(session) {
 export function createRealPane(tile, { index, streaming, text, streamOffscreen, transcriptWindow }) {
 	const repo = REPOS[index % REPOS.length];
 	const title = `${repo} · ${text.pick(TITLES)}`;
-	const session = createSimulatedSession({ index, text, title, cwd: `/Users/mock/Desktop/cc/${repo}` });
+	const session = createSimulatedSession({ index, text, title, cwd: `/Users/mock/code/${repo}` });
 	tile.titleEl.textContent = title;
 	const pill = document.createElement("span");
 	pill.className = "cv-pill";

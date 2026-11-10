@@ -15,7 +15,7 @@ import {
 
 const state = {
 	sessionId: "01a13e79-69dc-7292-83ad-302f96344ac8",
-	cwd: "/Users/reddot/Desktop/cc/pi-web",
+	cwd: "/Users/me/code/pi-web",
 	model: { provider: "anthropic", id: "claude-opus-5-5" },
 	thinkingLevel: "max",
 	stats: { tokens: { input: 12_345, output: 1_500, cacheRead: 2_000_000, cacheWrite: 0 }, cost: 1.23456 },
@@ -38,12 +38,12 @@ describe("session pane text", () => {
 		expect(footerLines(null, { hostLabel: "mini", baseUrl: "https://mini.example" })).toEqual({ line1: "host: mini", left2: "—", right2: "https://mini.example" });
 		expect(footerLines(null, { hostLabel: null, baseUrl: "http://127.0.0.1:4318" }).line1).toBe("—");
 		expect(footerLines(state, { baseUrl: "x" })).toEqual({
-			line1: "/Users/reddot/Desktop/cc/pi-web",
+			line1: "/Users/me/code/pi-web",
 			left2: "↑12k ↓1.5k R2.0M $1.235 15%/1.0M (auto) • 01a13e79",
 			right2: "anthropic/claude-opus-5-5 • max",
 		});
 		const untrusted = footerLines({ ...state, projectTrust: { gated: true, trusted: false }, model: null }, { baseUrl: "x" });
-		expect(untrusted.line1).toBe("/Users/reddot/Desktop/cc/pi-web · project .pi resources skipped (untrusted)");
+		expect(untrusted.line1).toBe("/Users/me/code/pi-web · project .pi resources skipped (untrusted)");
 		expect(untrusted.right2).toBe("(no model) • max");
 	});
 
@@ -88,7 +88,7 @@ describe("session pane text", () => {
 		expect(elsewhereFooterNote({ state: "done", writers: [41] })).toBe(" · finished elsewhere, pi still open there (pi 41)");
 		expect(elsewhereFooterNote({ state: "done", writers: [] })).toBe(" · finished elsewhere");
 		expect(elsewhereFooterNote({ state: "hosted", writers: [] })).toBe("");
-		expect(footerLines(state, { baseUrl: "x" }, { state: "running", writers: [41] }).line1).toBe("/Users/reddot/Desktop/cc/pi-web · running elsewhere (pi 41)");
+		expect(footerLines(state, { baseUrl: "x" }, { state: "running", writers: [41] }).line1).toBe("/Users/me/code/pi-web · running elsewhere (pi 41)");
 
 		expect(elsewherePlaceholder(null)).toBe("Running elsewhere, read-only — Esc stops it");
 		expect(elsewherePlaceholder({ state: "running" })).toBe("Running elsewhere, read-only — Esc stops it");

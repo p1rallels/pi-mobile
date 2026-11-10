@@ -1,4 +1,4 @@
-// msg (~/Desktop/cc/msg-cli) carries mail between pi sessions through a store on disk, and a session takes its mail
+// msg (github.com/p1rallels/msg) carries mail between pi sessions through a store on disk, and a session takes its mail
 // while msg's extension runs in it. pi-web disposes idle sessions nobody watches (session-runtime.ts), so mail for one
 // of those used to wait until someone opened its tab: an orchestrator that ended its turn idle never heard from its
 // children. This brings such a session back, with no viewer, when mail lands in its inbox, and msg in the resumed

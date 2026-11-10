@@ -1,5 +1,5 @@
 // Where relay stands on a session's branch, for the header: resets so far, whether its keep-going loop is on (and the
-// goal), and the percent of a nudge that still stands. Relay writes all of it on the branch (~/Desktop/cc/relay-loop,
+// goal), and the percent of a nudge that still stands. Relay writes all of it on the branch (relay-loop,
 // README "What relay writes") and folds its own state back from there; this folds the same entries the same way: its
 // custom messages and entries (customType "relay"), its compactions (details.relay, read like the transcript reads a
 // reset) and its tool's outcome.

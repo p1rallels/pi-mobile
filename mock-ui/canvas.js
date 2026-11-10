@@ -95,7 +95,7 @@ function createFakePane(tile, index, streaming) {
 	const editor = el("div", "editor-wrap");
 	editor.append(el("div", "editor-border", "─".repeat(200)), inner, el("div", "editor-border", "─".repeat(200)));
 	const footer = el("div", "footer");
-	footer.append(el("div", "footer-line", `~/Desktop/cc/${repo} · ${model} · ↑12k ↓3.4k · 14.2%/1.0M`));
+	footer.append(el("div", "footer-line", `~/code/${repo} · ${model} · ↑12k ↓3.4k · 14.2%/1.0M`));
 	tile.body.append(msgs, editor, footer);
 
 	/** @type {HTMLElement[]} */

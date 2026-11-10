@@ -63,13 +63,13 @@ describe("msg's lineage", () => {
 	test("say where a session runs, and name a parent by its folder when it has no name", () => {
 		expect(whereOf(presence({ id: PILL, cwd: "/Users/me/.pfs/forks/pi-web/2" }), "/Users/me")).toBe("pi -p · ~/.pfs/forks/pi-web/2");
 		expect(whereOf(presence({ id: PILL, mode: "tui", cwd: "/elsewhere" }), "/Users/me")).toBe("pi · /elsewhere");
-		expect(parentParty(LEAD, presence({ id: LEAD, cwd: "/Users/me/Desktop/cc", mode: "web" }), "live", true, "/Users/me")).toEqual({
+		expect(parentParty(LEAD, presence({ id: LEAD, cwd: "/Users/me/code", mode: "web" }), "live", true, "/Users/me")).toEqual({
 			id: LEAD,
-			label: "cc",
+			label: "code",
 			state: "live",
 			openable: true,
 			readOnly: false,
-			where: "pi-web · ~/Desktop/cc",
+			where: "pi-web · ~/code",
 			running: null,
 		});
 		expect(parentParty(LEAD, presence({ id: LEAD, name: "main" }), "live", true, "/h").label).toBe("main");

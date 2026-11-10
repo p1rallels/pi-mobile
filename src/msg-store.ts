@@ -1,5 +1,5 @@
 // msg's store on disk, as pi-web reads it: where it lives, which ids name a session, and what a presence record says.
-// The store is msg's contract (~/Desktop/cc/msg-cli: README "Store", src/core/paths.ts and registry.ts). pi-web only
+// The store is msg's contract (github.com/p1rallels/msg: README "Store", src/core/paths.ts and registry.ts). pi-web only
 // ever reads it and imports nothing from msg; msg-mail.ts (reopening for mail) and msg-lineage.ts (the header's
 // lineage) both read it through here.
 //

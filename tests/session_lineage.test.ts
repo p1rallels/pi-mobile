@@ -168,7 +168,7 @@ describe("a session another pi writes", () => {
 			{ type: "message", id: "u2", parentId: "l1", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "next" }], timestamp: 2 } },
 		];
 		await writeFile(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-		await writePresence(store, { id: LEAD, mode: "web", name: "main", cwd: "/Users/me/Desktop/cc" });
+		await writePresence(store, { id: LEAD, mode: "web", name: "main", cwd: "/Users/me/code" });
 		await writePresence(store, { id: WORKER, parent: LEAD, name: "worker", cwd: work, pid: 300 });
 
 		const events: FollowSseEvent[] = [];
@@ -179,7 +179,7 @@ describe("a session another pi writes", () => {
 		const parentFirst = described().find((event) => event.session.lineage?.parent);
 		expect(parentFirst?.messages).toEqual([]);
 		expect(parentFirst?.session.lineage).toEqual({
-			parent: { id: LEAD, label: "main", state: "live", openable: false, readOnly: false, where: "pi-web · /Users/me/Desktop/cc", running: null },
+			parent: { id: LEAD, label: "main", state: "live", openable: false, readOnly: false, where: "pi-web · /Users/me/code", running: null },
 			children: [],
 			childCount: 0,
 		});
