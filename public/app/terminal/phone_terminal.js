@@ -3,28 +3,20 @@
 // keyboard lacks (esc, a sticky ctrl, tab, arrows, paste), and "select" shows the screen as text iOS can select.
 //
 // pbcopy: iOS lets a page write the clipboard only during a tap or a key press, and pbcopy's text reaches the page from
-// the host after the return that ran it. So a return on a line that runs pbcopy starts a clipboard write right then
-// and hands it the text once it arrives (WebKit takes a promise for the data). Text that comes any other way (pbcopy
-// inside a script, a write iOS refused) waits in a "tap to copy" bar instead.
+// the host after the return that ran it. So a return that runs a pbcopy you typed or recalled (copy_intent.js decides,
+// the same way as on the laptop) starts a clipboard write right then and hands it the text once it arrives (WebKit
+// takes a promise for the data). Text that comes any other way (printed by output, pbcopy inside a script, a write iOS
+// refused) waits in a "tap to copy" bar instead.
 //
 // Opening the screen asks for Face ID every time, and closing it locks the terminals again (see TerminalLock in
 // core/faceid.js). Locked while open (the app went away), it drops the screen, the select sheet and any copy waiting.
 import { noTerminalLock } from "../core/faceid.js";
+import { ARM_MS, copySummary, lineCount } from "./copy_intent.js";
 import { createTerminalTile } from "./terminal_tile.js";
 
 const FONT_SIZE = 12;
-/** How long a return on a pbcopy line waits for its text. */
-const ARM_MS = 15_000;
-/** pbcopy as a word anywhere on the line (`cat f | pbcopy`, `sh -c "... | pbcopy"`). */
-const PBCOPY_LINE = /(^|[^\w-])pbcopy($|[^\w-])/;
 /** The select sheet keeps the end of a long scrollback. */
 const SHEET_LINES = 3_000;
-
-/** @param {string} text */
-function lineCount(text) {
-	const lines = text.replace(/\n$/, "").split("\n").length;
-	return `${lines} line${lines === 1 ? "" : "s"}`;
-}
 
 /** @param {unknown} error */
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
@@ -152,11 +144,6 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 	/** @type {ReturnType<typeof createTerminalTile> | null} */
 	let controller = null;
 	let ctrl = false;
-	/**
-	 * What was typed since the last return: on a slow link the shell's echo of a fast `| pbcopy` can still be on its
-	 * way when return goes down, so the screen alone can miss it.
-	 */
-	let typed = "";
 	/** @type {ArmedCopy | null} */
 	let armed = null;
 	/** @type {string | null} */
@@ -171,7 +158,6 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 	/** @param {string} data */
 	function typeKey(data) {
 		setCtrl(false);
-		track(data);
 		controller?.getView()?.input(data);
 	}
 
@@ -180,16 +166,7 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 		const screen = controller?.getView();
 		if (!screen) return;
 		setCtrl(false);
-		const data = `\x1b${screen.appCursorKeys() ? "O" : "["}${direction}`;
-		track(data);
-		screen.input(data);
-	}
-
-	/** Returns, ctrl-c, ctrl-u and escape sequences (arrows, esc, pastes) start the line over. @param {string} data */
-	function track(data) {
-		if (/[\r\x03\x15\x1b]/.test(data)) typed = "";
-		else if (data === "\x7f") typed = typed.slice(0, -1);
-		else typed = (typed + data).slice(-2_000);
+		screen.input(`\x1b${screen.appCursorKeys() ? "O" : "["}${direction}`);
 	}
 
 	/** Typed input with ctrl down: one key becomes its control code, and ctrl lets go either way. @param {string} data */
@@ -199,7 +176,6 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 			setCtrl(false);
 			if (data.length === 1) out = controlCode(data) ?? data;
 		}
-		track(out);
 		return out;
 	}
 
@@ -240,7 +216,7 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 	/** @param {string} text */
 	function showCopyBar(text) {
 		pendingCopy = text;
-		copyText.textContent = `pbcopy · ${lineCount(text)}`;
+		copyText.textContent = copySummary(text);
 		copyBtn.textContent = "tap to copy";
 		copyBar.hidden = false;
 	}
@@ -258,7 +234,7 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 		current.reject(new Error("pbcopy sent nothing"));
 	}
 
-	/** A return on a pbcopy line: the clipboard write starts inside the key press and gets the text when it comes. */
+	/** A return that runs pbcopy: the clipboard write starts inside the key press and gets the text when it comes. */
 	function armCopy() {
 		disarm();
 		if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) return;
@@ -292,8 +268,15 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 		armed = entry;
 	}
 
-	/** What pbcopy sent (OSC 52). @param {string} text */
-	function onClipboard(text) {
+	/**
+	 * What the terminal sent for the clipboard (OSC 52), `intended` when a return that runs pbcopy came before it.
+	 * @param {string} text @param {boolean} intended
+	 */
+	function onClipboard(text, intended) {
+		if (!intended) {
+			showCopyBar(text);
+			return;
+		}
 		if (armed) {
 			const entry = armed;
 			armed = null;
@@ -302,20 +285,12 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 			entry.resolve(new Blob([text], { type: "text/plain" }));
 			return;
 		}
-		// browsers that let a focused page copy without a tap (Android) just copy; iOS says no and the bar shows
+		// no promise write to hand it to (no ClipboardItem): a browser that lets a focused page copy without a tap just
+		// copies, one that says no shows the bar
 		navigator.clipboard.writeText(text).then(
 			() => copied(text),
 			() => showCopyBar(text),
 		);
-	}
-
-	/** @param {KeyboardEvent} event */
-	function onKey(event) {
-		if (event.type !== "keydown" || event.isComposing) return;
-		if (event.key !== "Enter" && event.keyCode !== 13) return;
-		if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-		const line = controller?.getView()?.cursorLine() ?? "";
-		if (PBCOPY_LINE.test(line) || PBCOPY_LINE.test(typed)) armCopy();
 	}
 
 	function openSheet() {
@@ -348,7 +323,6 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 		hidePasteBox();
 		closeSheet();
 		setCtrl(false);
-		typed = "";
 	}
 
 	function close() {
@@ -391,7 +365,7 @@ export function createPhoneTerminal({ doc, api, refreshClient, onClosed, lock = 
 			onIdChange: () => {},
 			onChange: () => {},
 			onRemove: () => close(),
-			view: { fontSize: FONT_SIZE, onKey, mapInput, onClipboard },
+			view: { fontSize: FONT_SIZE, mapInput, onArm: armCopy, onClipboard },
 			lock,
 			askFirst: true,
 		});

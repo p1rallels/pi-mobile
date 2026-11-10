@@ -1,9 +1,11 @@
 // A terminal tile's screen: xterm (served from the host's node_modules) on a websocket to a shell on the host. The host
 // sends the screen first (a snapshot of its mirror), then the shell's raw output as binary frames; keys, pastes and size
 // changes go back as JSON. pbcopy in the shell reaches the browser's clipboard as OSC 52, write only: nothing that runs in
-// the shell can read the clipboard back.
+// the shell can read the clipboard back. Output alone never writes it: a write follows a return on a pbcopy line (see
+// copy_intent.js), and anything else the terminal sends for the clipboard waits in a small bar for a click.
 import { FitAddon } from "/vendor/xterm/addon-fit.mjs";
 import { Terminal } from "/vendor/xterm/xterm.mjs";
+import { NO_INTENT, afterInput, afterReturn, copySummary, isReturnKey, osc52Text, takeCopy } from "./copy_intent.js";
 
 const FONT_FAMILY = '"Cascadia Code", "SF Mono", ui-monospace, "Fira Code", Menlo, monospace';
 const THEME = {
@@ -77,22 +79,91 @@ function installMouseFix(view) {
 	});
 }
 
-/** @param {string} payload base64 @returns {string} */
-function decodeBase64Utf8(payload) {
-	const binary = atob(payload);
-	const bytes = new Uint8Array(binary.length);
-	for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-	return new TextDecoder().decode(bytes);
+/**
+ * The laptop's copy bar: what the terminal sends for the clipboard without a pbcopy return before it waits here (how long
+ * it is, how it starts) until a click copies it or × drops it. A newer one takes its place.
+ * @param {Document} doc @param {HTMLElement} container @param {() => void} refocus
+ * @param {{ onCopied: (text: string) => void, onCopyFailed: (error: unknown) => void }} report
+ */
+function createCopyBar(doc, container, refocus, report) {
+	/** @param {string} className @param {string} text */
+	const button = (className, text) => {
+		const el = doc.createElement("button");
+		el.type = "button";
+		el.className = className;
+		el.textContent = text;
+		return el;
+	};
+	const bar = doc.createElement("div");
+	bar.className = "cv-term-copy";
+	bar.hidden = true;
+	bar.title = "The terminal sent this for the clipboard. Copy it if you meant to.";
+	const label = doc.createElement("span");
+	label.className = "cv-term-copy-text";
+	const copyBtn = button("cv-term-btn", "copy");
+	const dismiss = button("cv-term-btn cv-term-copy-x", "\u00d7");
+	dismiss.setAttribute("aria-label", "Dismiss");
+	bar.append(label, copyBtn, dismiss);
+	container.append(bar);
+	/** @type {string | null} */
+	let pending = null;
+
+	function hide() {
+		pending = null;
+		bar.hidden = true;
+	}
+
+	/** Done with the bar: the keyboard goes back to the terminal if the bar had it. */
+	function done() {
+		const hadFocus = bar.contains(doc.activeElement);
+		hide();
+		if (hadFocus) refocus();
+	}
+
+	// a click leaves the keyboard with the terminal
+	bar.addEventListener("mousedown", (event) => event.preventDefault());
+	copyBtn.addEventListener("click", () => {
+		const text = pending;
+		if (text === null) return;
+		navigator.clipboard.writeText(text).then(
+			() => {
+				if (pending === text) done();
+				report.onCopied(text);
+			},
+			(error) => {
+				copyBtn.textContent = "try again";
+				report.onCopyFailed(error);
+			},
+		);
+	});
+	dismiss.addEventListener("click", () => done());
+
+	return {
+		/** @param {string} text */
+		offer(text) {
+			pending = text;
+			label.textContent = copySummary(text);
+			copyBtn.textContent = "copy";
+			bar.hidden = false;
+		},
+		/** Copied another way (a pbcopy return): the same text needs no click. @param {string} text */
+		copied(text) {
+			if (pending === text) hide();
+		},
+		hide,
+		remove: () => bar.remove(),
+	};
 }
 
 /**
- * What the phone's terminal screen adds: a smaller font, a look at every key xterm handles (a return that may run
- * pbcopy), a map over typed input (its sticky ctrl key) and its own handling of what pbcopy sends.
+ * What the phone's terminal screen adds: a smaller font, a map over typed input (its sticky ctrl key) and its own
+ * handling of what pbcopy sends. `onArm` runs inside the key press of a return that showed copy intent (where iOS lets
+ * a clipboard write start); `onClipboard` gets every OSC 52 write, `intended` when such a return armed it.
  * @typedef {{
  *   fontSize?: number,
- *   onKey?: (event: KeyboardEvent) => void,
  *   mapInput?: (data: string) => string,
- *   onClipboard?: (text: string) => void,
+ *   onArm?: () => void,
+ *   onClipboard?: (text: string, intended: boolean) => void,
  * }} TerminalViewExtras
  */
 
@@ -137,6 +208,10 @@ export function createTerminalView(options) {
 	/** The host said the shell ended, so the socket closing after that isn't a lost connection. */
 	let ended = false;
 	let disposed = false;
+	/** Let go of (locked): output still in the parser from before can't reach the clipboard. */
+	let detached = false;
+	/** What the keys pressed so far say about copying. */
+	let intent = NO_INTENT;
 
 	/** @param {unknown} message */
 	function send(message) {
@@ -166,35 +241,45 @@ export function createTerminalView(options) {
 	});
 	resizeObserver.observe(container);
 
-	const { mapInput, onKey, onClipboard } = options;
-	term.onData((data) => send({ type: "input", data: mapInput ? mapInput(data) : data }));
+	const { mapInput, onArm, onClipboard } = options;
+	const copyBar = onClipboard ? null : createCopyBar(doc, container, () => term.focus(), options);
+
+	/** Input on its way to the shell, before the shell answers. @param {string} data */
+	function sendInput(data) {
+		intent = afterInput(intent, data, cursorLine());
+		send({ type: "input", data });
+	}
+
+	term.onData((data) => sendInput(mapInput ? mapInput(data) : data));
 	term.onBinary((data) => send({ type: "binary", data }));
 	term.onTitleChange((title) => options.onTitle(title));
-	if (onKey) {
-		term.attachCustomKeyEventHandler((event) => {
-			onKey(event);
-			return true;
-		});
-	}
+	// a return goes down before xterm sends it, so this sees the line the return runs
+	term.attachCustomKeyEventHandler((event) => {
+		if (isReturnKey(event)) {
+			const next = afterReturn(intent, cursorLine(), Date.now());
+			intent = next.intent;
+			if (next.armed) onArm?.();
+		}
+		return true;
+	});
 	// a second tab on the same shell: the one you type in decides its size
 	term.textarea?.addEventListener("focus", () => send({ type: "resize", cols: term.cols, rows: term.rows }));
 	term.parser.registerOscHandler(52, (data) => {
-		const payload = data.slice(data.indexOf(";") + 1);
-		if (!payload || payload === "?") return true;
-		let text;
-		try {
-			text = decodeBase64Utf8(payload);
-		} catch {
-			return true;
+		const text = osc52Text(data);
+		if (text === null || detached) return true;
+		const taken = takeCopy(intent, Date.now());
+		intent = taken.intent;
+		if (onClipboard) onClipboard(text, taken.allowed);
+		else if (!taken.allowed) copyBar?.offer(text);
+		else {
+			navigator.clipboard.writeText(text).then(
+				() => {
+					copyBar?.copied(text);
+					options.onCopied(text);
+				},
+				() => copyBar?.offer(text),
+			);
 		}
-		if (onClipboard) {
-			onClipboard(text);
-			return true;
-		}
-		navigator.clipboard.writeText(text).then(
-			() => options.onCopied(text),
-			(error) => options.onCopyFailed(error),
-		);
 		return true;
 	});
 
@@ -221,6 +306,7 @@ export function createTerminalView(options) {
 		if (disposed) return;
 		closeSocket();
 		ended = false;
+		detached = false;
 		const next = new WebSocket(options.socketUrl(proposedSize()));
 		next.binaryType = "arraybuffer";
 		socket = next;
@@ -282,6 +368,9 @@ export function createTerminalView(options) {
 		/** Lets go of the shell and forgets its screen and scrollback; the host sends them again on the next connect. */
 		disconnect() {
 			closeSocket();
+			detached = true;
+			intent = NO_INTENT;
+			copyBar?.hide();
 			term.blur();
 			term.reset();
 			// output that arrived before the socket closed may still be on its way through the parser
@@ -295,12 +384,11 @@ export function createTerminalView(options) {
 		/** Keys from outside the keyboard (the phone's key bar) go to the shell as typed, past `mapInput`. @param {string} data */
 		input(data) {
 			term.scrollToBottom();
-			send({ type: "input", data });
+			sendInput(data);
 		},
 		/** @param {string} text */
 		paste: (text) => term.paste(text),
 		screenText: () => screenLines().join("\n"),
-		cursorLine,
 		/** vim and friends want arrows as ESC O A rather than ESC [ A. */
 		appCursorKeys: () => term.modes.applicationCursorKeysMode,
 		dispose() {
@@ -308,6 +396,7 @@ export function createTerminalView(options) {
 			view.cancelAnimationFrame(fitFrame);
 			resizeObserver.disconnect();
 			closeSocket();
+			copyBar?.remove();
 			if (root) screens.delete(root);
 			term.dispose();
 		},
