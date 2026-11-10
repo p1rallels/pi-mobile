@@ -520,6 +520,26 @@
       white-space: pre;
     }
 
+    /* table: scrolls sideways like a code block instead of squeezing its columns. a cell stays on one line up to
+       markdown.js's NOWRAP_CHARS (20), a longer one wraps but keeps that width */
+    .md-table {
+      margin: 4px 0;
+      overflow-x: auto;
+    }
+    .md-table table { border-collapse: collapse; }
+    .md-table th, .md-table td {
+      box-sizing: content-box;
+      padding: 2px 8px;
+      border: 1px solid #45454f;
+      text-align: left;
+      vertical-align: top;
+      white-space: pre;
+      word-break: normal;
+      overflow-wrap: normal;
+    }
+    .md-table th { font-weight: 700; }
+    .md-table .wrap { white-space: pre-wrap; min-width: 20ch; }
+
     /* ── Tool execution box — bg fills ──────────────────────── */
     /*   pending=#282832  success=#283228  error=#3c2828       */
     .tool-box {
