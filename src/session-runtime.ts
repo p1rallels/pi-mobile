@@ -2006,7 +2006,6 @@ export class PiWebRuntime implements MailHost {
 	private async buildTripwireAllowedRoots(cwd: string): Promise<Set<string>> {
 		const roots = new Set<string>();
 		roots.add(resolve(cwd));
-		roots.add(resolve(process.cwd()));
 		roots.add(resolve(this.internalStateRoot));
 
 		for (const repo of await this.loadReposFromDisk()) {

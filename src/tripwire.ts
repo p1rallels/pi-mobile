@@ -72,6 +72,43 @@ const BASH_RATE_THRESHOLD = 15;
 const FAILURE_RATE_WINDOW_MS = 5 * 60_000;
 const FAILURE_RATE_THRESHOLD = 6;
 
+/**
+ * What a future session in the agent dir runs or reads into its prompt: models.json (an `!cmd` API key runs as a shell
+ * command, a baseUrl gets every prompt), settings.json (tools, packages), mcp.json (the MCP servers it spawns), trust.json
+ * (project trust), the global context and system prompt files, extensions/ and the packages installed in npm/ and git/
+ * (code it loads), skills/ and prompts/ (read into the prompt), and bin/ (first on bash's PATH, and find's and grep's fd
+ * and rg). The owner's agents edit these on request, so changing them is logged, not blocked.
+ */
+const AGENT_CONFIG = [
+	"models.json",
+	"settings.json",
+	"mcp.json",
+	"trust.json",
+	"AGENTS.md",
+	"AGENTS.override.md",
+	"AGENTS.MD",
+	"CLAUDE.md",
+	"CLAUDE.MD",
+	"SYSTEM.md",
+	"APPEND_SYSTEM.md",
+	"extensions",
+	"skills",
+	"prompts",
+	"npm",
+	"git",
+	"bin",
+];
+
+/** The built-in tools that only read: they open the agent's config without changing it. */
+const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+
+/**
+ * Where custom and MCP tools name paths: the SDK's spellings, their snake_case, file_path, and the MCP filesystem server's
+ * move_file (source, destination) and read_multiple_files (paths). A path under any other name goes unchecked.
+ */
+const CUSTOM_PATH_KEYS = ["path", "from", "to", "oldPath", "newPath", "targetPath", "file_path", "filePath", "old_path", "new_path", "target_path", "source", "destination"];
+const CUSTOM_PATH_LIST_KEYS = ["paths"];
+
 function toIso(ms: number): string {
 	return new Date(ms).toISOString();
 }
@@ -101,6 +138,21 @@ function candidatePaths(cwd: string, rawPath: string): string[] {
 		// a file URL the SDK can't take either: the tool fails, the plain spelling is still checked
 	}
 	return unique([resolveAgainstCwd(cwd, rawPath), ...sdkPaths]);
+}
+
+/** The path arguments of a tool call: the built-ins' `path` (grep, find and ls default to the session's folder), a custom or MCP tool's by the keys above. */
+export function toolPathArgs(toolName: string, args: unknown): string[] {
+	if (!args || typeof args !== "object") return [];
+	const input = args as Record<string, unknown>;
+
+	if (["read", "write", "edit", "grep", "find", "ls"].includes(toolName) && typeof input.path === "string") {
+		return [input.path];
+	}
+	if (["grep", "find", "ls"].includes(toolName) && input.path === undefined) return ["."];
+
+	const single = CUSTOM_PATH_KEYS.map((key) => input[key]).filter((value): value is string => typeof value === "string");
+	const listed = CUSTOM_PATH_LIST_KEYS.flatMap((key) => (Array.isArray(input[key]) ? (input[key] as unknown[]) : [])).filter((value): value is string => typeof value === "string");
+	return [...single, ...listed];
 }
 
 function unique(paths: string[]): string[] {
@@ -140,13 +192,14 @@ export class TripwireService {
 	private secretFiles: string[];
 	private persistenceRoots: string[];
 	private persistenceFiles: string[];
+	private agentConfig: string[];
 	private storePromise: Promise<TripwireStore> | null = null;
 	private mutationChain: Promise<void> = Promise.resolve();
 	private rateWindows = new Map<string, ToolRateWindow>();
 
 	constructor(storePath = join(getAgentDir(), "pi-web", "tripwire-state.json")) {
 		this.storePath = storePath;
-		// the agent's state is open to it (it edits skills, extensions and settings there), except the secrets below
+		// the agent's state is open to it (it edits skills, extensions and settings there), except the secrets below; changing what the next session runs is logged (agentConfig)
 		this.appStateRoots = unique([join(homedir(), ".pi", "agent"), getAgentDir()].map((path) => resolve(path)));
 
 		this.secretRoots = [
@@ -188,6 +241,7 @@ export class TripwireService {
 			join(homedir(), ".profile"),
 			join(homedir(), ".config", "fish", "config.fish"),
 		].map((path) => resolve(path));
+		this.agentConfig = unique(this.appStateRoots.flatMap((root) => AGENT_CONFIG.map((name) => resolve(root, name))));
 	}
 
 	/**
@@ -319,6 +373,20 @@ export class TripwireService {
 			});
 		}
 
+		const configPath = this.agentConfigNamed(lowerCommand);
+		if (configPath) {
+			return this.createAlert({
+				sessionId: context.sessionId,
+				severity: "observe",
+				category: "persistence",
+				summary: "Tripwire: agent config named from bash (the next session runs or applies it).",
+				detail: `Path: ${configPath} Command: ${preview}`,
+				toolName,
+				toolCallId,
+				response: "logged",
+			});
+		}
+
 		return null;
 	}
 
@@ -327,14 +395,17 @@ export class TripwireService {
 	 * fallbacks) with symlinks followed, as well as the path as written.
 	 */
 	private inspectToolPaths(context: TripwireSessionContext, toolName: string, toolCallId: string, args: unknown): StoredTripwireAlert | null {
-		const rawPaths = this.extractPaths(toolName, args);
+		const rawPaths = toolPathArgs(toolName, args);
 		if (rawPaths.length === 0) return null;
 
 		const allowedRoots = unique([context.cwd, ...this.appStateRoots, ...context.allowedRoots].flatMap((root) => pathForms(root)));
 		const secretPaths = unique([...this.secretRoots, ...this.secretFiles].flatMap((path) => pathForms(path)));
 		const persistencePaths = unique([...this.persistenceRoots, ...this.persistenceFiles].flatMap((path) => pathForms(path)));
+		const configPaths = unique(this.agentConfig.flatMap((path) => pathForms(path)));
 		const isWriteLike = toolName === "write" || toolName === "edit";
+		const mayChange = !READ_ONLY_TOOLS.includes(toolName);
 		let observedPath: string | null = null;
+		let configDetail: string | null = null;
 
 		for (const rawPath of rawPaths) {
 			const candidates = candidatePaths(context.cwd, rawPath);
@@ -369,6 +440,9 @@ export class TripwireService {
 				});
 			}
 
+			const configPath = mayChange ? forms.find((path) => configPaths.some((root) => isWithin(path, root, CASE_INSENSITIVE_FS))) : undefined;
+			if (configPath && !configDetail) configDetail = `Path: ${configPath}${written(configPath)}`;
+
 			// where the write lands decides: a symlink in the repo that points out of it is a repo escape
 			const escapedPath = candidates.map((path) => realTarget(path)).find((path) => !allowedRoots.some((root) => isWithin(path, root)));
 			if (escapedPath) {
@@ -388,6 +462,18 @@ export class TripwireService {
 			}
 		}
 
+		if (configDetail) {
+			return this.createAlert({
+				sessionId: context.sessionId,
+				severity: "observe",
+				category: "persistence",
+				summary: "Tripwire: agent config targeted (the next session runs or applies it).",
+				detail: configDetail,
+				toolName,
+				toolCallId,
+				response: "logged",
+			});
+		}
 		if (!observedPath) return null;
 		return this.createAlert({
 			sessionId: context.sessionId,
@@ -485,25 +571,13 @@ export class TripwireService {
 		};
 	}
 
-	private extractPaths(toolName: string, args: unknown): string[] {
-		if (!args || typeof args !== "object") return [];
-		const input = args as Record<string, unknown>;
-
-		if (["read", "write", "edit", "grep", "find", "ls"].includes(toolName) && typeof input.path === "string") {
-			return [input.path];
-		}
-		// grep, find and ls without a path search the session's folder
-		if (["grep", "find", "ls"].includes(toolName) && input.path === undefined) return ["."];
-
-		const rawPaths: string[] = [];
-		for (const key of ["path", "from", "to", "oldPath", "newPath", "targetPath"]) {
-			if (typeof input[key] === "string") rawPaths.push(input[key] as string);
-		}
-		return rawPaths;
-	}
-
 	private commandReferencesSecrets(command: string): boolean {
 		return commandRefs([...this.secretRoots, ...this.secretFiles]).some((ref) => ref && command.includes(ref));
+	}
+
+	/** The agent config file or folder a bash command names, spelled like the secret refs. */
+	private agentConfigNamed(command: string): string | undefined {
+		return this.agentConfig.find((path) => commandRefs([path]).some((ref) => ref && command.includes(ref)));
 	}
 
 	private commandLooksPersistent(command: string): boolean {
