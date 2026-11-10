@@ -1297,6 +1297,8 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 			const limited = faceIdChallengeLimiter.check(`faceid-challenge:${requesterId}`);
 			if (limited) return rateLimitResponse(limited);
 			try {
+				const client = resolveClientCookie(req);
+				if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
 				const raw = (await requireJsonBody(req)) as { kind?: unknown };
 				const kind = raw?.kind;
 				if (kind !== "register" && kind !== "authenticate") {
@@ -1315,7 +1317,10 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 						);
 					}
 				}
-				const result = await faceId.createChallenge(kind, url.hostname, requestOrigin, requesterId);
+				const result = await faceId.createChallenge(kind, url.hostname, requestOrigin, requesterId, {
+					clientId: client.clientId,
+					device: requestDevices.get(req) ?? null,
+				});
 				return json(result, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -1333,7 +1338,15 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				if (typeof raw?.challengeId !== "string" || raw.challengeId.length === 0) {
 					return errorResponse("Missing challengeId", 400);
 				}
-				const result = await faceId.verify(raw.challengeId, raw.credential);
+				const requestOrigin = resolveRequestOrigin(req);
+				if (!requestOrigin) return errorResponse("Face ID verification requires a trusted browser origin.", 400);
+				// the challenge only verifies for the host, origin, browser and device it was issued to, so the cookie below is theirs
+				const result = await faceId.verify(raw.challengeId, raw.credential, {
+					rpId: url.hostname,
+					origin: requestOrigin,
+					clientId: client.clientId,
+					device: requestDevices.get(req) ?? null,
+				});
 				if (result.kind !== "authenticate") {
 					return json(result, 200);
 				}

@@ -154,14 +154,15 @@ describe("requester key", () => {
 describe("pending face id challenges per requester", () => {
 	test("a requester past its cap drops its own oldest challenge and leaves everyone else's", async () => {
 		const faceId = new FaceIdService(join(await tempHome(), "faceid.json"));
-		const create = (requester: string) => faceId.createChallenge("register", "pi.example.test", "https://pi.example.test", requester);
+		const asker = { clientId: "browser", device: null };
+		const create = (requester: string) => faceId.createChallenge("register", "pi.example.test", "https://pi.example.test", requester, asker);
 
 		const other = await create("device:other");
 		const mine: string[] = [];
 		for (let i = 0; i < MAX_PENDING_CHALLENGES_PER_REQUESTER + 2; i += 1) mine.push((await create("device:mine")).challengeId);
 
 		const pending = async (challengeId: string) =>
-			faceId.verify(challengeId, null).then(
+			faceId.verify(challengeId, null, { ...asker, rpId: "pi.example.test", origin: "https://pi.example.test" }).then(
 				() => "verified",
 				(error: Error) => (error.message === "challenge_expired" ? "gone" : "pending"),
 			);
