@@ -261,6 +261,8 @@ export async function bootPhone() {
 	window.addEventListener("pageshow", () => pane.resumeIfStale());
 	window.addEventListener("focus", () => pane.resumeIfStale());
 	window.addEventListener("online", () => pane.resumeIfStale());
+	// a stream the host closed when the Face ID session ran out comes back as soon as a check passes, not at its next backoff
+	window.addEventListener("pi-web-faceid-unlocked", () => pane.resumeIfStale());
 	document.addEventListener("visibilitychange", () => {
 		if (document.visibilityState === "visible") pane.resumeIfStale();
 	});

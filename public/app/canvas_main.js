@@ -244,11 +244,16 @@ export async function bootCanvas() {
 		};
 		source.onerror = () => {
 			if (source !== statusSource || source.readyState !== EventSource.CLOSED) return;
-			// an older host (404) or a lost one: tiles keep their own streams
+			// an older host (404), a lost one, or a Face ID session that ran out: tiles keep their own streams until a check passes
 			statusKnown = false;
 			for (const entry of entries.values()) wakeFromIdle(entry);
 		};
 	}
+
+	// the host ends the status stream when this browser's Face ID session runs out (or it logs out); a passed check brings it back
+	window.addEventListener("pi-web-faceid-unlocked", () => {
+		if (statusSource?.readyState === EventSource.CLOSED) connectStatus();
+	});
 
 	/** @param {TileEntry} entry */
 	function reconcileStatus(entry) {
@@ -1182,6 +1187,7 @@ export async function bootCanvas() {
 	window.addEventListener("pageshow", resumeAll);
 	window.addEventListener("focus", resumeAll);
 	window.addEventListener("online", resumeAll);
+	window.addEventListener("pi-web-faceid-unlocked", resumeAll);
 	document.addEventListener("visibilitychange", () => {
 		if (document.visibilityState === "visible") resumeAll();
 	});

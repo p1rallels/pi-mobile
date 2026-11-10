@@ -113,6 +113,28 @@ test("laptop: never prompts by itself; unlock prompts; switching away and back i
 	await expect.poll(() => state(page)).toMatchObject({ open: false, prompts: 2 });
 });
 
+test("a passed check tells the page (pi-web-faceid-unlocked), so streams the host closed for want of one reconnect", async ({ page }) => {
+	await installGuard(page, { verifiedSecondsAgo: null });
+	await page.evaluate(() => {
+		const t = /** @type {any} */ (window).__faceid;
+		t.unlocked = 0;
+		window.addEventListener("pi-web-faceid-unlocked", () => void (t.unlocked += 1));
+	});
+	const unlocked = () => page.evaluate(() => /** @type {any} */ (window).__faceid.unlocked);
+	await expect.poll(() => state(page)).toMatchObject({ open: true, button: "Unlock" });
+	expect(await unlocked()).toBe(0);
+	await page.locator(".faceid-button").click();
+	await expect.poll(() => state(page)).toMatchObject({ open: false, prompts: 1 });
+	expect(await unlocked()).toBe(1);
+
+	// a request refused for want of a check while the page looked unlocked: passing it tells the page again
+	await hostRefuses(page);
+	await expect.poll(() => state(page)).toMatchObject({ open: true, button: "Unlock" });
+	await page.locator(".faceid-button").click();
+	await expect.poll(() => state(page)).toMatchObject({ open: false, prompts: 2 });
+	expect(await unlocked()).toBe(2);
+});
+
 test("laptop: a locked page swallows keys and gives the keyboard back after unlock", async ({ page }) => {
 	await installGuard(page, { verifiedSecondsAgo: 0 });
 	await expect.poll(() => state(page)).toMatchObject({ started: true, open: false });

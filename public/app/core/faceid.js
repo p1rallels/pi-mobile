@@ -189,11 +189,17 @@ export function installFaceIdGuard({
 		ui.button.focus({ preventScroll: true });
 	}
 
+	/** Tells the page a check is good again (`pi-web-faceid-unlocked`), so streams the host closed for want of one reconnect. */
+	function announceUnlocked() {
+		window.dispatchEvent(new CustomEvent("pi-web-faceid-unlocked"));
+	}
+
 	function unlock() {
 		const wasLocked = locked;
 		setLocked(false);
 		if (wasLocked) restoreFocus();
 		resolveInitialUnlock();
+		if (wasLocked) announceUnlocked();
 	}
 
 	function checkIsFresh() {
@@ -271,6 +277,7 @@ export function installFaceIdGuard({
 		lockMessage = UNLOCK_TEXT;
 		failed = false;
 		if (locked) unlock();
+		else announceUnlocked();
 		if (document.visibilityState === "hidden") return;
 		terminalPromptFailed = false;
 		terminalsLocked = false;
