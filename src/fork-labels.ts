@@ -1,12 +1,12 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, normalize } from "node:path";
-import { executable } from "./exec-path.ts";
+import { absoluteDirs, executable } from "./exec-path.ts";
 
 /**
  * pfs keeps a repo's forks in <forks dir>/<key>/<n> and writes the repo's own folder into <forks dir>/<key>/.main, the
  * forks dir being `[forks] dir` in $PFS_HOME/config.toml, else $PFS_HOME/forks ($PFS_HOME defaults to ~/.pfs). A session
- * folder there is fork n of that repo, named from `pfs ls --all --json` run in the repo once the repo's
+ * folder there is fork n of that repo, named from `pfs ls --names --all --json` run in the repo once the repo's
  * .git/pfs/forks-dir names the folder back (pfs's own test for its forks). A .main anywhere else is just content: pfs's
  * listing stages each fork into a temporary index, so git would run the configured filters of whatever repo it lists.
  * pfs before 0.4 kept forks in <repo>/.forks/<n>; old sessions still name them, and they read from the path alone, with
@@ -142,9 +142,19 @@ function claims(main: string, forks: string): boolean {
 	}
 }
 
+/**
+ * The environment pfs runs in: this one with PATH cut to its absolute entries, since pfs runs git by name and a relative
+ * entry would find a `git` in the repo it runs in. No absolute entry leaves no PATH, and the system's default lookup.
+ */
+export function pfsEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> {
+	const { PATH, ...rest } = env;
+	const dirs = absoluteDirs(PATH);
+	return dirs.length ? { ...rest, PATH: dirs.join(":") } : rest;
+}
+
 async function runPfs(pfs: string, root: string, args: string[]): Promise<{ code: number | null; stdout: string }> {
 	try {
-		const proc = Bun.spawn({ cmd: [pfs, ...args], cwd: root, env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+		const proc = Bun.spawn({ cmd: [pfs, ...args], cwd: root, env: pfsEnv(process.env), stdin: "ignore", stdout: "pipe", stderr: "ignore" });
 		const timer = setTimeout(() => proc.kill(), PFS_TIMEOUT_MS);
 		try {
 			const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
@@ -158,18 +168,15 @@ async function runPfs(pfs: string, root: string, args: string[]): Promise<{ code
 }
 
 /**
- * Who each fork is. `pfs ls --names` reads pfs's own records and runs no git in any fork (a full ls snapshots every
- * fork's folder, filters and all); a pfs from before --names refuses the flag with clap's usage exit, 2, and gets the
- * full listing instead.
+ * Who each fork is, from `pfs ls --names`: pfs's own records, with no git run in any fork and no child process at all.
+ * Never the full ls, which snapshots every fork's folder and so runs the repo's filters; a pfs from before --names refuses
+ * the flag and names nothing, like any pfs that fails.
  */
 async function listForks(root: string): Promise<string | null> {
 	const pfs = executable("pfs", [join(homedir(), ".cargo", "bin")]);
 	if (!pfs) return null;
 	const names = await runPfs(pfs, root, ["ls", "--names", "--all", "--json"]);
-	if (names.code === 0) return names.stdout;
-	if (names.code !== 2) return null;
-	const full = await runPfs(pfs, root, ["ls", "--all", "--json"]);
-	return full.code === 0 ? full.stdout : null;
+	return names.code === 0 ? names.stdout : null;
 }
 
 /**

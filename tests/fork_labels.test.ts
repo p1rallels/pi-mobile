@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createForkLabels, forkLabel, forksDirFrom, parseForkNames, parseForkPath, pfsHome, type ForkPath } from "../src/fork-labels.ts";
+import { createForkLabels, forkLabel, forksDirFrom, parseForkNames, parseForkPath, pfsEnv, pfsHome, type ForkPath } from "../src/fork-labels.ts";
 
 const tempDirs: string[] = [];
 const savedEnv = { PATH: process.env.PATH, PFS_HOME: process.env.PFS_HOME };
@@ -23,15 +23,17 @@ async function tempRoot(): Promise<string> {
 }
 
 /**
- * A pfs first on PATH that names fork 3 "3-web-subs" and notes each run, the folder and its arguments, one per line, in the
- * file it returns. `knowsNames: false` is a pfs from before `ls --names`: clap refuses the flag with exit 2.
+ * A pfs first on PATH, in <root>/bin, that names fork 3 "3-web-subs" and notes each run, the folder and its arguments, one
+ * per line, in the file it returns, and the PATH and PFS_HOME it got in <root>/pfs-env. `knowsNames: false` is a pfs from
+ * before `ls --names`: clap refuses the flag with exit 2.
  */
 async function fakePfs(root: string, { knowsNames = true } = {}): Promise<string> {
 	const bin = join(root, "bin");
 	const ran = join(root, "pfs-ran");
 	await mkdir(bin);
 	const refuseNames = knowsNames ? "" : `case " $* " in *" --names "*) exit 2 ;; esac\n`;
-	await writeFile(join(bin, "pfs"), `#!/bin/sh\necho "$(pwd -P) $*" >> '${ran}'\n${refuseNames}printf '%s\\n' '{"id":3,"label":"3-web-subs"}'\n`, { mode: 0o755 });
+	const noteEnv = `printf '%s\\n' "PATH=$PATH" "PFS_HOME=$PFS_HOME" > '${join(root, "pfs-env")}'\n`;
+	await writeFile(join(bin, "pfs"), `#!/bin/sh\necho "$(pwd -P) $*" >> '${ran}'\n${noteEnv}${refuseNames}printf '%s\\n' '{"id":3,"label":"3-web-subs"}'\n`, { mode: 0o755 });
 	process.env.PATH = `${bin}:${savedEnv.PATH ?? ""}`;
 	return ran;
 }
@@ -90,6 +92,18 @@ describe("fork labels", () => {
 		expect(forksDirFrom("/x/pfs", '[forks]\ndir = "~forks"\n', env)).toBeNull();
 		expect(forksDirFrom("/x/pfs", "[forks]\ndir = 3\n", env)).toBeNull();
 		expect(forksDirFrom("/x/pfs", "[forks\n", env)).toBeNull();
+	});
+
+	test("pfs's environment keeps PATH's absolute entries, in order and once, and everything else", () => {
+		expect(pfsEnv({ PATH: ".:/a/bin::rel/bin:/usr/bin:./node_modules/.bin:/a/bin", HOME: "/Users/me", PFS_HOME: "/x/pfs" })).toEqual({
+			PATH: "/a/bin:/usr/bin",
+			HOME: "/Users/me",
+			PFS_HOME: "/x/pfs",
+		});
+		expect(pfsEnv({ PATH: "/usr/bin:/bin", HOME: "/Users/me" })).toEqual({ PATH: "/usr/bin:/bin", HOME: "/Users/me" });
+		expect(pfsEnv({ PATH: ".::bin", HOME: "/Users/me" })).toEqual({ HOME: "/Users/me" });
+		expect(pfsEnv({ PATH: "", HOME: "/Users/me" })).toEqual({ HOME: "/Users/me" });
+		expect(pfsEnv({ HOME: "/Users/me" })).toEqual({ HOME: "/Users/me" });
 	});
 
 	test("names forks from pfs ls --json and falls back to the number", () => {
@@ -172,7 +186,7 @@ describe("fork labels", () => {
 		expect((await readFile(ran, "utf8")).trim().split("\n")).toEqual([`${repo} ls --names --all --json`]);
 	});
 
-	test("a pfs from before ls --names still names the forks, through the full listing", async () => {
+	test("a pfs from before ls --names names no forks: the labels show the number, and the full listing never runs", async () => {
 		const root = await tempRoot();
 		const ran = await fakePfs(root, { knowsNames: false });
 		process.env.PFS_HOME = join(root, "pfs");
@@ -181,8 +195,23 @@ describe("fork labels", () => {
 		await pfsRepo(repo, forks);
 		await mkdir(join(forks, "3"), { recursive: true });
 
+		expect(await createForkLabels().label(join(forks, "3"))).toBe("pi-web · fork 3");
+		expect((await readFile(ran, "utf8")).trim().split("\n")).toEqual([`${repo} ls --names --all --json`]);
+	});
+
+	test("pfs gets PATH's absolute entries only, and the rest of the environment as is", async () => {
+		const root = await tempRoot();
+		await fakePfs(root);
+		const bin = join(root, "bin");
+		process.env.PATH = `.:${bin}::rel/bin:/usr/bin:./node_modules/.bin:/bin:${bin}`;
+		process.env.PFS_HOME = join(root, "pfs");
+		const repo = join(root, "code", "pi-web");
+		const forks = join(root, "pfs", "forks", "pi-web");
+		await pfsRepo(repo, forks);
+		await mkdir(join(forks, "3"), { recursive: true });
+
 		expect(await createForkLabels().label(join(forks, "3"))).toBe("pi-web · fork 3-web-subs");
-		expect((await readFile(ran, "utf8")).trim().split("\n")).toEqual([`${repo} ls --names --all --json`, `${repo} ls --all --json`]);
+		expect((await readFile(join(root, "pfs-env"), "utf8")).trim().split("\n")).toEqual([`PATH=${bin}:/usr/bin:/bin`, `PFS_HOME=${join(root, "pfs")}`]);
 	});
 
 	test("a legacy <repo>/.forks/<n> reads from the folder names alone, without pfs", async () => {

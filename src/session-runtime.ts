@@ -185,7 +185,7 @@ interface PiWebRuntimeOptions {
 	/** How long one process listing serves every caller. */
 	processCacheMs?: number;
 	followPollMs?: number;
-	/** `pfs ls --all --json` for a repo root, for fork labels; tests pass a fake. */
+	/** `pfs ls --names --all --json` for a repo root, for fork labels; tests pass a fake. */
 	listForks?: (root: string) => Promise<string | null>;
 	/** Folders whose sessions are never suggested as repos (default: the temp roots); tests pass their own. */
 	scratchRoots?: string[];
