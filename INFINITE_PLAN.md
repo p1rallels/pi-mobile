@@ -1,8 +1,8 @@
 # infinite: pi-web as a spatial canvas on the laptop
 
-reddot ran agent sessions in Infinite (the native macOS canvas of Ghostty terminals, sibling checkout `../infinite`) all day. Sessions now run on the Mac mini behind pi-web, so the same experience moves into Chrome on the laptop: zoom out to watch every session working, zoom in to one, type into it. It's another view of the same pi-web server and sessions. The phone UI stays as it is.
+The user ran agent sessions in Infinite (the native macOS canvas of Ghostty terminals, sibling checkout `../infinite`) all day. Sessions now run on the Mac mini behind pi-web, so the same experience moves into Chrome on the laptop: zoom out to watch every session working, zoom in to one, type into it. It's another view of the same pi-web server and sessions. The phone UI stays as it is.
 
-## decided with reddot
+## decided with the user
 
 - **Targets.** Laptop Chrome only for now. iPad is out of scope, and the phone keeps today's UI (a repo-wheel/session-carousel idea is parked for later).
 - **No terminal emulator.** Tiles are pi-web's own SSE-driven, terminal-look session pane, not xterm.
@@ -22,7 +22,7 @@ reddot ran agent sessions in Infinite (the native macOS canvas of Ghostty termin
   - Pinch zooms at the cursor. Chrome reports a trackpad pinch as wheel events with `ctrlKey`; Safari uses `gesture*` events.
   - Zoom range is 20–200%.
   - Double-clicking empty canvas opens a launcher there.
-- **Data flowing at every zoom level.** reddot wants to see the panes working, so there are no status-card LODs. Zoom stays a camera operation.
+- **Data flowing at every zoom level.** The user wants to see the panes working, so there are no status-card LODs. Zoom stays a camera operation.
 - **Glow.** Subtle, not flashy. Soft breathing while working, a steady glow when waiting on you. Implement it as an opacity animation on a pseudo-element; never animate `box-shadow`.
 - **Layout.** Saved on the server per host, so the laptop (and later the iPad) see the same map. The camera position is per device, in localStorage.
 - **Mode.** The canvas is opt-in via `?ui=canvas`, remembered in localStorage; `?ui=phone` goes back. Also ship a detection helper (`pointer: fine` and short side ≥ 700 css px) so auto-detection can be switched on later. Phones must never get the canvas.
