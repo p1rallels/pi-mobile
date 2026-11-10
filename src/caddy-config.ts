@@ -39,6 +39,7 @@ ${siteAddress(config)} {${maybeBind(config)}
 
 	reverse_proxy ${target} {
 		header_up X-Forwarded-Proto https
+		header_up -Cf-Connecting-Ip
 		header_up X-PI-Web-Client-Cert-Fingerprint {http.request.tls.client.fingerprint}
 		header_up X-PI-Web-Client-Cert-Subject {http.request.tls.client.subject}
 	}

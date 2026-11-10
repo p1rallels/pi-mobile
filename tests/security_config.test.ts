@@ -89,6 +89,7 @@ describe("security config", () => {
 		expect(caddyfile).toContain("mode require_and_verify");
 		expect(caddyfile).toContain("reverse_proxy 127.0.0.1:4317");
 		expect(caddyfile).toContain("X-PI-Web-Client-Cert-Fingerprint");
+		expect(caddyfile).toContain("header_up -Cf-Connecting-Ip");
 	});
 
 	test("uses configured trusted server certificate in caddy config", () => {

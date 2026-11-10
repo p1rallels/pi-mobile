@@ -4,6 +4,7 @@ import { join, resolve, sep } from "node:path";
 import { VERSION as PI_VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { CANVAS_LAYOUT_BODY_LIMIT, createCanvasLayoutStore } from "./canvas-layout.ts";
 import { verifyClientCertificateRequest } from "./device-auth.ts";
+import { requesterKey } from "./requester-key.ts";
 import { isTypedPath, listDirectories } from "./directories.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { dropInheritedSessionIdentity } from "./inherited-session.ts";
@@ -352,7 +353,7 @@ Env:
   PI_WEB_TRIPWIRE=on|off (block critical tool calls, default on)
   PI_WEB_PROJECT_TRUST=always|ask|never (projects without a trust.json decision, default always)
   PI_WEB_TERMINALS=on|off (terminal tiles on the canvas, default on)
-  PI_WEB_CLIENT_SESSIONS_PER_MINUTE (browser session handshakes per client IP, default 20)
+  PI_WEB_CLIENT_SESSIONS_PER_MINUTE (browser session handshakes per device in secure mode, else per client IP, default 20)
   PI_WEB_FACEID_SESSION_MINUTES (Face ID session length, default 240)
   PI_WEB_FACEID_COMMAND_MINUTES (Face ID age allowed for prompts and take over, default 60)
   PI_WEB_FACEID_FRESH_MINUTES (Face ID age allowed for new sessions, repos and release, and before the page asks again; terminals close this long after the last check; default 15)
@@ -854,20 +855,14 @@ function rateLimitResponse(result: RateLimitResult): Response {
 	return errorResponse("Too many requests. Try again shortly.", 429, { "retry-after": String(result.retryAfterSeconds) });
 }
 
-function forwardedClientIp(req: Request): string | null {
-	const cfConnectingIp = req.headers.get("cf-connecting-ip")?.trim();
-	if (cfConnectingIp) return cfConnectingIp;
-	const forwardedFor = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-	return forwardedFor || null;
-}
-
+/** Call after the secure-mode device check, so a verified device keys its own limits. */
 function resolveRequesterId(req: Request, server: Bun.Server<TerminalSocketData>): string {
-	if (trustProxy) {
-		const forwarded = forwardedClientIp(req);
-		if (forwarded) return forwarded;
-	}
-	const direct = server.requestIP(req)?.address;
-	return typeof direct === "string" && direct.length > 0 ? direct : "__unknown__";
+	return requesterKey({
+		device: requestDevices.get(req) ?? null,
+		trustProxy,
+		forwardedFor: req.headers.get("x-forwarded-for"),
+		peerAddress: server.requestIP(req)?.address,
+	});
 }
 
 const {
@@ -1064,7 +1059,6 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 		const secure = isSecureRequest(req, url, trustProxy);
 		const requestProtocol = secure ? "https:" : url.protocol;
 		const directAddress = server.requestIP(req)?.address;
-		const requesterId = resolveRequesterId(req, server);
 		const trustError = ensureTrustedRequest(req, url, requestProtocol);
 		if (trustError) return trustError;
 
@@ -1093,6 +1087,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 			if (!deviceAuth.ok) return errorResponse(deviceAuth.message, deviceAuth.status);
 			requestDevices.set(req, deviceAuth.device?.fingerprintSha256 ?? null);
 		}
+		const requesterId = resolveRequesterId(req, server);
 
 		if (req.method === "OPTIONS" && isApiPath(url.pathname)) {
 			return corsPreflightResponse(req) ?? errorResponse("Untrusted origin.", 403);
@@ -1303,7 +1298,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 						);
 					}
 				}
-				const result = await faceId.createChallenge(kind, url.hostname, requestOrigin);
+				const result = await faceId.createChallenge(kind, url.hostname, requestOrigin, requesterId);
 				return json(result, 200);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
