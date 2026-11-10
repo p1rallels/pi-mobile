@@ -22,12 +22,16 @@ async function tempRoot(): Promise<string> {
 	return dir;
 }
 
-/** A pfs first on PATH that names fork 3 "3-web-subs" and notes each folder it ran in, one per line, in the file it returns. */
-async function fakePfs(root: string): Promise<string> {
+/**
+ * A pfs first on PATH that names fork 3 "3-web-subs" and notes each run, the folder and its arguments, one per line, in the
+ * file it returns. `knowsNames: false` is a pfs from before `ls --names`: clap refuses the flag with exit 2.
+ */
+async function fakePfs(root: string, { knowsNames = true } = {}): Promise<string> {
 	const bin = join(root, "bin");
 	const ran = join(root, "pfs-ran");
 	await mkdir(bin);
-	await writeFile(join(bin, "pfs"), `#!/bin/sh\npwd -P >> '${ran}'\nprintf '%s\\n' '{"id":3,"label":"3-web-subs"}'\n`, { mode: 0o755 });
+	const refuseNames = knowsNames ? "" : `case " $* " in *" --names "*) exit 2 ;; esac\n`;
+	await writeFile(join(bin, "pfs"), `#!/bin/sh\necho "$(pwd -P) $*" >> '${ran}'\n${refuseNames}printf '%s\\n' '{"id":3,"label":"3-web-subs"}'\n`, { mode: 0o755 });
 	process.env.PATH = `${bin}:${savedEnv.PATH ?? ""}`;
 	return ran;
 }
@@ -165,7 +169,20 @@ describe("fork labels", () => {
 		expect(await labels.label(join(forks, "3", "downloaded", "7"))).toBe("pi-web · fork 3-web-subs");
 		expect(await labels.label(join(forks, "4"))).toBe("pi-web · fork 4");
 		expect(await labels.label(forks)).toBeUndefined();
-		expect((await readFile(ran, "utf8")).trim().split("\n")).toEqual([repo]);
+		expect((await readFile(ran, "utf8")).trim().split("\n")).toEqual([`${repo} ls --names --all --json`]);
+	});
+
+	test("a pfs from before ls --names still names the forks, through the full listing", async () => {
+		const root = await tempRoot();
+		const ran = await fakePfs(root, { knowsNames: false });
+		process.env.PFS_HOME = join(root, "pfs");
+		const repo = join(root, "code", "pi-web");
+		const forks = join(root, "pfs", "forks", "pi-web");
+		await pfsRepo(repo, forks);
+		await mkdir(join(forks, "3"), { recursive: true });
+
+		expect(await createForkLabels().label(join(forks, "3"))).toBe("pi-web · fork 3-web-subs");
+		expect((await readFile(ran, "utf8")).trim().split("\n")).toEqual([`${repo} ls --names --all --json`, `${repo} ls --all --json`]);
 	});
 
 	test("a legacy <repo>/.forks/<n> reads from the folder names alone, without pfs", async () => {

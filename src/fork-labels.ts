@@ -142,21 +142,34 @@ function claims(main: string, forks: string): boolean {
 	}
 }
 
-async function listForks(root: string): Promise<string | null> {
-	const pfs = executable("pfs", [join(homedir(), ".cargo", "bin")]);
-	if (!pfs) return null;
+async function runPfs(pfs: string, root: string, args: string[]): Promise<{ code: number | null; stdout: string }> {
 	try {
-		const proc = Bun.spawn({ cmd: [pfs, "ls", "--all", "--json"], cwd: root, env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+		const proc = Bun.spawn({ cmd: [pfs, ...args], cwd: root, env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
 		const timer = setTimeout(() => proc.kill(), PFS_TIMEOUT_MS);
 		try {
 			const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-			return code === 0 ? stdout : null;
+			return { code, stdout };
 		} finally {
 			clearTimeout(timer);
 		}
 	} catch {
-		return null;
+		return { code: null, stdout: "" };
 	}
+}
+
+/**
+ * Who each fork is. `pfs ls --names` reads pfs's own records and runs no git in any fork (a full ls snapshots every
+ * fork's folder, filters and all); a pfs from before --names refuses the flag with clap's usage exit, 2, and gets the
+ * full listing instead.
+ */
+async function listForks(root: string): Promise<string | null> {
+	const pfs = executable("pfs", [join(homedir(), ".cargo", "bin")]);
+	if (!pfs) return null;
+	const names = await runPfs(pfs, root, ["ls", "--names", "--all", "--json"]);
+	if (names.code === 0) return names.stdout;
+	if (names.code !== 2) return null;
+	const full = await runPfs(pfs, root, ["ls", "--all", "--json"]);
+	return full.code === 0 ? full.stdout : null;
 }
 
 /**
