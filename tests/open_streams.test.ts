@@ -20,7 +20,11 @@ const admission = (kind: OpenStreamKind, clientId: string | null, faceIdToken: s
 	faceIdToken,
 });
 
-const stream = (a: StreamAdmission): OpenStream => ({ admission: a, close: () => {}, recheck: async () => ({ deviceAllowed: true, faceIdAccepted: true }) });
+const stream = (a: StreamAdmission): OpenStream => ({
+	admission: a,
+	close: () => {},
+	recheck: async () => ({ deviceAllowed: true, faceIdAccepted: true, freshEnough: true }),
+});
 
 const kinds = (streams: OpenStream[]) => streams.map((s) => `${s.admission.clientId}:${s.admission.kind}`);
 
@@ -57,7 +61,7 @@ describe("open streams registry", () => {
 });
 
 describe("sweep verdict", () => {
-	const ok = { deviceAllowed: true, faceIdAccepted: true };
+	const ok = { deviceAllowed: true, faceIdAccepted: true, freshEnough: true };
 
 	test("a connection whose checks still pass stays", () => {
 		expect(recheckVerdict(admission("events", "c1"), ok)).toBeNull();
@@ -65,12 +69,18 @@ describe("sweep verdict", () => {
 
 	test("a device the registry no longer allows closes it, whatever its Face ID token says", () => {
 		expect(recheckVerdict(admission("terminal", "c1"), { ...ok, deviceAllowed: false })).toBe("device_not_allowed");
-		expect(recheckVerdict(admission("events", null, null), { deviceAllowed: false, faceIdAccepted: false })).toBe("device_not_allowed");
+		expect(recheckVerdict(admission("events", null, null), { deviceAllowed: false, faceIdAccepted: false, freshEnough: false })).toBe("device_not_allowed");
 	});
 
 	test("a Face ID token that no longer resolves closes what rode on it; a connection that rode on none needs none", () => {
 		expect(recheckVerdict(admission("follow", "c1"), { ...ok, faceIdAccepted: false })).toBe("faceid_ended");
 		expect(recheckVerdict(admission("canvas_status", null, null), { ...ok, faceIdAccepted: false })).toBeNull();
+	});
+
+	test("a terminal socket whose browser has no check recent enough closes; one that rode on no token needs none", () => {
+		expect(recheckVerdict(admission("terminal", "c1"), { ...ok, freshEnough: false })).toBe("faceid_stale");
+		expect(recheckVerdict(admission("terminal", "c1"), { ...ok, faceIdAccepted: false, freshEnough: false })).toBe("faceid_ended");
+		expect(recheckVerdict(admission("terminal", null, null), { ...ok, faceIdAccepted: false, freshEnough: false })).toBeNull();
 	});
 
 	test("a check that couldn't be made fails closed", () => {
@@ -80,8 +90,8 @@ describe("sweep verdict", () => {
 
 describe("terminal close frames", () => {
 	test("Face ID reasons close with 4401 like a lock, a device that's gone with 4403", () => {
-		const reasons: StreamCloseReason[] = ["terminals_locked", "logged_out", "faceid_ended", "device_not_allowed"];
-		expect(reasons.map((reason) => terminalCloseFrame(reason).code)).toEqual([4401, 4401, 4401, 4403]);
+		const reasons: StreamCloseReason[] = ["terminals_locked", "logged_out", "faceid_ended", "faceid_stale", "device_not_allowed"];
+		expect(reasons.map((reason) => terminalCloseFrame(reason).code)).toEqual([4401, 4401, 4401, 4401, 4403]);
 		expect(terminalCloseFrame("terminals_locked").reason).toBe("locked");
 		// close reasons are capped at 123 bytes
 		for (const reason of reasons) expect(Buffer.byteLength(terminalCloseFrame(reason).reason)).toBeLessThanOrEqual(123);
