@@ -7,6 +7,7 @@
 // Terminals lock whenever the page goes away (see TerminalLock in core/faceid.js). Locked, a tile lets go of its shell
 // and forgets its screen until a check passes; clicking it asks for one. Opening a shell asks first, wherever the lock is.
 import { noTerminalLock } from "../core/faceid.js";
+import { attachRefusal, messageOf, needsFaceId, statusOf } from "./refusals.js";
 import { createTerminalView, loadTerminalStyles } from "./terminal_view.js";
 
 const EXPIRY_WARNING_MS = 5 * 60_000;
@@ -27,13 +28,6 @@ function lineCount(text) {
 	const lines = text.replace(/\n$/, "").split("\n").length;
 	return `${lines} line${lines === 1 ? "" : "s"}`;
 }
-
-/** @param {unknown} error */
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
-/** @param {unknown} error */
-const statusOf = (error) => /** @type {any} */ (error)?.status;
-/** The host wants a (fresher) Face ID check; other 401s mean the browser session cookie is gone. @param {unknown} error */
-const needsFaceId = (error) => statusOf(error) === 401 && /face id/i.test(messageOf(error));
 
 /** @typedef {"waiting" | "locked" | "opening" | "attaching" | "live" | "reconnecting" | "ended" | "failed"} TerminalTileState */
 
@@ -295,13 +289,11 @@ export function createTerminalTile(options) {
 			current.connect();
 		} catch (error) {
 			if (halted()) return;
-			const status = statusOf(error);
-			// gone while the tile wasn't watching (locked, reloaded): it ends here the way it ended there, never as a new
-			// local shell standing in for, say, an ssh that timed out; one the host never heard of (a restart) opens anew
-			const ended = status === 404 ? /** @type {any} */ (error).body?.ended : null;
-			if (typeof ended === "string" && ended !== "shutdown") onExit(ended);
-			else if (status === 404) await openShell();
-			else if (status === 401) await onRefused(error, attach, retried ? null : () => attachOnce(true), "Couldn't attach to the shell");
+			const refusal = attachRefusal(error);
+			if (refusal.then === "exit") onExit(refusal.reason);
+			else if (refusal.then === "open") await openShell();
+			else if (refusal.then === "refused") await onRefused(error, attach, retried ? null : () => attachOnce(true), "Couldn't attach to the shell");
+			else if (refusal.then === "end") end(refusal.note);
 			else reconnectLater();
 		}
 	}
@@ -332,8 +324,13 @@ export function createTerminalTile(options) {
 			reconnectLater();
 			return;
 		}
+		end(reason === "expired" ? "Closed when the Face ID check it ran under ran out." : "This shell ended.");
+	}
+
+	/** The tile is done with its shell and says why; "new shell" starts over. @param {string} why */
+	function end(why) {
 		expiresAt = null;
-		setState("ended", reason === "expired" ? "Closed when the Face ID check it ran under ran out." : "This shell ended.");
+		setState("ended", why);
 	}
 
 	function start() {
