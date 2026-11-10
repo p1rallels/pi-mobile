@@ -12,6 +12,7 @@ import { lineageDetails } from "./lineage.js";
 import { buildLineageMenu, createLineageLine } from "./lineage_line.js";
 import { composerPlaceholder, elsewherePlaceholder, footerLines, isWriting, modelLabel, roleBadge, workingLabel } from "./pane_format.js";
 import { choiceForLabel, createSessionWithTrust, trustPromptRequest } from "./project_trust.js";
+import { notStoppedNotice } from "./quit.js";
 import { parentLabel, readOnlyNote } from "./read_only.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -86,7 +87,8 @@ function showIf(el, shown) {
  * what the pane says when its session ended for good (null: nothing, the shell says it).
  * `onQuit` makes a message starting with /quit stop the session instead of going to pi (refused while pi works), and
  * then hears that the pane is done (a canvas tile goes back to its launcher, the phone opens its menu); without it
- * /quit is sent like any prompt.
+ * /quit is sent like any prompt. Release stops the session the same way (see quit.js) and calls it too; without it the
+ * pane just empties.
  * `onOpenSession` opens a session the transcript or the lineage line names, like a msg message's sender or the
  * session's parent (the phone switches to it, the canvas gives it a tile); without it they are plain text.
  */
@@ -364,7 +366,7 @@ export function createSessionPane({
 		autoResize(input);
 		input.focus();
 		if (onQuit && isQuitCommand(text)) {
-			await quitFromInput(onQuit, text);
+			await stopSession("command", () => restoreComposerText(text));
 			return;
 		}
 		try {
@@ -375,22 +377,30 @@ export function createSessionPane({
 		}
 	}
 
+	/** No shell to hand the pane back to: it empties, ready for the next session. */
+	function emptyPane() {
+		sessionCtrl.reset();
+		render();
+	}
+
 	/**
-	 * /quit: stops the session, then hands the pane back to the shell; if it couldn't stop it, /quit goes back in the composer.
-	 * @param {() => void} done @param {string} text
+	 * /quit and Release: stops the session, then hands the pane back to the shell. If it couldn't stop it, the session
+	 * keeps running here and a notice says why; `onRefused` puts a typed /quit back in the composer.
+	 * @param {import("./quit.js").QuitVia} via @param {() => void} [onRefused]
 	 */
-	async function quitFromInput(done, text) {
+	async function stopSession(via, onRefused) {
+		if (quitting) return;
 		quitting = true;
 		try {
 			await sessionCtrl.quit();
 		} catch (error) {
 			quitting = false;
 			if (destroyed) return;
-			restoreComposerText(text);
-			sessionCtrl.appendNotice(`Not quit: ${error instanceof Error ? error.message : String(error)}`, "error");
+			onRefused?.();
+			sessionCtrl.appendNotice(notStoppedNotice(via, error instanceof Error ? error.message : String(error)), "error");
 			return;
 		}
-		if (!destroyed) done();
+		if (!destroyed) (onQuit ?? emptyPane)();
 		// the phone's pane stays for the next session
 		quitting = false;
 	}
@@ -404,7 +414,7 @@ export function createSessionPane({
 
 	const abort = () => runAction(sessionCtrl.abortRun);
 	const takeOver = () => runAction(sessionCtrl.takeOver);
-	const release = () => runAction(sessionCtrl.release);
+	const release = () => void stopSession("release");
 
 	/** @type {Array<[EventTarget | null | undefined, string, EventListener]>} */
 	const bindings = [
@@ -472,10 +482,7 @@ export function createSessionPane({
 			sessionCtrl.openSessionId(sessionId);
 			render();
 		},
-		reset() {
-			sessionCtrl.reset();
-			render();
-		},
+		reset: emptyPane,
 		/** @param {string} name */
 		runReplay: (name) => sessionCtrl.runReplay(name),
 		resumeIfStale: () => sessionCtrl.resumeIfStale(),

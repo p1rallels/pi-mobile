@@ -629,7 +629,7 @@ test("/quit in a tile stops its session and leaves a launcher at the directory s
 			const el = document.querySelector(`.cv-tile[data-tile-id="${id}"]`);
 			window.__showedRelease = false;
 			new MutationObserver(() => {
-				if (el?.textContent?.includes("Released.")) window.__showedRelease = true;
+				if (el?.textContent?.includes("stopped elsewhere")) window.__showedRelease = true;
 			}).observe(el, { childList: true, subtree: true, characterData: true });
 		}, S1);
 		await composer.press("Enter");

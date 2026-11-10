@@ -1,7 +1,7 @@
-import { computeCliCommand } from "./cli.js";
 import { createChatView } from "./chat_view.js";
 import { parseCompactCommand, parseQueueCommand } from "./commands.js";
 import { freshPayload, freshRecord, freshStatus, neverSavedOf } from "./fresh.js";
+import { quitRefusal, STOPPED_ELSEWHERE } from "./quit.js";
 import { readOnlyNote, readOnlyOf, readOnlyOfError } from "./read_only.js";
 
 /** The server pings every 5s; a stream silent for longer is dead even if the browser still calls it open. */
@@ -62,7 +62,6 @@ export function createSessionController({
 	let controllerClientId = null;
 	let role = "viewer";
 	let eventSource = null;
-	let lastCliCommand = null;
 	let shownTripwireAlertIds = new Set();
 
 	let pendingPrompt = false;
@@ -93,7 +92,7 @@ export function createSessionController({
 	/** No session behind the pane: the one it had was never saved (see fresh.js). Sending starts one in `fresh.cwd`. */
 	let fresh = null;
 	let freshStart = null;
-	/** /quit stopped (or is stopping) this pane's session and the shell takes the pane away: the release isn't shown. */
+	/** /quit or Release stopped (or is stopping) this pane's session and the shell takes the pane away: no stopped line. */
 	let leaving = false;
 
 	const chatView = createChatView({
@@ -439,9 +438,9 @@ export function createSessionController({
 		activeState = null;
 		controllerClientId = null;
 		role = "viewer";
-		lastCliCommand = null;
 		pendingPrompt = false;
 		renderedSessionId = null;
+		leaving = false;
 		resetTripwireAlerts();
 		extensionUi.reset();
 		chatView.clear();
@@ -531,7 +530,6 @@ export function createSessionController({
 			activeSessionPath = activeState.sessionFile || activeSessionPath;
 			controllerClientId = event.controllerClientId || null;
 			role = event.role;
-			lastCliCommand = computeCliCommand(activeState) || lastCliCommand;
 			if (typeof event.cursor === "string") cursor = event.cursor;
 			const live = event.live && typeof event.live === "object" ? event.live : null;
 			retryStatus = live?.retry ? { attempt: live.retry.attempt, maxAttempts: live.retry.maxAttempts } : null;
@@ -577,7 +575,8 @@ export function createSessionController({
 
 		if (event.type === "released") {
 			onCloseMenu();
-			const cmd = lastCliCommand;
+			const quitHere = leaving;
+			leaving = false;
 			closeEvents();
 			stopRecovery();
 			setConnection("idle");
@@ -592,7 +591,7 @@ export function createSessionController({
 			extensionUi.reset();
 			chatView.renderQueuedMessages({ steering: [], followUp: [] });
 
-			if (!leaving) chatView.renderReleased({ cliCommand: cmd });
+			if (!quitHere) chatView.renderReleased(STOPPED_ELSEWHERE);
 			onStateChange();
 			onSidebarRefresh();
 			return;
@@ -1018,7 +1017,6 @@ export function createSessionController({
 		renderedSessionId = null;
 		controllerClientId = null;
 		role = "controller";
-		lastCliCommand = null;
 		pendingPrompt = false;
 		retryStatus = null;
 		compactionReason = null;
@@ -1143,23 +1141,19 @@ export function createSessionController({
 		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/takeover`, { clientId: getClientId() });
 	}
 
-	async function release() {
-		if (!activeSessionId || mode === "elsewhere") return;
-		await api.postJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/release`, { clientId: getClientId() });
-	}
-
 	/**
-	 * /quit (a canvas tile, the phone): stops the session this pane runs here, the way quitting pi does; its file stays,
-	 * so it can be resumed later. A pane with nothing running here has nothing to stop (no session yet, or one another
-	 * pi writes), and a session that already stopped counts as quit. A fresh pane whose first send is still starting its
-	 * session waits for it and stops that one. While pi works (a turn, a compaction) it refuses rather than cut the work
-	 * short: Esc stops it first. The shell takes the pane away once this resolves.
+	 * /quit and Release (a canvas tile, the phone; see quit.js): stops the session this pane runs here, the way quitting
+	 * pi does; its file stays, so it can be resumed later. A pane with nothing running here has nothing to stop (no
+	 * session yet, or one another pi writes), and a session that already stopped counts as quit. A fresh pane whose first
+	 * send is still starting its session waits for it and stops that one. While pi works (a turn, a compaction) it
+	 * refuses rather than cut the work short: Esc stops it first. The shell takes the pane away once this resolves.
 	 */
 	async function quit() {
 		if (freshStart) await freshStart.catch(() => {});
 		const sessionId = activeSessionId;
 		if (!sessionId || mode !== "hosted") return;
-		if (activeState?.isStreaming || activeState?.isCompacting) throw new Error("pi is still working. Esc stops it, then /quit");
+		const refusal = quitRefusal(activeState);
+		if (refusal) throw new Error(refusal);
 		leaving = true;
 		try {
 			await api.postJson(`/api/sessions/${encodeURIComponent(sessionId)}/release`, { clientId: getClientId() });
@@ -1264,7 +1258,6 @@ export function createSessionController({
 		sendPrompt,
 		abortRun,
 		takeOver,
-		release,
 		quit,
 		openSessionId,
 		suspend,

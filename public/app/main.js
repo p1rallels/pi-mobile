@@ -197,7 +197,7 @@ export async function bootPhone() {
 		getHost: () => ({ hostLabel: activeHost?.label ?? null, baseUrl: api.getBaseUrl() }),
 		onSidebarClose: () => sidebarCtrl?.setOpen(false),
 		onSidebarRefresh: () => sidebarCtrl?.refresh(),
-		// /quit stopped the session: the pane empties and the menu opens at picking a directory, like a canvas tile
+		// /quit or Release stopped the session: the pane empties and the menu opens at picking a directory, like a canvas tile
 		onQuit: () => {
 			pane.reset();
 			launcherSheet.open();
