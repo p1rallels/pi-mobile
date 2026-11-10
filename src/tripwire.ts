@@ -1,9 +1,10 @@
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionEvent, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { isMissingFileError, readPrivateJsonFile, writePrivateJsonFile } from "./private-state.ts";
 import { resolvePiWebHome } from "./security-config.ts";
+import { CASE_INSENSITIVE_FS, isWithin, pathForms, readVariants, realTarget, toolPath } from "./tripwire-paths.ts";
 import type { ApiTripwireAlert, ApiTripwireAlertsResponse, ApiTripwireCategory, ApiTripwireResponse, ApiTripwireSeverity } from "./types.ts";
 
 /** PI_WEB_TRIPWIRE: `on` blocks critical tool calls and logs the rest, `off` inspects nothing. */
@@ -91,11 +92,19 @@ function resolveAgainstCwd(cwd: string, rawPath: string): string {
 	return resolve(cwd, trimmed);
 }
 
-function isWithinRoot(targetPath: string, rootPath: string): boolean {
-	const normalizedTarget = resolve(targetPath);
-	const normalizedRoot = resolve(rootPath);
-	if (normalizedRoot === sep) return true;
-	return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}${sep}`);
+/** Every path a tool given `rawPath` may open: the SDK's spelling and read's fallbacks, plus the plain one (a custom tool's, and the fallback when the SDK's can't be resolved). */
+function candidatePaths(cwd: string, rawPath: string): string[] {
+	let sdkPaths: string[] = [];
+	try {
+		sdkPaths = readVariants(toolPath(cwd, rawPath));
+	} catch {
+		// a file URL the SDK can't take either: the tool fails, the plain spelling is still checked
+	}
+	return unique([resolveAgainstCwd(cwd, rawPath), ...sdkPaths]);
+}
+
+function unique(paths: string[]): string[] {
+	return [...new Set(paths)];
 }
 
 function keepNewestEntries<T>(entries: [string, T][], limit: number): Record<string, T> {
@@ -118,13 +127,15 @@ function serializeAlert(alert: StoredTripwireAlert): ApiTripwireAlert {
 	};
 }
 
-function lowerCasePaths(paths: string[]): string[] {
-	return paths.map((path) => path.toLowerCase());
+/** How a bash command may name protected paths: each as configured and where it really lands, also as $HOME/… and ~/…, lowercased. */
+function commandRefs(paths: string[]): string[] {
+	const forms = unique(paths.flatMap((path) => pathForms(path)));
+	return unique(forms.flatMap((path) => [path, path.replace(homedir(), "$HOME"), path.replace(homedir(), "~")]).map((path) => path.toLowerCase()));
 }
 
 export class TripwireService {
 	private storePath: string;
-	private appStateRoot: string;
+	private appStateRoots: string[];
 	private secretRoots: string[];
 	private secretFiles: string[];
 	private persistenceRoots: string[];
@@ -133,13 +144,16 @@ export class TripwireService {
 	private mutationChain: Promise<void> = Promise.resolve();
 	private rateWindows = new Map<string, ToolRateWindow>();
 
-	constructor(storePath = join(homedir(), ".pi", "agent", "pi-web", "tripwire-state.json")) {
+	constructor(storePath = join(getAgentDir(), "pi-web", "tripwire-state.json")) {
 		this.storePath = storePath;
-		this.appStateRoot = resolve(homedir(), ".pi", "agent");
+		// the agent's state is open to it (it edits skills, extensions and settings there), except the secrets below
+		this.appStateRoots = unique([join(homedir(), ".pi", "agent"), getAgentDir()].map((path) => resolve(path)));
 
 		this.secretRoots = [
 			// the cookie key and the device registry: enough to pass as a browser, and to reach a terminal tile's shell
 			resolvePiWebHome(),
+			// pi-web's own state under the agent dir: the Face ID credentials (emptied, first-use enrollment reopens), this tripwire's alerts, the saved repos it allows writes in
+			...this.appStateRoots.map((root) => join(root, "pi-web")),
 			join(homedir(), ".ssh"),
 			join(homedir(), ".aws"),
 			join(homedir(), ".gnupg"),
@@ -149,6 +163,9 @@ export class TripwireService {
 			join(homedir(), ".config", "gcloud"),
 		].map((path) => resolve(path));
 		this.secretFiles = [
+			// the agent's provider API keys and OAuth tokens
+			...this.appStateRoots.map((root) => join(root, "auth.json")),
+			storePath,
 			join(homedir(), ".netrc"),
 			join(homedir(), ".npmrc"),
 			join(homedir(), ".pypirc"),
@@ -305,58 +322,69 @@ export class TripwireService {
 		return null;
 	}
 
+	/**
+	 * Checks where each path really lands, the way the SDK's file tools resolve it (a leading `@`, `file://`, `~`, read's
+	 * fallbacks) with symlinks followed, as well as the path as written.
+	 */
 	private inspectToolPaths(context: TripwireSessionContext, toolName: string, toolCallId: string, args: unknown): StoredTripwireAlert | null {
 		const rawPaths = this.extractPaths(toolName, args);
 		if (rawPaths.length === 0) return null;
 
-		const allowedRoots = [...new Set([resolve(context.cwd), this.appStateRoot, ...[...context.allowedRoots].map((root) => resolve(root))])];
+		const allowedRoots = unique([context.cwd, ...this.appStateRoots, ...context.allowedRoots].flatMap((root) => pathForms(root)));
+		const secretPaths = unique([...this.secretRoots, ...this.secretFiles].flatMap((path) => pathForms(path)));
+		const persistencePaths = unique([...this.persistenceRoots, ...this.persistenceFiles].flatMap((path) => pathForms(path)));
 		const isWriteLike = toolName === "write" || toolName === "edit";
 		let observedPath: string | null = null;
 
 		for (const rawPath of rawPaths) {
-			const resolvedPath = resolveAgainstCwd(context.cwd, rawPath);
+			const candidates = candidatePaths(context.cwd, rawPath);
+			const forms = unique(candidates.flatMap((path) => pathForms(path)));
+			const written = (path: string) => (path === rawPath ? "" : ` (written ${JSON.stringify(clipText(rawPath, 180))})`);
 
-			if (this.isSecretPath(resolvedPath)) {
+			const secretPath = forms.find((path) => secretPaths.some((root) => isWithin(path, root, CASE_INSENSITIVE_FS)));
+			if (secretPath) {
 				return this.createAlert({
 					sessionId: context.sessionId,
 					severity: "critical",
 					category: "secret_access",
 					summary: "Tripwire: sensitive host secret path access detected.",
-					detail: `Path: ${resolvedPath}`,
+					detail: `Path: ${secretPath}${written(secretPath)}`,
 					toolName,
 					toolCallId,
 					response: "blocked",
 				});
 			}
 
-			if (this.isPersistencePath(resolvedPath)) {
+			const persistencePath = forms.find((path) => persistencePaths.some((root) => isWithin(path, root, CASE_INSENSITIVE_FS)));
+			if (persistencePath) {
 				return this.createAlert({
 					sessionId: context.sessionId,
 					severity: "critical",
 					category: "persistence",
 					summary: "Tripwire: host persistence path targeted.",
-					detail: `Path: ${resolvedPath}`,
+					detail: `Path: ${persistencePath}${written(persistencePath)}`,
 					toolName,
 					toolCallId,
 					response: "blocked",
 				});
 			}
 
-			const isAllowed = allowedRoots.some((root) => isWithinRoot(resolvedPath, root));
-			if (!isAllowed) {
+			// where the write lands decides: a symlink in the repo that points out of it is a repo escape
+			const escapedPath = candidates.map((path) => realTarget(path)).find((path) => !allowedRoots.some((root) => isWithin(path, root)));
+			if (escapedPath) {
 				if (isWriteLike) {
 					return this.createAlert({
 						sessionId: context.sessionId,
 						severity: "critical",
 						category: "repo_escape",
 						summary: "Tripwire: repo-external write/edit detected.",
-						detail: `Path: ${resolvedPath}`,
+						detail: `Path: ${escapedPath}${written(escapedPath)}`,
 						toolName,
 						toolCallId,
 						response: "blocked",
 					});
 				}
-				if (!observedPath) observedPath = resolvedPath;
+				if (!observedPath) observedPath = escapedPath;
 			}
 		}
 
@@ -464,6 +492,8 @@ export class TripwireService {
 		if (["read", "write", "edit", "grep", "find", "ls"].includes(toolName) && typeof input.path === "string") {
 			return [input.path];
 		}
+		// grep, find and ls without a path search the session's folder
+		if (["grep", "find", "ls"].includes(toolName) && input.path === undefined) return ["."];
 
 		const rawPaths: string[] = [];
 		for (const key of ["path", "from", "to", "oldPath", "newPath", "targetPath"]) {
@@ -472,29 +502,8 @@ export class TripwireService {
 		return rawPaths;
 	}
 
-	private isSecretPath(path: string): boolean {
-		const normalized = resolve(path);
-		if (isWithinRoot(normalized, this.appStateRoot)) return false;
-		if (this.secretFiles.some((file) => normalized === file)) return true;
-		return this.secretRoots.some((root) => isWithinRoot(normalized, root));
-	}
-
-	private isPersistencePath(path: string): boolean {
-		const normalized = resolve(path);
-		if (this.persistenceFiles.some((file) => normalized === file)) return true;
-		return this.persistenceRoots.some((root) => isWithinRoot(normalized, root));
-	}
-
 	private commandReferencesSecrets(command: string): boolean {
-		const refs = lowerCasePaths([
-			...this.secretRoots,
-			...this.secretFiles,
-			...this.secretRoots.map((path) => path.replace(homedir(), "$HOME")),
-			...this.secretRoots.map((path) => path.replace(homedir(), "~")),
-			...this.secretFiles.map((path) => path.replace(homedir(), "$HOME")),
-			...this.secretFiles.map((path) => path.replace(homedir(), "~")),
-		]);
-		return refs.some((ref) => ref && command.includes(ref));
+		return commandRefs([...this.secretRoots, ...this.secretFiles]).some((ref) => ref && command.includes(ref));
 	}
 
 	private commandLooksPersistent(command: string): boolean {
@@ -502,15 +511,7 @@ export class TripwireService {
 		if (/(>>?|tee(?:\s+-a)?)\s+(~\/\.(zshrc|bashrc|bash_profile|profile)|\$home\/\.(zshrc|bashrc|bash_profile|profile))/i.test(command)) {
 			return true;
 		}
-		const refs = lowerCasePaths([
-			...this.persistenceRoots,
-			...this.persistenceFiles,
-			...this.persistenceRoots.map((path) => path.replace(homedir(), "$HOME")),
-			...this.persistenceRoots.map((path) => path.replace(homedir(), "~")),
-			...this.persistenceFiles.map((path) => path.replace(homedir(), "$HOME")),
-			...this.persistenceFiles.map((path) => path.replace(homedir(), "~")),
-		]);
-		return refs.some((ref) => ref && command.includes(ref));
+		return commandRefs([...this.persistenceRoots, ...this.persistenceFiles]).some((ref) => ref && command.includes(ref));
 	}
 
 	private commandLooksDestructive(command: string): boolean {
