@@ -779,7 +779,7 @@ function release() {
 	const session = activeSession();
 	if (!session) return;
 	session.role = "viewer";
-	session.messages.push({ role: "assistant", text: "released. safe to resume in native cli." });
+	session.messages.push({ role: "assistant", text: "released. it resumes from the list." });
 	render();
 }
 
