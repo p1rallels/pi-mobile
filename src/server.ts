@@ -28,7 +28,7 @@ import {
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
-import { parseRequestUrl } from "./request-url.ts";
+import { cameThroughProxy, parseRequestUrl } from "./request-url.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
 import {
@@ -740,10 +740,15 @@ async function logOutFaceId(req: Request): Promise<boolean> {
 	}
 }
 
-function canRegisterFaceId(url: URL, credentialCount: number): boolean {
+/** A process on this host: a loopback Host no proxy handed on. */
+function isLocalRequest(req: Request, url: URL): boolean {
+	return isLoopbackHost(url.hostname) && !cameThroughProxy(req.headers);
+}
+
+function canRegisterFaceId(req: Request, url: URL, credentialCount: number): boolean {
 	if (credentialCount !== 0) return false;
-	if (isLoopbackHost(url.hostname)) return true;
-	return secureMode;
+	// a loopback RP gets its first passkey from this host only: through the proxy it would be one more RP a device could claim
+	return isLoopbackHost(url.hostname) ? isLocalRequest(req, url) : secureMode;
 }
 
 function ensureTrustedRequest(req: Request, url: URL, requestProtocol: string): Response | null {
@@ -844,8 +849,8 @@ function ensureFaceIdAuth(req: Request, url: URL): Response | null {
 	if (!isApiPath(url.pathname)) return null;
 	if (isFaceIdExemptPath(url.pathname)) return null;
 	const terminalRoute = parseTerminalRoute(url.pathname);
-	// in secure mode browsers come through the proxy, so a loopback request is a process on this host: it gets no shell
-	if (isLoopbackHost(url.hostname) && !(secureMode && terminalRoute)) return null;
+	// a process on this host skips the gate, but in secure mode it gets no shell
+	if (isLocalRequest(req, url) && !(secureMode && terminalRoute)) return null;
 
 	const client = resolveClientCookie(req);
 	if (!client) return errorResponse("Missing browser session. Reload the page.", 401);
@@ -1334,7 +1339,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				const check = resolveBrowserFaceIdCheck(req, url, resolveClientCookie(req));
 				const body = {
 					...status,
-					canRegister: canRegisterFaceId(url, status.credentialCount),
+					canRegister: canRegisterFaceId(req, url, status.credentialCount),
 					freshForSeconds: Math.floor(FACEID_FRESH_TTL_MS / 1000),
 					commandFreshForSeconds: Math.floor(FACEID_COMMAND_TTL_MS / 1000),
 					sessionForSeconds: Math.floor(FACEID_TTL_MS / 1000),
@@ -1380,7 +1385,7 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 				}
 				if (kind === "register") {
 					const status = await faceId.status(url.hostname);
-					if (!canRegisterFaceId(url, status.credentialCount)) {
+					if (!canRegisterFaceId(req, url, status.credentialCount)) {
 						return errorResponse(
 							"First remote Face ID enrollment requires secure mode with an enrolled mTLS device certificate, or enrollment from a trusted local browser.",
 							403,

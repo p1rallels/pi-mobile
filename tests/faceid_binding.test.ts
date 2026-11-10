@@ -315,7 +315,10 @@ interface Issued {
 const signUpAt = (key: Authenticator, c: Issued) => registration(key, c.challenge, c.site.rpId, c.site.origin);
 const signInAt = (key: Authenticator, c: Issued) => assertion(key, c.challenge, c.site.rpId, c.site.origin);
 
-/** Requests the way the mTLS proxy hands them on: the verified device's fingerprint, https, the browser's host and origin. */
+/**
+ * Requests the way the mTLS proxy hands them on: the verified device's fingerprint, https, the browser's host and origin.
+ * The loopback site is a process on this host, which comes in directly: no forwarding header.
+ */
 function client(port: number) {
 	const call = async (path: string, as: Browser, site: Site, body?: unknown) => {
 		const res = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
@@ -325,7 +328,7 @@ function client(port: number) {
 				host: site.host,
 				origin: site.origin,
 				"content-type": "application/json",
-				"x-forwarded-proto": "https",
+				...(site.rpId === "localhost" ? {} : { "x-forwarded-proto": "https" }),
 				[CERT_HEADER]: as.device,
 				...(as.cookie ? { cookie: as.cookie } : {}),
 			},
