@@ -99,6 +99,12 @@ const AGENT_CONFIG = [
 	"bin",
 ];
 
+/**
+ * What bash naming them can't flag: skills and prompts are run and read by name all day (a skill's own scripts, by the
+ * absolute path its SKILL.md gives), and bash can't tell that from a write. Their writes through the file tools still log.
+ */
+const BASH_UNFLAGGED_CONFIG = new Set(["skills", "prompts"]);
+
 /** The built-in tools that only read: they open the agent's config without changing it. */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
@@ -193,6 +199,7 @@ export class TripwireService {
 	private persistenceRoots: string[];
 	private persistenceFiles: string[];
 	private agentConfig: string[];
+	private bashFlaggedConfig: string[];
 	private storePromise: Promise<TripwireStore> | null = null;
 	private mutationChain: Promise<void> = Promise.resolve();
 	private rateWindows = new Map<string, ToolRateWindow>();
@@ -242,6 +249,9 @@ export class TripwireService {
 			join(homedir(), ".config", "fish", "config.fish"),
 		].map((path) => resolve(path));
 		this.agentConfig = unique(this.appStateRoots.flatMap((root) => AGENT_CONFIG.map((name) => resolve(root, name))));
+		this.bashFlaggedConfig = unique(
+			this.appStateRoots.flatMap((root) => AGENT_CONFIG.filter((name) => !BASH_UNFLAGGED_CONFIG.has(name)).map((name) => resolve(root, name))),
+		);
 	}
 
 	/**
@@ -575,9 +585,9 @@ export class TripwireService {
 		return commandRefs([...this.secretRoots, ...this.secretFiles]).some((ref) => ref && command.includes(ref));
 	}
 
-	/** The agent config file or folder a bash command names, spelled like the secret refs. */
+	/** The agent config file or folder a bash command names, spelled like the secret refs (skills and prompts aside). */
 	private agentConfigNamed(command: string): string | undefined {
-		return this.agentConfig.find((path) => commandRefs([path]).some((ref) => ref && command.includes(ref)));
+		return this.bashFlaggedConfig.find((path) => commandRefs([path]).some((ref) => ref && command.includes(ref)));
 	}
 
 	private commandLooksPersistent(command: string): boolean {

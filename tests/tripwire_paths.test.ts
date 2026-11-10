@@ -165,7 +165,11 @@ describe("tripwire path spellings", () => {
 		expect(inspect(service, fixture, "write", { path: join(fixture.agentDir, "settings.json"), content: "{}" })).toEqual([["persistence", "logged"]]);
 		expect(inspect(service, fixture, "write", { path: join(fixture.agentDir, "notes.md"), content: "" })).toEqual([]);
 		expect(inspect(service, fixture, "ls", { path: join(fixture.agentDir, "sessions") })).toEqual([]);
-		expect(inspect(service, fixture, "bash", { command: `ls ${join(fixture.agentDir, "skills")}` })).toEqual([["persistence", "logged"]]);
+		// a skill's scripts run by their absolute path, so bash naming skills/ or prompts/ stays quiet; settings still logs
+		expect(inspect(service, fixture, "bash", { command: `ls ${join(fixture.agentDir, "skills")}` })).toEqual([]);
+		expect(inspect(service, fixture, "bash", { command: `python3 ${join(fixture.agentDir, "skills", "demo", "run.py")}` })).toEqual([]);
+		expect(inspect(service, fixture, "bash", { command: `cat ${join(fixture.agentDir, "prompts", "x.md")}` })).toEqual([]);
+		expect(inspect(service, fixture, "bash", { command: `cat ${join(fixture.agentDir, "settings.json")}` })).toEqual([["persistence", "logged"]]);
 	});
 
 	test("ordinary project paths raise nothing, however they're spelled", async () => {
