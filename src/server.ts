@@ -9,6 +9,7 @@ import { isTypedPath, listDirectories } from "./directories.ts";
 import { parseExtensionUiResponse } from "./extension-ui.ts";
 import { dropInheritedSessionIdentity } from "./inherited-session.ts";
 import { FaceIdService } from "./faceid.ts";
+import { openFaceIdLogouts } from "./faceid-logout.ts";
 import { watchMsgMail } from "./msg-mail.ts";
 import { msgStoreRoot } from "./msg-store.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
@@ -681,7 +682,8 @@ function resolveFaceIdCookie(req: Request): { rpId: string; clientId: string; ve
 	if (!payload || payload.kind !== "faceid" || !payloadMatchesRequest(req, payload)) return null;
 	const { rpId, clientId, verifiedAt, jti, exp } = payload;
 	if (typeof rpId !== "string" || typeof clientId !== "string" || typeof verifiedAt !== "number" || typeof jti !== "string" || typeof exp !== "number") return null;
-	if (revokedFaceIdTokens.has(jti)) return null;
+	// a check lasts the session length it's under now, so a logout cutoff can go once that has passed
+	if (verifiedAt + FACEID_TTL_MS <= Date.now() || faceIdLogouts.isLoggedOut(clientId, verifiedAt)) return null;
 	return { rpId, clientId, verifiedAt, jti, exp };
 }
 
@@ -704,13 +706,16 @@ function issueFaceIdCookie(req: Request, clientId: string, rpId: string, secure:
 	return buildSetCookie(FACEID_COOKIE, token, { maxAge: FACEID_TTL_MS / 1000, httpOnly: true, secure });
 }
 
-function revokeFaceIdCookie(req: Request): void {
-	const now = Date.now();
-	for (const [jti, exp] of revokedFaceIdTokens) {
-		if (exp <= now) revokedFaceIdTokens.delete(jti);
+/** Logs this browser out of Face ID: every check it passed until now stops counting, restarts included. False if not saved. */
+async function logOutFaceId(req: Request): Promise<boolean> {
+	const clientIds = [resolveClientCookie(req)?.clientId, resolveFaceIdCookie(req)?.clientId].filter((id) => id !== undefined);
+	try {
+		await faceIdLogouts.logOut(clientIds, Date.now());
+		return true;
+	} catch (error) {
+		console.error("[pi-web] Face ID logout not saved:", error);
+		return false;
 	}
-	const session = resolveFaceIdCookie(req);
-	if (session) revokedFaceIdTokens.set(session.jti, session.exp);
 }
 
 function canRegisterFaceId(url: URL, credentialCount: number): boolean {
@@ -929,7 +934,7 @@ runtime.startIdleSweep();
 const msgMail = watchMsgMail(runtime, { root: msgRoot });
 const faceId = new FaceIdService(join(getAgentDir(), "pi-web", "faceid-credentials.json"));
 const cookieSigner = createCookieSigner(await loadOrCreateCookieKey(join(resolvePiWebPaths().home, "cookie-key")));
-const revokedFaceIdTokens = new Map<string, number>();
+const faceIdLogouts = await openFaceIdLogouts(join(resolvePiWebPaths().home, "faceid-logouts.json"), FACEID_TTL_MS);
 /** When each browser (client id) last locked its terminals; a shell needs a Face ID check made after that. */
 const terminalLocks = new Map<string, number>();
 const terminalSockets = new Set<Bun.ServerWebSocket<TerminalSocketData>>();
@@ -1136,8 +1141,9 @@ async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>)
 		}
 
 		if (req.method === "POST" && url.pathname === "/api/faceid/logout") {
-			revokeFaceIdCookie(req);
-			return ok({ "set-cookie": clearCookie(FACEID_COOKIE, secure) });
+			const saved = await logOutFaceId(req);
+			const cleared = { "set-cookie": clearCookie(FACEID_COOKIE, secure) };
+			return saved ? ok(cleared) : errorResponse("Logout not saved: it holds only until pi-web restarts. Try again.", 500, cleared);
 		}
 
 		if (req.method === "GET" && url.pathname === "/api/sessions") {
