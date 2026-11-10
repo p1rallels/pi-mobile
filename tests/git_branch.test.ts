@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +88,21 @@ describe("git branch", () => {
 		expect(outside.current()).toBeNull();
 		outside.refresh();
 		outside.dispose();
+	});
+
+	test("asks git by its absolute path, never a git planted in the session's folder, even with . first on PATH", async () => {
+		const root = await tempRoot();
+		const repo = await makeRepo(root, "ref: refs/heads/.invalid\n");
+		const ran = join(root, "planted-git-ran");
+		await writeFile(join(repo, "git"), `#!/bin/sh\ntouch '${ran}'\necho planted\n`, { mode: 0o755 });
+		const path = process.env.PATH;
+		process.env.PATH = `.:${path ?? ""}`;
+		try {
+			expect(await readGitBranch(findGitHead(repo))).toBeNull();
+			expect(existsSync(ran)).toBe(false);
+		} finally {
+			process.env.PATH = path;
+		}
 	});
 
 	test("a running session reports its branch and patches it when the checkout changes", async () => {
