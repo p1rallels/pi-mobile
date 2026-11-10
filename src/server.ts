@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { VERSION as PI_VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { CANVAS_LAYOUT_BODY_LIMIT, createCanvasLayoutStore } from "./canvas-layout.ts";
@@ -13,6 +13,7 @@ import { msgStoreRoot } from "./msg-store.ts";
 import { isProjectTrustChoice, parseProjectTrustMode, ProjectTrustRequiredError } from "./project-trust.ts";
 import { parseTripwireMode } from "./tripwire.ts";
 import { loadHostRegistry } from "./host-registry.ts";
+import { parseRequestUrl } from "./request-url.ts";
 import { resolvePiWebPaths } from "./security-config.ts";
 import { createCookieSigner, loadOrCreateCookieKey } from "./signed-cookies.ts";
 import {
@@ -516,8 +517,17 @@ function plainText(body: string | null, status = 200, extraHeaders?: Bun.Headers
 	return new Response(body, { status, headers });
 }
 
+function isRegularFile(path: string): boolean {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/** Regular files only: Bun can't stream a directory, and the error would be the client's to read. */
 function serveStatic(path: string, contentType?: string): Response {
-	if (!existsSync(path)) {
+	if (!isRegularFile(path)) {
 		return plainText("Not found", 404);
 	}
 	const file = Bun.file(path);
@@ -1060,7 +1070,8 @@ async function handleTerminalRoute(
 }
 
 async function handleFetch(req: Request, server: Bun.Server<TerminalSocketData>): Promise<Response | undefined> {
-		const url = new URL(req.url);
+		const url = parseRequestUrl(req.url);
+		if (!url) return plainText("Bad request", 400);
 		const secure = isSecureRequest(req, url, trustProxy);
 		const requestProtocol = secure ? "https:" : url.protocol;
 		const directAddress = server.requestIP(req)?.address;
@@ -1595,6 +1606,12 @@ const server = Bun.serve({
 	hostname: host,
 	port,
 	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
+	// development mode answers an uncaught error with Bun's debug page: paths, stack frames and source lines
+	development: false,
+	error(error) {
+		console.error("[pi-web] request failed:", error);
+		return plainText("Internal server error", 500);
+	},
 	async fetch(req, server): Promise<Response | undefined> {
 		const response = await handleFetch(req, server);
 		// undefined: the request became a terminal's websocket
